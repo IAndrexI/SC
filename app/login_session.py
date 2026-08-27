@@ -23,8 +23,10 @@ from automation import (
     replay_macro,
     get_camera_stream_init_script,
     fetch_webcam_image,
+    _cleanup_stale_locks,
     _log,
 )
+
 
 
 NOVNC_PORT = 6080  # kept for API compat
@@ -122,6 +124,7 @@ async def start(emit: Callable | None = None) -> str:
     if _state["active"]:
         return "Already running."
 
+    _cleanup_stale_locks()
     _log("Launching browser with persistent profile...", emit)
 
     pw = await async_playwright().start()
@@ -150,6 +153,7 @@ async def start(emit: Callable | None = None) -> str:
             "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
+            "Upgrade-Insecure-Requests": "1",
         },
     )
 
@@ -161,14 +165,19 @@ async def start(emit: Callable | None = None) -> str:
     await context.add_init_script(get_camera_stream_init_script())
     _state["context"] = context
 
-
     page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page
     _state["active"] = True
 
-    await page.goto("https://web.snapchat.com/", timeout=30_000)
-
+    # Start screenshot stream immediately so UI updates
     asyncio.create_task(_screenshot_loop())
+
+    _log("Navigating to Snapchat Web...", emit)
+    try:
+        await page.goto("https://web.snapchat.com/", timeout=25_000, wait_until="domcontentloaded")
+    except Exception as ex:
+        _log(f"Navigation notice: {ex}", emit)
+
     _log("✓ Browser ready — view it in the web UI login panel.", emit)
     return "ok"
 

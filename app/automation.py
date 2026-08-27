@@ -57,22 +57,38 @@ WEBCAM_URL = os.environ.get(
 WEBCAM_FILE = DATA_DIR / "webcam_latest.jpg"
 
 
+def _cleanup_stale_locks():
+    """Remove stale Chromium profile locks to prevent launch hang on restarts."""
+    for lock_name in ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]:
+        lock_path = USER_DATA_DIR / lock_name
+        try:
+            if lock_path.is_symlink() or lock_path.exists():
+                lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def fetch_webcam_image() -> bytes:
-    """Fetch latest frame from meteorology webcam, updating webcam_latest.jpg & snap.png."""
+    """Fetch latest frame from meteorology webcam without blocking."""
+    # Fast path: return existing cached image immediately
+    if WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
+        return WEBCAM_FILE.read_bytes()
+
     import urllib.request
     try:
         req = urllib.request.Request(
             WEBCAM_URL,
             headers={"User-Agent": USER_AGENT}
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=3) as resp:
             data = resp.read()
             if data and len(data) > 1000:
                 WEBCAM_FILE.write_bytes(data)
                 SNAP_IMAGE.write_bytes(data)
                 return data
     except Exception as ex:
-        _log(f"⚠ Could not fetch live webcam feed: {ex}")
+        pass
+
     if WEBCAM_FILE.exists():
         return WEBCAM_FILE.read_bytes()
     if SNAP_IMAGE.exists():
@@ -151,7 +167,7 @@ async def _take_screenshot(page: Page, label: str = ""):
 # Browser context — persistent desktop profile (preserves Cookies + IndexedDB)
 # ---------------------------------------------------------------------------
 async def _build_context(playwright, headless: bool = True):
-    fetch_webcam_image()  # ensure latest webcam image is ready
+    _cleanup_stale_locks()
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(USER_DATA_DIR),
         headless=headless,
@@ -191,6 +207,7 @@ async def _build_context(playwright, headless: bool = True):
     await context.add_init_script(get_camera_stream_init_script())
 
     return context
+
 
 
 
