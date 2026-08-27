@@ -76,7 +76,12 @@ async def _save_session(context: BrowserContext):
 async def _load_context(playwright, headless: bool = True) -> tuple:
     browser = await playwright.chromium.launch(
         headless=headless,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--single-process",
+        ],
     )
     if SESSION_FILE.exists():
         context = await browser.new_context(

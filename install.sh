@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — run inside any existing Debian 12 LXC shell
+# install.sh — run inside any existing Debian LXC shell
 # curl -fsSL https://raw.githubusercontent.com/IAndrexI/SC/main/install.sh | bash
 
 set -euo pipefail
@@ -22,17 +22,18 @@ fi
 step "Installing system dependencies..."
 apt-get update -qq
 apt-get install -y -qq \
-  git curl python3 python3-pip python3-venv python3-dev \
-  gcc g++ make \
-  libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+  git curl python3 python3-pip python3-venv \
+  libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
   libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
   libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 \
-  libasound2 libdbus-1-3 libexpat1 libx11-6 libxcb1 \
-  fonts-liberation xdg-utils
+  libasound2t64 libdbus-1-3 libexpat1 libx11-6 libxcb1 \
+  libgtk-3-0t64 libatspi2.0-0t64 libglib2.0-0t64 \
+  fonts-liberation fonts-unifont \
+  xdg-utils
 
 # clone or update
 if [[ -d "$APP_DIR/.git" ]]; then
-  step "Updating existing install..."
+  step "Updating repo..."
   git -C "$APP_DIR" pull --ff-only
 else
   step "Cloning repo..."
@@ -42,18 +43,21 @@ fi
 step "Creating data directory..."
 mkdir -p "$DATA_DIR"
 
-step "Setting up Python environment..."
+# always wipe and rebuild the venv for a clean install
+step "Building fresh Python environment..."
+rm -rf "$APP_DIR/.venv"
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 
-step "Installing Chromium (headless browser)..."
-"$APP_DIR/.venv/bin/playwright" install chromium
-"$APP_DIR/.venv/bin/playwright" install-deps chromium
+# install Chromium — skip install-deps (we handled them above manually)
+step "Downloading Chromium..."
+PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers \
+  "$APP_DIR/.venv/bin/playwright" install chromium
 
 step "Creating service user..."
 id -u "$SERVICE_USER" &>/dev/null || useradd -r -s /bin/false -d "$APP_DIR" "$SERVICE_USER"
-chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" "$DATA_DIR"
+chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" "$DATA_DIR" /opt/sc-browsers
 
 step "Registering systemd service..."
 cat > /etc/systemd/system/sc.service <<EOF
@@ -68,6 +72,7 @@ User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}/app
 Environment="DATA_DIR=${DATA_DIR}"
 Environment="PORT=${PORT}"
+Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers"
 ExecStart=${APP_DIR}/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT}
 Restart=on-failure
 RestartSec=10
