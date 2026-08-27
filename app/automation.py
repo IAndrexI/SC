@@ -215,42 +215,53 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
     _log("🚀 Starting 5-Step Shortcut Streak sequence...", emit)
     results = {"*//Eric\\\\*": "pending", "Dylan": "pending"}
 
-    # ── Step 0: Click Ghost icon on top left to reset view ────────────────────
+    # ── Step 0: Click Ghost icon on top left to reset view to center camera ───
     _log("Step 0: Clicking Ghost icon on top left...", emit)
     ghost_clicked = False
+
+    # 1. If a chat is open (like My AI in screenshot), click back button first
+    for sel in ['[aria-label*="Back" i]', 'button:has(svg path[d*="15.41"])', 'header button:has(svg)']:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=1000):
+                await loc.click()
+                _log("  ✓ Clicked conversation back button.", emit)
+                break
+        except Exception:
+            pass
+
+    # 2. Click Ghost icon
     for sel in [
         '[aria-label*="Snapchat" i]',
         'a[href*="/web"]',
         '[data-testid="snapchat-logo"]',
         'header button:has(svg)',
-        'nav button:has(svg)',
-        'header a',
-        'nav a',
+        'nav a:has(svg)',
     ]:
         try:
             loc = page.locator(sel).first
-            if await loc.is_visible(timeout=1000):
+            if await loc.is_visible(timeout=1500):
                 await loc.click()
                 ghost_clicked = True
-                _log("  ✓ Clicked Ghost icon.", emit)
+                _log("  ✓ Clicked Ghost icon via selector.", emit)
                 break
         except Exception:
             continue
 
     if not ghost_clicked:
         try:
-            # Click Ghost icon header location on top left (~x=145, y=25)
-            await page.mouse.click(145, 25)
-            _log("  ✓ Clicked top-left Ghost header area.", emit)
+            # Click Ghost icon location (x=130, y=50)
+            await page.mouse.click(130, 50)
+            _log("  ✓ Clicked Ghost icon at position (130, 50).", emit)
         except Exception:
             pass
 
-    await _human_delay(1000, 1800)
+    await _human_delay(1500, 2500)
+    await _take_screenshot(page, "step0_after_ghost_click")
 
     # ── Step 1: Click Camera in center (Photo 1) ──────────────────────────────
     _log("Step 1: Clicking center camera icon...", emit)
     cam_clicked = False
-
 
     for sel in [
         'button:has-text("Click the Camera to send Snaps")',
@@ -271,20 +282,16 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
             continue
 
     if not cam_clicked:
-        # Try clicking center of screen if text element is present
         try:
-            txt_el = page.locator('text="Click the Camera to send Snaps"').first
-            if await txt_el.is_visible(timeout=2000):
-                box = await txt_el.bounding_box()
-                if box:
-                    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] - 60)
-                    cam_clicked = True
-                    _log("  ✓ Clicked camera icon directly above text.", emit)
+            # Click center camera button coordinates (x=600, y=450)
+            await page.mouse.click(600, 450)
+            _log("  ✓ Clicked center camera coordinates (600, 450).", emit)
         except Exception:
             pass
 
     await _human_delay(1500, 2500)
     await _take_screenshot(page, "step1_camera_opened")
+
 
     # ── Step 2: Click White Circle Capture Button (Photo 2) ───────────────────
     _log("Step 2: Clicking snap capture shutter circle...", emit)
