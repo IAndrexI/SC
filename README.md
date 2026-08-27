@@ -10,7 +10,7 @@
 ### Step 1 — Run the LXC helper on your Proxmox host shell
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/YOUR_USER/snapstreak-server/main/proxmox-lxc.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/IAndrexI/SC/main/proxmox-lxc.sh)"
 ```
 
 This will:
@@ -56,7 +56,7 @@ Click **Login to Snapchat** in the web UI. A browser will open on the server (vi
 ## 🔧 Manual Install (Any Debian 12 Machine)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/snapstreak-server/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/IAndrexI/SC/main/install.sh | sudo bash
 ```
 
 ---

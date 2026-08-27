@@ -4,7 +4,7 @@
 # Creates a Debian 12 LXC container and installs SnapStreak inside it.
 #
 # Usage (run on Proxmox host shell):
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/YOUR_USER/snapstreak-server/main/proxmox-lxc.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/IAndrexI/SC/main/proxmox-lxc.sh)"
 #
 # Or manually:
 #   chmod +x proxmox-lxc.sh && ./proxmox-lxc.sh
@@ -58,7 +58,7 @@ pct exec "${CTID}" -- bash -c "
   apt-get install -y -qq curl git python3 python3-pip python3-venv
 
   # Clone the repo
-  git clone https://github.com/YOUR_USER/snapstreak-server /opt/snapstreak
+  git clone https://github.com/IAndrexI/SC /opt/snapstreak
 
   # Run the install script inside the container
   bash /opt/snapstreak/install.sh

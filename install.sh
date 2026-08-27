@@ -38,7 +38,7 @@ if [[ -d "$APP_DIR/.git" ]]; then
   git -C "$APP_DIR" pull --ff-only
 else
   step "Cloning SnapStreak…"
-  git clone https://github.com/YOUR_USER/snapstreak-server "$APP_DIR"
+  git clone https://github.com/IAndrexI/SC "$APP_DIR"
 fi
 
 # ── Data directory ────────────────────────────────────────────────────────────
