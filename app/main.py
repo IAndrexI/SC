@@ -232,16 +232,10 @@ async def import_cookies(body: CookieImport):
         if not name or not value:
             continue
 
-        # Only keep Snapchat-related cookies
         raw_domain = c.get("domain", ".snapchat.com")
-        if "snapchat" not in raw_domain and "snap.com" not in raw_domain:
+        # Skip completely unrelated cookies
+        if not any(x in raw_domain for x in ["snapchat", "snap.com"]):
             continue
-
-        # Ensure domain starts with a dot so it applies to all subdomains
-        domain = raw_domain if raw_domain.startswith(".") else f".{raw_domain}"
-        # Normalise to .snapchat.com for all snap domains
-        if not domain.endswith("snapchat.com"):
-            domain = ".snapchat.com"
 
         ss_raw = c.get("sameSite", c.get("samesite", "no_restriction"))
         ss_map = {
@@ -253,22 +247,34 @@ async def import_cookies(body: CookieImport):
         }
         same_site = ss_map.get(str(ss_raw).lower(), "None")
 
-        cookie: dict = {
-            "name":     name,
-            "value":    value,
-            "domain":   domain,
-            "path":     c.get("path", "/"),
-            "secure":   bool(c.get("secure", True)),
-            "httpOnly": bool(c.get("httpOnly", c.get("httponly", False))),
-            "sameSite": same_site,
-        }
-
-        # Expiry
         exp = c.get("expirationDate", c.get("expires"))
-        if isinstance(exp, (int, float)) and exp > 0:
-            cookie["expires"] = int(exp)
+        expires = int(exp) if isinstance(exp, (int, float)) and exp > 0 else None
 
-        playwright_cookies.append(cookie)
+        # Build cookie with ORIGINAL domain preserved exactly
+        def make_cookie(domain: str) -> dict:
+            ck: dict = {
+                "name":     name,
+                "value":    value,
+                "domain":   domain,
+                "path":     c.get("path", "/"),
+                "secure":   bool(c.get("secure", True)),
+                "httpOnly": bool(c.get("httpOnly", c.get("httponly", False))),
+                "sameSite": same_site,
+            }
+            if expires:
+                ck["expires"] = expires
+            return ck
+
+        # Add with original domain
+        playwright_cookies.append(make_cookie(raw_domain))
+
+        # Also add with .snapchat.com wildcard domain for maximum coverage
+        if raw_domain != ".snapchat.com":
+            playwright_cookies.append(make_cookie(".snapchat.com"))
+
+        # Also add for web.snapchat.com specifically
+        if "web.snapchat.com" not in raw_domain:
+            playwright_cookies.append(make_cookie("web.snapchat.com"))
 
     session_state = {
         "cookies": playwright_cookies,

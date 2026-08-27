@@ -94,9 +94,10 @@ async def _save_session(context: BrowserContext):
 # ---------------------------------------------------------------------------
 async def check_logged_in(page: Page, emit=None) -> bool:
     """
-    Navigate to Snapchat web and check if we land on the main app (logged in)
-    rather than the login/accounts page.
-    Waits up to 20s for the page to settle.
+    Navigate to Snapchat web and check if we land on the main app.
+    - web.snapchat.com  = logged in ✓
+    - www.snapchat.com  = NOT logged in (unauthenticated redirect) ✗
+    - accounts/login    = NOT logged in ✗
     """
     try:
         _log("Checking session...", emit)
@@ -106,44 +107,30 @@ async def check_logged_in(page: Page, emit=None) -> bool:
             timeout=30_000,
         )
 
-        # Wait up to 20s for the URL to settle (not on a login/accounts page)
         deadline = time.time() + 20
         while time.time() < deadline:
             url = page.url
-            _log(f"  Current URL: {url}", emit)
+            _log(f"  URL: {url}", emit)
 
-            # Definitively logged OUT indicators
-            if any(x in url for x in ["/login", "accounts.snapchat.com", "/unlock"]):
-                _log("  → Detected login page. Session expired.", emit)
+            # NOT logged in indicators
+            if any(x in url for x in [
+                "www.snapchat.com",   # unauthenticated redirect
+                "/login",
+                "accounts.snapchat.com",
+                "/unlock",
+                "original_referrer",  # always means unauthenticated redirect
+            ]):
+                _log("  → Unauthenticated redirect detected.", emit)
                 return False
 
-            # Definitively logged IN indicators
-            if any(x in url for x in [
-                "web.snapchat.com/#",
-                "web.snapchat.com/web/",
-                "web.snapchat.com/?",
-            ]):
-                _log("  → Detected app URL. Logged in!", emit)
+            # Logged in indicators — stayed on web.snapchat.com
+            if "web.snapchat.com" in url:
+                _log("  → Confirmed on web.snapchat.com — logged in!", emit)
                 return True
-
-            # Check for logged-in DOM elements (chat sidebar, camera btn, etc.)
-            try:
-                el = await page.query_selector('[data-testid="chat-list"], [aria-label="Chat"], svg[aria-label="Chat"]')
-                if el:
-                    _log("  → Detected chat UI element. Logged in!", emit)
-                    return True
-            except Exception:
-                pass
 
             await asyncio.sleep(1.5)
 
-        # Final URL check after waiting
-        url = page.url
-        _log(f"  Final URL after wait: {url}", emit)
-        if "web.snapchat.com" in url and not any(x in url for x in ["/login", "accounts.snapchat.com"]):
-            _log("  → Assuming logged in (no login page detected).", emit)
-            return True
-
+        _log(f"  → Timed out, final URL: {page.url}", emit)
         return False
 
     except Exception as ex:
