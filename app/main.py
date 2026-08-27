@@ -101,6 +101,17 @@ async def lifespan(app: FastAPI):
     cfg = config.load()
     if cfg["enabled"]:
         _reschedule(cfg["schedule_time"])
+
+    # Hourly webcam frame refresh
+    _scheduler.add_job(
+        automation.fetch_webcam_image,
+        trigger=CronTrigger(minute=0),
+        id="webcam_hourly_refresh",
+        replace_existing=True,
+    )
+    # Fetch initial webcam frame on startup
+    asyncio.create_task(asyncio.to_thread(automation.fetch_webcam_image))
+
     _scheduler.start()
     yield
     _scheduler.shutdown()
@@ -110,6 +121,19 @@ app = FastAPI(title="SnapStreak", lifespan=lifespan)
 
 # Serve static files (the web UI)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/api/webcam-feed")
+async def get_webcam_feed():
+    """Return the latest meteorology webcam frame."""
+    from fastapi.responses import Response
+    data = automation.fetch_webcam_image()
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+    )
+
 
 
 # ---------------------------------------------------------------------------

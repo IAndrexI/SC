@@ -14,7 +14,18 @@ from typing import Callable
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from automation import SESSION_FILE, USER_AGENT, VIEWPORT, USER_DATA_DIR, MACRO_FILE, replay_macro, _log
+from automation import (
+    SESSION_FILE,
+    USER_AGENT,
+    VIEWPORT,
+    USER_DATA_DIR,
+    MACRO_FILE,
+    replay_macro,
+    get_camera_stream_init_script,
+    fetch_webcam_image,
+    _log,
+)
+
 
 NOVNC_PORT = 6080  # kept for API compat
 
@@ -147,7 +158,9 @@ async def start(emit: Callable | None = None) -> str:
         "window.chrome={runtime:{}};"
         "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
     )
+    await context.add_init_script(get_camera_stream_init_script())
     _state["context"] = context
+
 
     page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page

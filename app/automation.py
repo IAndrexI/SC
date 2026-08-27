@@ -50,26 +50,86 @@ def _log(msg: str, emit: Callable[[str], None] | None = None):
         emit(line)
 
 
+WEBCAM_URL = os.environ.get(
+    "WEBCAM_URL",
+    "https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg"
+)
+WEBCAM_FILE = DATA_DIR / "webcam_latest.jpg"
+
+
+def fetch_webcam_image() -> bytes:
+    """Fetch latest frame from meteorology webcam, updating webcam_latest.jpg & snap.png."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            WEBCAM_URL,
+            headers={"User-Agent": USER_AGENT}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+            if data and len(data) > 1000:
+                WEBCAM_FILE.write_bytes(data)
+                SNAP_IMAGE.write_bytes(data)
+                return data
+    except Exception as ex:
+        _log(f"⚠ Could not fetch live webcam feed: {ex}")
+    if WEBCAM_FILE.exists():
+        return WEBCAM_FILE.read_bytes()
+    if SNAP_IMAGE.exists():
+        return SNAP_IMAGE.read_bytes()
+    return b""
+
+
+def get_camera_stream_init_script() -> str:
+    """Inject canvas-based live webcam stream into navigator.mediaDevices.getUserMedia."""
+    img_bytes = fetch_webcam_image()
+    b64_img = base64.b64encode(img_bytes).decode() if img_bytes else ""
+    return f"""
+        (() => {{
+            const b64Data = "{b64_img}";
+            if (!navigator.mediaDevices) return;
+            const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async function(constraints) {{
+                if (constraints && (constraints.video || constraints === true)) {{
+                    try {{
+                        const canvas = document.createElement('canvas');
+                        canvas.width = 1280;
+                        canvas.height = 720;
+                        const ctx = canvas.getContext('2d');
+                        
+                        const img = new Image();
+                        if (b64Data) {{
+                            img.src = 'data:image/jpeg;base64,' + b64Data;
+                        }}
+                        
+                        const draw = () => {{
+                            if (img.complete && img.naturalWidth) {{
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            }} else {{
+                                ctx.fillStyle = '#0a0d18';
+                                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            }}
+                            requestAnimationFrame(draw);
+                        }};
+                        draw();
+
+                        return canvas.captureStream(30);
+                    }} catch(e) {{
+                        console.error('Camera stream injection error:', e);
+                    }}
+                }}
+                return origGUM(constraints);
+            }};
+        }})();
+    """
+
+
 # ---------------------------------------------------------------------------
 # Snap image
 # ---------------------------------------------------------------------------
 def ensure_snap_image():
-    if SNAP_IMAGE.exists():
-        return
-    try:
-        from PIL import Image, ImageDraw
-        img = Image.new("RGB", (800, 600), color=(20, 20, 30))
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([0, 0, 800, 600], fill=(random.randint(10,40), random.randint(10,40), random.randint(10,40)))
-        img.save(SNAP_IMAGE)
-    except ImportError:
-        _tiny = (
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
-            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00"
-            b"\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18"
-            b"\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-        )
-        SNAP_IMAGE.write_bytes(_tiny)
+    if not SNAP_IMAGE.exists():
+        fetch_webcam_image()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +151,7 @@ async def _take_screenshot(page: Page, label: str = ""):
 # Browser context — persistent desktop profile (preserves Cookies + IndexedDB)
 # ---------------------------------------------------------------------------
 async def _build_context(playwright, headless: bool = True):
+    fetch_webcam_image()  # ensure latest webcam image is ready
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(USER_DATA_DIR),
         headless=headless,
@@ -126,7 +187,11 @@ async def _build_context(playwright, headless: bool = True):
         window.chrome = { runtime: {} };
     """)
 
+    # Inject live webcam stream into camera
+    await context.add_init_script(get_camera_stream_init_script())
+
     return context
+
 
 
 
