@@ -88,6 +88,7 @@ async def start(emit: Callable | None = None) -> str:
         user_agent=USER_AGENT,
         locale="en-US",
         timezone_id="America/Los_Angeles",
+        permissions=["camera", "microphone", "notifications"],
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -95,6 +96,8 @@ async def start(emit: Callable | None = None) -> str:
             "--disable-setuid-sandbox",
             f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
             "--disable-blink-features=AutomationControlled",
+            "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
         ],
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
@@ -103,6 +106,7 @@ async def start(emit: Callable | None = None) -> str:
             "Sec-Ch-Ua-Platform": '"Windows"',
         },
     )
+
     await context.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
         "window.chrome={runtime:{}};"

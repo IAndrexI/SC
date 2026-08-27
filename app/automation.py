@@ -96,12 +96,15 @@ async def _build_context(playwright, headless: bool = True):
         user_agent=USER_AGENT,
         locale="en-US",
         timezone_id="America/Los_Angeles",
+        permissions=["camera", "microphone", "notifications"],
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-setuid-sandbox",
             "--disable-blink-features=AutomationControlled",
+            "--use-fake-ui-for-media-stream",  # Auto-grants camera permission without prompt
+            "--use-fake-device-for-media-stream",
         ],
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
@@ -122,6 +125,7 @@ async def _build_context(playwright, headless: bool = True):
     """)
 
     return context
+
 
 
 async def _save_session(context: BrowserContext):
@@ -273,132 +277,103 @@ async def send_streaks(
 # ---------------------------------------------------------------------------
 async def _send_to_friend(page: Page, username: str, emit) -> str:
     """
-    Real desktop flow:
-    1. Use the search box to find the friend
-    2. Click their chat thread
-    3. Click the camera/media button in the chat
-    4. Upload the snap image via file input
-    5. Click Send
+    Enhanced desktop flow:
+    1. Check visible left chat sidebar for friend name (e.g. 'Dylan', '*//Eric\\*', etc.)
+    2. Click camera button directly on their row OR click their row to open chat
+    3. Attach/capture snap media
+    4. Click Send
     """
+    clean_name = username.strip().lstrip("@")
+    _log(f"  Targeting recipient: {clean_name}...", emit)
 
-    # ── Step 1: Search for the friend ──────────────────────────────────────
-    _log(f"  Searching for @{username}...", emit)
+    opened_chat = False
 
-    search_selectors = [
-        '[data-testid="search-input"]',
-        'input[placeholder*="Search" i]',
-        'input[placeholder*="search" i]',
-        '[aria-label*="Search" i]',
-        'input[type="search"]',
-    ]
+    # ── Try direct selection from visible chat list ───────────────────────────
+    try:
+        # Search for text matching friend name in sidebar
+        locators = [
+            page.locator(f'text="{clean_name}"').first,
+            page.locator(f':text-matches("{clean_name}", "i")').first,
+            page.locator(f'[aria-label*="{clean_name}" i]').first,
+            page.locator(f'[title*="{clean_name}" i]').first,
+        ]
+        for loc in locators:
+            if await loc.is_visible(timeout=1500):
+                _log(f"  Found visible conversation for {clean_name} in sidebar.", emit)
+                # Try clicking camera icon inside parent row if present
+                try:
+                    parent_row = loc.locator('xpath=ancestor::li | xpath=ancestor::div[contains(@role, "row") or contains(@class, "chat")]').first
+                    cam_btn = parent_row.locator('button:has(svg), [aria-label*="camera" i], [aria-label*="reply" i]').first
+                    if await cam_btn.is_visible(timeout=1000):
+                        await cam_btn.click()
+                        _log(f"  Clicked direct camera button for {clean_name}.", emit)
+                        opened_chat = True
+                        break
+                except Exception:
+                    pass
 
-    search_box = None
-    for sel in search_selectors:
-        try:
-            search_box = await page.wait_for_selector(sel, timeout=5_000)
-            if search_box:
+                # Otherwise click the friend name/row directly
+                await loc.click()
+                opened_chat = True
+                _log(f"  Opened conversation with {clean_name}.", emit)
                 break
-        except Exception:
-            pass
+    except Exception:
+        pass
 
-    if not search_box:
-        # Fallback: try clicking the search/new chat icon first
-        for icon_sel in [
-            '[aria-label*="new chat" i]',
-            '[aria-label*="compose" i]',
-            '[data-testid="new-chat"]',
+    # ── If not directly found in list, use search box ─────────────────────────
+    if not opened_chat:
+        _log(f"  Using search box for {clean_name}...", emit)
+        search_box = None
+        for sel in [
+            '[data-testid="search-input"]',
+            'input[placeholder*="Search" i]',
+            'input[placeholder*="search" i]',
+            '[aria-label*="Search" i]',
+            'input[type="search"]',
         ]:
             try:
-                btn = await page.wait_for_selector(icon_sel, timeout=2_000)
-                if btn:
-                    await btn.click()
-                    await _human_delay()
-                    break
-            except Exception:
-                pass
-
-        for sel in search_selectors:
-            try:
-                search_box = await page.wait_for_selector(sel, timeout=4_000)
+                search_box = await page.wait_for_selector(sel, timeout=3_000)
                 if search_box:
                     break
             except Exception:
                 pass
 
-    if not search_box:
-        raise RuntimeError("Could not find search box in Snapchat Web UI.")
+        if search_box:
+            await search_box.click()
+            await _human_delay(200, 400)
+            await search_box.fill("")
+            for char in clean_name:
+                await page.keyboard.type(char)
+                await asyncio.sleep(random.uniform(0.04, 0.12))
+            await _human_delay(1000, 1800)
 
-    # Click search box and type username naturally
-    await search_box.click()
-    await _human_delay(300, 600)
-    await search_box.fill("")
-    await _human_delay(200, 400)
+            for sel in [
+                f'[data-testid="user-result-{clean_name}"]',
+                f'[aria-label*="{clean_name}" i]',
+                f'[title*="{clean_name}" i]',
+                '[data-testid="search-result"]:first-child',
+                '[data-testid="user-row"]:first-child',
+            ]:
+                try:
+                    res = await page.wait_for_selector(sel, timeout=3_000)
+                    if res:
+                        await res.click()
+                        opened_chat = True
+                        break
+                except Exception:
+                    pass
 
-    # Type character by character like a human
-    for char in username:
-        await page.keyboard.type(char)
-        await asyncio.sleep(random.uniform(0.05, 0.15))
+            if not opened_chat:
+                await page.keyboard.press("Enter")
+                opened_chat = True
 
     await _human_delay(1200, 2000)
-    await _take_screenshot(page, f"search_{username}")
+    await _take_screenshot(page, f"chat_{clean_name}")
 
-    # ── Step 2: Click the friend's result ──────────────────────────────────
-    _log(f"  Clicking @{username} in results...", emit)
+    # ── Upload or capture snap ────────────────────────────────────────────────
+    _log(f"  Uploading snap media for {clean_name}...", emit)
 
-    result_selectors = [
-        f'[data-testid="user-result-{username}"]',
-        f'[aria-label*="{username}" i]',
-        f'[title*="{username}" i]',
-        '[data-testid="search-result"]:first-child',
-        '[data-testid="user-row"]:first-child',
-        '.search-result:first-child',
-    ]
-
-    clicked_result = False
-    for sel in result_selectors:
-        try:
-            result = await page.wait_for_selector(sel, timeout=4_000)
-            if result:
-                await result.click()
-                clicked_result = True
-                break
-        except Exception:
-            pass
-
-    if not clicked_result:
-        # Last resort: press Enter to open first result
-        await page.keyboard.press("Enter")
-
-    await _human_delay(1500, 2500)
-    await _take_screenshot(page, f"chat_{username}")
-
-    # ── Step 3: Clear search and open the chat ─────────────────────────────
-    # Press Escape to close search if needed
-    await page.keyboard.press("Escape")
-    await _human_delay(500, 800)
-
-    # ── Step 4: Upload snap via file input ────────────────────────────────
-    _log(f"  Uploading snap to @{username}...", emit)
-
-    # Try clicking a camera/media/attachment button first
-    for sel in [
-        '[aria-label*="camera" i]',
-        '[aria-label*="photo" i]',
-        '[aria-label*="media" i]',
-        '[aria-label*="attachment" i]',
-        '[data-testid="camera-button"]',
-        '[data-testid="media-button"]',
-    ]:
-        try:
-            btn = await page.wait_for_selector(sel, timeout=3_000)
-            if btn:
-                await btn.click()
-                await _human_delay(600, 1000)
-                break
-        except Exception:
-            pass
-
-    # Find the file input (may be hidden)
+    # 1. Look for file input first
     file_input = None
     for sel in [
         'input[type="file"][accept*="image"]',
@@ -406,39 +381,83 @@ async def _send_to_friend(page: Page, username: str, emit) -> str:
         'input[type="file"]',
     ]:
         try:
-            file_input = await page.wait_for_selector(sel, timeout=5_000)
+            file_input = await page.query_selector(sel)
             if file_input:
                 break
         except Exception:
             pass
 
+    # 2. If no file input yet, click camera button in chat or center
     if not file_input:
-        await _take_screenshot(page, f"no_input_{username}")
-        raise RuntimeError(
-            "Could not find file upload input. "
-            "Check the screenshot at /api/screenshot to see what the browser sees."
-        )
+        for sel in [
+            '[aria-label*="camera" i]',
+            '[aria-label*="photo" i]',
+            '[aria-label*="media" i]',
+            '[aria-label*="attachment" i]',
+            '[data-testid="camera-button"]',
+            '[data-testid="media-button"]',
+            '.camera-icon',
+        ]:
+            try:
+                btn = await page.wait_for_selector(sel, timeout=2_000)
+                if btn:
+                    await btn.click()
+                    await _human_delay(600, 1200)
+                    break
+            except Exception:
+                pass
 
-    await file_input.set_input_files(str(SNAP_IMAGE))
-    await _human_delay(2000, 3000)
-    await _take_screenshot(page, f"uploaded_{username}")
+        for sel in [
+            'input[type="file"][accept*="image"]',
+            'input[type="file"][accept*="video"]',
+            'input[type="file"]',
+        ]:
+            try:
+                file_input = await page.query_selector(sel)
+                if file_input:
+                    break
+            except Exception:
+                pass
 
-    # ── Step 5: Send ──────────────────────────────────────────────────────
-    _log(f"  Sending to @{username}...", emit)
+    if file_input:
+        await file_input.set_input_files(str(SNAP_IMAGE))
+        await _human_delay(1500, 2500)
+    else:
+        # Camera mode: Click snap capture shutter button if camera is active
+        for sel in [
+            'button[aria-label*="Take Snap" i]',
+            'button[aria-label*="capture" i]',
+            '[data-testid="camera-capture-button"]',
+            'button.camera-capture-button',
+        ]:
+            try:
+                cap_btn = await page.query_selector(sel)
+                if cap_btn:
+                    await cap_btn.click()
+                    await _human_delay(1000, 1800)
+                    break
+            except Exception:
+                pass
+
+    await _take_screenshot(page, f"ready_send_{clean_name}")
+
+    # ── Click Send ────────────────────────────────────────────────────────────
+    _log(f"  Sending snap to {clean_name}...", emit)
 
     for sel in [
         '[data-testid="send-button"]',
         '[aria-label*="send" i]',
         'button[type="submit"]',
         '[data-e2e="send-button"]',
+        'button:has-text("Send")',
     ]:
         try:
-            btn = await page.wait_for_selector(sel, timeout=4_000)
+            btn = await page.wait_for_selector(sel, timeout=3_000)
             if btn:
-                await _human_delay(400, 700)
+                await _human_delay(300, 600)
                 await btn.click()
                 await _human_delay(2000, 3000)
-                _log(f"  ✓ Streak sent to @{username}", emit)
+                _log(f"  ✓ Streak sent to {clean_name}", emit)
                 return "ok"
         except Exception:
             pass
@@ -446,5 +465,6 @@ async def _send_to_friend(page: Page, username: str, emit) -> str:
     # Fallback: Enter key
     await page.keyboard.press("Enter")
     await _human_delay(2000, 3000)
-    _log(f"  ✓ Streak sent to @{username} (Enter)", emit)
+    _log(f"  ✓ Streak sent to {clean_name} (Enter)", emit)
     return "ok"
+

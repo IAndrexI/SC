@@ -67,13 +67,18 @@ async def _do_send():
     _state["running"] = True
     cfg = config.load()
     try:
-        results = await automation.send_streaks(cfg["friends"], emit=_emit)
+        if login_session.is_active():
+            _emit("Using currently active live browser session to send streaks...")
+            results = await login_session.run_streak_in_active_session(cfg["friends"], emit=_emit)
+        else:
+            results = await automation.send_streaks(cfg["friends"], emit=_emit)
         _state["last_run_results"] = results
         import time
         _state["last_run_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        _state["logged_in"] = automation.SESSION_FILE.exists()
+        _state["logged_in"] = (automation.USER_DATA_DIR.exists() or automation.SESSION_FILE.exists())
     finally:
         _state["running"] = False
+
 
 
 def _reschedule(schedule_time: str):
