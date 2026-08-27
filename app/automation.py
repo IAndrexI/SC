@@ -215,9 +215,42 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
     _log("🚀 Starting 5-Step Shortcut Streak sequence...", emit)
     results = {"*//Eric\\\\*": "pending", "Dylan": "pending"}
 
+    # ── Step 0: Click Ghost icon on top left to reset view ────────────────────
+    _log("Step 0: Clicking Ghost icon on top left...", emit)
+    ghost_clicked = False
+    for sel in [
+        '[aria-label*="Snapchat" i]',
+        'a[href*="/web"]',
+        '[data-testid="snapchat-logo"]',
+        'header button:has(svg)',
+        'nav button:has(svg)',
+        'header a',
+        'nav a',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=1000):
+                await loc.click()
+                ghost_clicked = True
+                _log("  ✓ Clicked Ghost icon.", emit)
+                break
+        except Exception:
+            continue
+
+    if not ghost_clicked:
+        try:
+            # Click Ghost icon header location on top left (~x=145, y=25)
+            await page.mouse.click(145, 25)
+            _log("  ✓ Clicked top-left Ghost header area.", emit)
+        except Exception:
+            pass
+
+    await _human_delay(1000, 1800)
+
     # ── Step 1: Click Camera in center (Photo 1) ──────────────────────────────
     _log("Step 1: Clicking center camera icon...", emit)
     cam_clicked = False
+
 
     for sel in [
         'button:has-text("Click the Camera to send Snaps")',
