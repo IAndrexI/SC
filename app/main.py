@@ -268,6 +268,21 @@ async def login_navigate(body: NavInput):
     await login_session.navigate(body.url)
     return {"ok": True}
 
+@app.post("/api/login/upload-snap-here")
+async def login_upload_snap_here():
+    res = await login_session.upload_snap_to_chat()
+    return res
+
+@app.post("/api/login/send-streaks-live")
+async def login_send_streaks_live():
+    cfg = config.load()
+    friends = cfg.get("friends", [])
+    if not friends:
+        raise HTTPException(status_code=400, detail="No friends configured.")
+    res = await login_session.run_streak_in_active_session(friends, emit=_emit)
+    return res
+
+
 
 
 @app.post("/api/send")

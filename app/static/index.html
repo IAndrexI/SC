@@ -296,11 +296,22 @@
         <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
       </div>
 
+      <!-- Live Chat & Streak Tools inside the open browser -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px">📸 Live Snap & Streak Tools</div>
+        <div class="btn-row" style="margin-top:0;gap:6px">
+          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="sendStreaksInOpenBrowser()">🚀 Run Auto-Streaks in this Browser</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="uploadSnapToOpenChat()">📷 Attach Snap to Active Chat</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="browserKey('Enter')">↵ Send (Enter)</button>
+        </div>
+      </div>
+
       <div class="btn-row">
-        <button class="btn btn-success" onclick="saveLogin()">✓ Logged in — Save Session</button>
-        <button class="btn btn-secondary" onclick="cancelLogin()">✗ Cancel</button>
+        <button class="btn btn-success" onclick="saveLogin()">✓ Save & Close Browser</button>
+        <button class="btn btn-secondary" onclick="cancelLogin()">✗ Close Browser</button>
       </div>
     </div>
+
 
 
     <p id="login-status" style="font-size:13px;margin-top:10px;font-weight:600"></p>
@@ -634,6 +645,27 @@
     setTimeout(triggerRefreshNow, 800);
     setTimeout(triggerRefreshNow, 1800);
   }
+
+  async function uploadSnapToOpenChat() {
+    appendLog('info', 'Attaching streak snap to active chat…');
+    const r = await fetch('/api/login/upload-snap-here', { method: 'POST' });
+    const res = await r.json();
+    if (res.ok) {
+      appendLog('info', '✓ ' + res.message);
+    } else {
+      appendLog('err', '✗ ' + (res.error || 'Upload failed.'));
+    }
+    setTimeout(triggerRefreshNow, 800);
+  }
+
+  async function sendStreaksInOpenBrowser() {
+    appendLog('info', '🚀 Running auto-streaks sequence inside active browser…');
+    const r = await fetch('/api/login/send-streaks-live', { method: 'POST' });
+    const res = await r.json();
+    appendLog('info', 'Streaks sequence finished: ' + JSON.stringify(res));
+    refreshStatus();
+  }
+
 
   async function browserClick(evt) {
     const img = document.getElementById('browser-shot');

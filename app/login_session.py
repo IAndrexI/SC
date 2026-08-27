@@ -242,6 +242,71 @@ async def navigate(url: str):
         await page.goto(url, timeout=20_000)
 
 
+async def upload_snap_to_chat() -> dict:
+    """Upload snap image to whichever chat is currently open."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No active browser"}
+    
+    from automation import ensure_snap_image, SNAP_IMAGE
+    ensure_snap_image()
+
+    for sel in [
+        '[aria-label*="camera" i]',
+        '[aria-label*="photo" i]',
+        '[aria-label*="media" i]',
+        '[aria-label*="attachment" i]',
+        '[data-testid="camera-button"]',
+        '[data-testid="media-button"]',
+    ]:
+        try:
+            btn = await page.wait_for_selector(sel, timeout=1500)
+            if btn:
+                await btn.click()
+                await asyncio.sleep(0.5)
+                break
+        except Exception:
+            pass
+
+    file_input = None
+    for sel in ['input[type="file"][accept*="image"]', 'input[type="file"][accept*="video"]', 'input[type="file"]']:
+        try:
+            file_input = await page.wait_for_selector(sel, timeout=2000)
+            if file_input:
+                break
+        except Exception:
+            pass
+
+    if file_input:
+        await file_input.set_input_files(str(SNAP_IMAGE))
+        await asyncio.sleep(1)
+        return {"ok": True, "message": "Snap image uploaded to active chat."}
+    return {"ok": False, "error": "Could not find upload button on active page."}
+
+
+async def run_streak_in_active_session(friends: list[str], emit: Callable | None = None) -> dict:
+    """Execute streak sequence directly inside the currently visible interactive browser."""
+    if not _state["active"] or not _state["page"]:
+        return {"error": "Browser not active"}
+
+    from automation import _send_to_friend, ensure_snap_image
+    ensure_snap_image()
+    page = _state["page"]
+    results = {}
+
+    for username in friends:
+        try:
+            _log(f"⚡ Live sending streak to @{username} in open browser...", emit)
+            res = await _send_to_friend(page, username, emit)
+            results[username] = res
+            await asyncio.sleep(2)
+        except Exception as ex:
+            results[username] = f"error: {ex}"
+            _log(f"  ✗ @{username}: {ex}", emit)
+
+    return results
+
+
 async def save(emit: Callable | None = None) -> str:
     if not _state["active"]:
         return "No active session."
@@ -261,3 +326,4 @@ async def save(emit: Callable | None = None) -> str:
 async def cancel(emit: Callable | None = None):
     _log("Cancelling login session.", emit)
     await _cleanup()
+
