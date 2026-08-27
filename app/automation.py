@@ -97,46 +97,39 @@ def fetch_webcam_image() -> bytes:
 
 
 def get_camera_stream_init_script() -> str:
-    """Inject canvas-based live webcam stream into navigator.mediaDevices.getUserMedia."""
-    img_bytes = fetch_webcam_image()
-    b64_img = base64.b64encode(img_bytes).decode() if img_bytes else ""
-    return f"""
-        (() => {{
-            const b64Data = "{b64_img}";
+    """Lightweight canvas-based live webcam stream for navigator.mediaDevices.getUserMedia."""
+    return """
+        (() => {
             if (!navigator.mediaDevices) return;
             const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-            navigator.mediaDevices.getUserMedia = async function(constraints) {{
-                if (constraints && (constraints.video || constraints === true)) {{
-                    try {{
+            navigator.mediaDevices.getUserMedia = async function(constraints) {
+                if (constraints && (constraints.video || constraints === true)) {
+                    try {
                         const canvas = document.createElement('canvas');
                         canvas.width = 1280;
                         canvas.height = 720;
                         const ctx = canvas.getContext('2d');
                         
                         const img = new Image();
-                        if (b64Data) {{
-                            img.src = 'data:image/jpeg;base64,' + b64Data;
-                        }}
+                        img.src = '/fake_webcam_feed.jpg';
                         
-                        const draw = () => {{
-                            if (img.complete && img.naturalWidth) {{
+                        const draw = () => {
+                            if (img.complete && img.naturalWidth) {
                                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                            }} else {{
+                            } else {
                                 ctx.fillStyle = '#0a0d18';
                                 ctx.fillRect(0, 0, canvas.width, canvas.height);
-                            }}
+                            }
                             requestAnimationFrame(draw);
-                        }};
+                        };
                         draw();
 
                         return canvas.captureStream(30);
-                    }} catch(e) {{
-                        console.error('Camera stream injection error:', e);
-                    }}
-                }}
+                    } catch(e) {}
+                }
                 return origGUM(constraints);
-            }};
-        }})();
+            };
+        })();
     """
 
 
@@ -203,10 +196,18 @@ async def _build_context(playwright, headless: bool = True):
         window.chrome = { runtime: {} };
     """)
 
-    # Inject live webcam stream into camera
+    # Inject camera hook
     await context.add_init_script(get_camera_stream_init_script())
 
+    # Fulfill virtual webcam feed route instantly from local cache
+    async def _handle_feed(route):
+        data = fetch_webcam_image()
+        await route.fulfill(status=200, content_type="image/jpeg", body=data)
+
+    await context.route("**/fake_webcam_feed.jpg", _handle_feed)
+
     return context
+
 
 
 

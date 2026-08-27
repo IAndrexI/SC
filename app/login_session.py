@@ -121,9 +121,10 @@ async def _screenshot_loop():
 
 
 async def start(emit: Callable | None = None) -> str:
-    if _state["active"]:
+    if _state["active"] and _state["page"]:
         return "Already running."
 
+    await _cleanup()
     _cleanup_stale_locks()
     _log("Launching browser with persistent profile...", emit)
 
@@ -163,6 +164,13 @@ async def start(emit: Callable | None = None) -> str:
         "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
     )
     await context.add_init_script(get_camera_stream_init_script())
+
+    async def _handle_feed(route):
+        data = fetch_webcam_image()
+        await route.fulfill(status=200, content_type="image/jpeg", body=data)
+
+    await context.route("**/fake_webcam_feed.jpg", _handle_feed)
+
     _state["context"] = context
 
     page = context.pages[0] if context.pages else await context.new_page()
@@ -180,6 +188,7 @@ async def start(emit: Callable | None = None) -> str:
 
     _log("✓ Browser ready — view it in the web UI login panel.", emit)
     return "ok"
+
 
 
 
