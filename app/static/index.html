@@ -229,17 +229,20 @@
     <div id="last-results" style="margin-top: 10px;"></div>
   </div>
 
-  <!-- ── STEP 1: LOGIN ── -->
+  <!-- ── SINGLE UNIFIED CONTROL CARD ── -->
   <div class="card wide">
-    <h2>Step 1 — Snapchat Authentication</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">Snapchat Automation & Live Control</h2>
+      <button class="btn btn-success" id="btn-send" style="padding:7px 18px;font-size:13px" onclick="doSend()">🔥 Send Streaks Now</button>
+    </div>
 
     <!-- Idle state -->
     <div id="login-idle">
       <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-        Start a browser session on the server. You will be able to view and interact with the page directly below to sign in.
+        Start a browser session on the server to interact with Snapchat, record macros, or test automated streak sending.
       </p>
       <div class="btn-row">
-        <button class="btn btn-primary" onclick="startLogin()">🖥️ Start Login Session</button>
+        <button class="btn btn-primary" onclick="startLogin()">🖥️ Open Live Browser Session</button>
       </div>
     </div>
 
@@ -328,35 +331,9 @@
       </div>
     </div>
 
-
-
-
     <p id="login-status" style="font-size:13px;margin-top:10px;font-weight:600"></p>
   </div>
 
-  <!-- ── ACTIONS ── -->
-  <div class="card wide">
-    <h2>Streak Actions & Live Screen Monitor</h2>
-    <div class="btn-row" style="margin-bottom:12px">
-      <button class="btn btn-success" id="btn-send" onclick="doSend()">🔥 Send Streaks Now</button>
-      <button class="btn btn-secondary" onclick="toggleLiveMonitor()">👁️ Toggle Live Screen Feed</button>
-    </div>
-    
-    <div id="live-send-monitor" style="display:none;background:#05050a;border:2px solid var(--accent);border-radius:8px;padding:10px;margin-top:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="font-size:12px;font-weight:700;color:var(--accent)" id="live-monitor-status">🟢 Live Automation Feed</span>
-        <span style="font-size:11px;color:var(--text-dim)" id="live-monitor-ts">Streaming…</span>
-      </div>
-      <div style="position:relative;border-radius:6px;overflow:hidden;background:#000">
-        <img id="live-send-img" src="" style="width:100%;display:block;min-height:260px" />
-        <div id="live-send-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
-          ⏳ Waiting for streak sequence frame…
-        </div>
-      </div>
-    </div>
-    <div class="sep"></div>
-    <small>When you click Send, the live screen feed above automatically streams the bot in action.</small>
-  </div>
 
 
   <!-- ── SCHEDULE ── -->
