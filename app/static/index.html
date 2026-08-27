@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapStreak</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f13;
+      --surface: #1a1a24;
+      --surface2: #222230;
+      --border: #2e2e45;
+      --accent: #fffc00;   /* Snapchat yellow */
+      --accent2: #ff6b35;
+      --text: #e8e8f0;
+      --text-dim: #888899;
+      --green: #3ddc84;
+      --red: #ff5555;
+      --radius: 12px;
+      --font: 'Segoe UI', system-ui, sans-serif;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 48px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    header .logo {
+      width: 42px; height: 42px;
+      background: var(--accent);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    header h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    header .badge {
+      font-size: 11px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 8px;
+      color: var(--text-dim);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      width: 100%;
+      max-width: 860px;
+    }
+    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .card.wide { grid-column: 1 / -1; }
+    .card h2 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      margin-bottom: 14px;
+    }
+
+    /* Status pills */
+    .status-row { display: flex; flex-wrap: wrap; gap: 10px; }
+    .pill {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-dim);
+    }
+    .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot.red   { background: var(--red); }
+    .dot.yellow { background: var(--accent); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+
+    /* Inputs */
+    label { font-size: 13px; color: var(--text-dim); display: block; margin-bottom: 6px; }
+    input[type="text"], input[type="time"], textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: var(--font);
+      padding: 10px 12px;
+      outline: none;
+      transition: border .2s;
+    }
+    input:focus, textarea:focus { border-color: var(--accent); }
+    textarea { min-height: 100px; resize: vertical; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 18px;
+      border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; font-family: var(--font);
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger  { background: var(--red); color: #fff; }
+    .btn-success { background: var(--green); color: #000; }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+    /* Log terminal */
+    #log-box {
+      background: #0a0a0e;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      font-family: 'Consolas', 'Fira Mono', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      height: 220px;
+      overflow-y: auto;
+      color: #b0ffb0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #log-box .err { color: var(--red); }
+    #log-box .info { color: var(--accent); }
+
+    /* Results table */
+    .results { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    .results th { text-align: left; color: var(--text-dim); padding: 4px 8px; border-bottom: 1px solid var(--border); }
+    .results td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+    .ok   { color: var(--green); }
+    .fail { color: var(--red); }
+
+    /* Toggle */
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+    .toggle {
+      position: relative; width: 44px; height: 24px;
+      cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: var(--surface2); border-radius: 24px;
+      border: 1px solid var(--border);
+      transition: .2s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute;
+      left: 3px; top: 3px;
+      width: 16px; height: 16px;
+      background: var(--text-dim); border-radius: 50%;
+      transition: .2s;
+    }
+    .toggle input:checked + .toggle-slider { background: var(--accent); border-color: var(--accent); }
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(20px); background: #000;
+    }
+
+    /* File drop zone */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-dim);
+      transition: border-color .2s;
+    }
+    .dropzone:hover, .dropzone.drag { border-color: var(--accent); color: var(--accent); }
+    .dropzone input { display: none; }
+
+    .sep { height: 1px; background: var(--border); margin: 14px 0; }
+
+    small { font-size: 11px; color: var(--text-dim); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">👻</div>
+  <h1>SnapStreak</h1>
+  <span class="badge">Server Edition</span>
+</header>
+
+<div class="grid">
+
+  <!-- ── STATUS ── -->
+  <div class="card">
+    <h2>Status</h2>
+    <div class="status-row">
+      <div class="pill"><div class="dot" id="dot-login"></div><span id="txt-login">Checking…</span></div>
+      <div class="pill"><div class="dot" id="dot-running"></div><span id="txt-running">Idle</span></div>
+      <div class="pill">⏰ <span id="txt-next">—</span></div>
+      <div class="pill">👥 <span id="txt-friends">— friends</span></div>
+    </div>
+    <div class="sep"></div>
+    <div id="last-results"></div>
+  </div>
+
+  <!-- ── ACTIONS ── -->
+  <div class="card">
+    <h2>Actions</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
+      First time? Click <b>Login to Snapchat</b>. A headless browser session will open on the server — follow the instructions below.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="doLogin()">🔑 Login to Snapchat</button>
+      <button class="btn btn-success" id="btn-send" onclick="doSend()">🔥 Send Streaks Now</button>
+    </div>
+    <div class="sep"></div>
+    <small>Login opens a browser on the server. You'll need to complete it via the server's VNC/display or use the cookie import method below.</small>
+  </div>
+
+  <!-- ── FRIENDS ── -->
+  <div class="card">
+    <h2>Friends (Streaks)</h2>
+    <label>Snapchat usernames — one per line, no @ needed</label>
+    <textarea id="friends-input" placeholder="john_doe&#10;jane123&#10;bestfriend99"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveFriends()">💾 Save Friends</button>
+    </div>
+  </div>
+
+  <!-- ── SCHEDULE ── -->
+  <div class="card">
+    <h2>Schedule</h2>
+    <div class="toggle-row" style="margin-bottom:14px">
+      <label style="margin:0">Auto-send enabled</label>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-enabled" onchange="saveSchedule()">
+        <div class="toggle-slider"></div>
+      </label>
+    </div>
+    <label>Daily send time (server local time)</label>
+    <input type="time" id="schedule-time" value="09:00" onchange="saveSchedule()" />
+    <div class="sep"></div>
+    <small>The scheduler fires once per day at this time. Make sure the server timezone is correct.</small>
+  </div>
+
+  <!-- ── SNAP IMAGE ── -->
+  <div class="card">
+    <h2>Snap Image</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Upload a custom image to send as the streak snap. Default is a plain dark square.</p>
+    <div class="dropzone" id="dropzone" onclick="document.getElementById('snap-file').click()">
+      <input type="file" id="snap-file" accept="image/png,image/jpeg,image/webp" onchange="uploadSnap(this.files[0])">
+      📷 Click to upload PNG / JPEG / WEBP
+    </div>
+    <p id="snap-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></p>
+  </div>
+
+  <!-- ── COOKIE IMPORT ── -->
+  <div class="card">
+    <h2>Cookie Import (Alternative Login)</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:10px">
+      Log into <a href="https://web.snapchat.com" target="_blank" style="color:var(--accent)">web.snapchat.com</a> in your regular browser, export cookies with a browser extension (e.g. <b>EditThisCookie</b> or <b>Cookie-Editor</b>) as JSON, then paste below.
+    </p>
+    <textarea id="cookie-input" placeholder='[{"name":"sc-cookies-accepted","value":"1",...}]' style="min-height:80px"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="importCookies()">📥 Import Cookies</button>
+    </div>
+  </div>
+
+  <!-- ── LIVE LOG ── -->
+  <div class="card wide">
+    <h2>Live Log</h2>
+    <div id="log-box">Connecting to live stream…</div>
+  </div>
+
+</div>
+
+<script>
+  const API = '';
+  let ws;
+
+  // ── WebSocket live log ──
+  function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+    ws.onopen = () => appendLog('info', '⚡ Connected to live stream.');
+    ws.onmessage = e => appendLog('', e.data);
+    ws.onclose = () => { appendLog('err', '⚠ Stream disconnected. Reconnecting in 3s…'); setTimeout(connectWS, 3000); };
+  }
+
+  function appendLog(cls, text) {
+    const box = document.getElementById('log-box');
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = text;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+    // Keep last 300 lines
+    while (box.children.length > 300) box.removeChild(box.firstChild);
+  }
+
+  // ── Poll status every 5s ──
+  async function refreshStatus() {
+    try {
+      const s = await fetch('/api/status').then(r => r.json());
+
+      const dotLogin = document.getElementById('dot-login');
+      const txtLogin = document.getElementById('txt-login');
+      dotLogin.className = 'dot ' + (s.logged_in ? 'green' : 'red');
+      txtLogin.textContent = s.logged_in ? 'Logged In' : 'Not Logged In';
+
+      const dotRun = document.getElementById('dot-running');
+      const txtRun = document.getElementById('txt-running');
+      dotRun.className = 'dot ' + (s.running ? 'yellow' : 'green');
+      txtRun.textContent = s.running ? 'Sending…' : 'Idle';
+
+      document.getElementById('txt-next').textContent = s.next_run ? s.next_run.slice(0, 16) : '—';
+      document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
+
+      document.getElementById('btn-send').disabled = s.running;
+
+      // Results table
+      const res = s.last_run_results || {};
+      const keys = Object.keys(res);
+      if (keys.length) {
+        let html = `<p style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Last run: ${s.last_run_time}</p>`;
+        html += '<table class="results"><thead><tr><th>Username</th><th>Result</th></tr></thead><tbody>';
+        keys.forEach(u => {
+          const ok = res[u] === 'ok';
+          html += `<tr><td>@${u}</td><td class="${ok ? 'ok' : 'fail'}">${ok ? '✓ Sent' : res[u]}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        document.getElementById('last-results').innerHTML = html;
+      }
+    } catch(e) { /* ignore */ }
+  }
+
+  // ── Load config into UI ──
+  async function loadConfig() {
+    const cfg = await fetch('/api/config').then(r => r.json());
+    document.getElementById('friends-input').value = cfg.friends.join('\n');
+    document.getElementById('schedule-time').value = cfg.schedule_time;
+    document.getElementById('toggle-enabled').checked = cfg.enabled;
+  }
+
+  // ── Save friends ──
+  async function saveFriends() {
+    const raw = document.getElementById('friends-input').value;
+    const friends = raw.split('\n').map(s => s.trim().replace(/^@/, '')).filter(Boolean);
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ friends })
+    });
+    appendLog('info', `✓ Saved ${friends.length} friends.`);
+    refreshStatus();
+  }
+
+  // ── Save schedule ──
+  async function saveSchedule() {
+    const time = document.getElementById('schedule-time').value;
+    const enabled = document.getElementById('toggle-enabled').checked;
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ schedule_time: time, enabled })
+    });
+    appendLog('info', `✓ Schedule updated: ${enabled ? time : 'disabled'}.`);
+    refreshStatus();
+  }
+
+  // ── Trigger login ──
+  async function doLogin() {
+    const r = await fetch('/api/login', { method: 'POST' });
+    const d = await r.json();
+    appendLog('info', d.message || d.detail);
+  }
+
+  // ── Trigger send ──
+  async function doSend() {
+    const r = await fetch('/api/send', { method: 'POST' });
+    const d = await r.json();
+    appendLog('info', d.message || d.detail);
+  }
+
+  // ── Upload snap image ──
+  async function uploadSnap(file) {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-snap', { method: 'POST', body: fd });
+    const d = await r.json();
+    document.getElementById('snap-status').textContent = d.message || d.detail;
+  }
+
+  // ── Import cookies ──
+  async function importCookies() {
+    const raw = document.getElementById('cookie-input').value.trim();
+    if (!raw) return;
+    let cookies;
+    try { cookies = JSON.parse(raw); } catch(e) { alert('Invalid JSON'); return; }
+    const r = await fetch('/api/import-cookies', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ cookies })
+    });
+    const d = await r.json();
+    appendLog('info', d.message || d.detail);
+    refreshStatus();
+  }
+
+  // ── Drag & drop for snap image ──
+  const dz = document.getElementById('dropzone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadSnap(f);
+  });
+
+  // ── Load historical logs ──
+  async function loadLogs() {
+    const data = await fetch('/api/logs').then(r => r.json());
+    data.lines.forEach(l => appendLog('', l));
+  }
+
+  // ── Init ──
+  connectWS();
+  loadConfig();
+  loadLogs();
+  refreshStatus();
+  setInterval(refreshStatus, 5000);
+</script>
+
+</body>
+</html>
