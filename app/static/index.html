@@ -6,23 +6,23 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>SC Dashboard v4</title>
+  <title>SC Automation v4.1</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg: #0f0f13;
-      --surface: #1a1a24;
-      --surface2: #222230;
-      --border: #2e2e45;
-      --accent: #fffc00;   /* Snapchat yellow */
+      --bg: #0d0e15;
+      --surface: #171822;
+      --surface2: #212232;
+      --border: #2c2d42;
+      --accent: #fffc00;
       --accent2: #ff6b35;
       --text: #e8e8f0;
-      --text-dim: #888899;
+      --text-dim: #8c8da3;
       --green: #3ddc84;
       --red: #ff5555;
       --radius: 12px;
-      --font: 'Segoe UI', system-ui, sans-serif;
+      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
     }
 
     body {
@@ -40,7 +40,7 @@
       display: flex;
       align-items: center;
       gap: 12px;
-      margin-bottom: 32px;
+      margin-bottom: 28px;
     }
     header .logo {
       width: 42px; height: 42px;
@@ -49,14 +49,15 @@
       display: flex; align-items: center; justify-content: center;
       font-size: 22px;
     }
-    header h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
     header .badge {
       font-size: 11px;
       background: var(--surface2);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 2px 8px;
-      color: var(--text-dim);
+      padding: 3px 8px;
+      color: var(--accent);
+      font-weight: 600;
     }
 
     .grid {
@@ -64,9 +65,9 @@
       grid-template-columns: 1fr 1fr;
       gap: 16px;
       width: 100%;
-      max-width: 860px;
+      max-width: 880px;
     }
-    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+    @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
 
     .card {
       background: var(--surface);
@@ -77,7 +78,7 @@
     .card.wide { grid-column: 1 / -1; }
     .card h2 {
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 1px;
       color: var(--text-dim);
@@ -140,16 +141,16 @@
 
     /* Log terminal */
     #log-box {
-      background: #0a0a0e;
+      background: #08080c;
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 14px;
       font-family: 'Consolas', 'Fira Mono', monospace;
       font-size: 12px;
       line-height: 1.7;
-      height: 220px;
+      height: 200px;
       overflow-y: auto;
-      color: #b0ffb0;
+      color: #79f79e;
       white-space: pre-wrap;
       word-break: break-all;
     }
@@ -192,7 +193,7 @@
     .dropzone {
       border: 2px dashed var(--border);
       border-radius: 8px;
-      padding: 20px;
+      padding: 18px;
       text-align: center;
       cursor: pointer;
       font-size: 13px;
@@ -203,77 +204,72 @@
     .dropzone input { display: none; }
 
     .sep { height: 1px; background: var(--border); margin: 14px 0; }
-
     small { font-size: 11px; color: var(--text-dim); }
   </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">👻</div>
-  <h1>SnapStreak</h1>
-  <span class="badge">Server Edition</span>
+  <div class="logo">⚡</div>
+  <h1>SC Service Control</h1>
+  <span class="badge">v4.1</span>
 </header>
 
 <div class="grid">
 
   <!-- ── STATUS ── -->
-  <div class="card">
-    <h2>Status</h2>
+  <div class="card wide">
+    <h2>System Status</h2>
     <div class="status-row">
-      <div class="pill"><div class="dot" id="dot-login"></div><span id="txt-login">Checking…</span></div>
+      <div class="pill"><div class="dot" id="dot-login"></div><span id="txt-login">Checking status…</span></div>
       <div class="pill"><div class="dot" id="dot-running"></div><span id="txt-running">Idle</span></div>
       <div class="pill">⏰ <span id="txt-next">—</span></div>
       <div class="pill">👥 <span id="txt-friends">— friends</span></div>
     </div>
-    <div class="sep"></div>
-    <div id="last-results"></div>
+    <div id="last-results" style="margin-top: 10px;"></div>
   </div>
 
-  <!-- ── LOGIN ── -->
+  <!-- ── STEP 1: LOGIN ── -->
   <div class="card wide">
-    <h2>Step 1 — Login to Snapchat</h2>
+    <h2>Step 1 — Snapchat Authentication</h2>
 
-    <!-- Idle -->
+    <!-- Idle state -->
     <div id="login-idle">
       <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-        Starts a real Chrome browser on the server. Log in below — the browser appears right here.
+        Start a browser session on the server. You will be able to view and interact with the page directly below to sign in.
       </p>
       <div class="btn-row">
         <button class="btn btn-primary" onclick="startLogin()">🖥️ Start Login Session</button>
       </div>
     </div>
 
-    <!-- Active: built-in remote browser -->
+    <!-- Active remote browser view -->
     <div id="login-active" style="display:none">
-      <!-- URL bar -->
       <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
         <span style="font-size:12px;color:var(--text-dim);white-space:nowrap">URL:</span>
         <code id="browser-url" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)">loading…</code>
       </div>
 
-      <!-- Live screenshot -->
-      <div style="position:relative;border:2px solid var(--accent);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px"
+      <div style="position:relative;border:2px solid var(--accent);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px;background:#000"
            id="browser-frame" onclick="browserClick(event)">
-        <img id="browser-shot" src="" style="width:100%;display:block" />
-        <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);font-size:13px">
-          ⏳ Starting browser…
+        <img id="browser-shot" src="" style="width:100%;display:block;min-height:260px" />
+        <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
+          ⏳ Launching browser and navigating to Snapchat…
         </div>
       </div>
 
-      <!-- Input controls -->
       <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
-        <input id="browser-text" type="text" placeholder="Type here then press Send or Enter…"
+        <input id="browser-text" type="text" placeholder="Type text here and hit Enter or Send ↵"
                onkeydown="if(event.key==='Enter'){browserKey('Enter');this.value='';event.preventDefault()}" />
-        <button class="btn btn-secondary" onclick="browserSendText()" style="white-space:nowrap">Send ↵</button>
+        <button class="btn btn-secondary" onclick="browserSendText()">Send ↵</button>
       </div>
-      <!-- Common keys -->
-      <div class="btn-row" style="margin-bottom:12px;flex-wrap:wrap;gap:6px">
-        <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px" onclick="browserKey('Tab')">Tab</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px" onclick="browserKey('Enter')">Enter</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px" onclick="browserKey('Backspace')">⌫</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px" onclick="browserKey('Escape')">Esc</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px" onclick="browserNav('https://web.snapchat.com/')">↺ Snapchat</button>
+
+      <div class="btn-row" style="margin-bottom:14px;flex-wrap:wrap;gap:6px">
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Tab')">Tab</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Enter')">Enter</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Backspace')">⌫ Backspace</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Escape')">Esc</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
       </div>
 
       <div class="btn-row">
@@ -282,32 +278,20 @@
       </div>
     </div>
 
-    <p id="login-status" style="font-size:12px;margin-top:10px;color:var(--green)"></p>
+    <p id="login-status" style="font-size:13px;margin-top:10px;font-weight:600"></p>
   </div>
-
 
   <!-- ── ACTIONS ── -->
   <div class="card">
     <h2>Actions</h2>
     <div class="btn-row">
       <button class="btn btn-success" id="btn-send" onclick="doSend()">🔥 Send Streaks Now</button>
-      <button class="btn btn-secondary" onclick="viewScreenshot()">📸 View Browser Screen</button>
+      <button class="btn btn-secondary" onclick="viewScreenshot()">📸 View Last Screen</button>
     </div>
     <div class="sep"></div>
-    <small>Sends to all friends in your list immediately. Watch the live log below.</small>
+    <small>Triggers immediate streak sequence to configured friends list.</small>
     <div id="screenshot-container" style="display:none;margin-top:12px">
       <img id="screenshot-img" src="" style="width:100%;border-radius:8px;border:1px solid var(--border)" />
-    </div>
-  </div>
-
-
-  <!-- ── FRIENDS ── -->
-  <div class="card">
-    <h2>Friends (Streaks)</h2>
-    <label>Snapchat usernames — one per line, no @ needed</label>
-    <textarea id="friends-input" placeholder="john_doe&#10;jane123&#10;bestfriend99"></textarea>
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="saveFriends()">💾 Save Friends</button>
     </div>
   </div>
 
@@ -315,60 +299,68 @@
   <div class="card">
     <h2>Schedule</h2>
     <div class="toggle-row" style="margin-bottom:14px">
-      <label style="margin:0">Auto-send enabled</label>
+      <label style="margin:0">Daily Auto-Send</label>
       <label class="toggle">
         <input type="checkbox" id="toggle-enabled" onchange="saveSchedule()">
         <div class="toggle-slider"></div>
       </label>
     </div>
-    <label>Daily send time (server local time)</label>
+    <label>Send Time (Server Local Time)</label>
     <input type="time" id="schedule-time" value="09:00" onchange="saveSchedule()" />
     <div class="sep"></div>
-    <small>The scheduler fires once per day at this time. Make sure the server timezone is correct.</small>
+    <small>APScheduler triggers the task automatically each day.</small>
+  </div>
+
+  <!-- ── FRIENDS ── -->
+  <div class="card">
+    <h2>Recipient List</h2>
+    <label>Usernames (one per line, no @)</label>
+    <textarea id="friends-input" placeholder="user_one&#10;user_two"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveFriends()">💾 Save Recipients</button>
+    </div>
   </div>
 
   <!-- ── SNAP IMAGE ── -->
   <div class="card">
-    <h2>Snap Image</h2>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Upload a custom image to send as the streak snap. Default is a plain dark square.</p>
+    <h2>Streak Image</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Custom media file for snap uploads.</p>
     <div class="dropzone" id="dropzone" onclick="document.getElementById('snap-file').click()">
       <input type="file" id="snap-file" accept="image/png,image/jpeg,image/webp" onchange="uploadSnap(this.files[0])">
-      📷 Click to upload PNG / JPEG / WEBP
+      📷 Click or drop PNG / JPEG / WEBP
     </div>
     <p id="snap-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></p>
   </div>
 
-  <!-- ── COOKIE IMPORT ── -->
-  <div class="card">
-    <h2>Cookie Import (Alternative Login)</h2>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:10px">
-      Log into <a href="https://web.snapchat.com" target="_blank" style="color:var(--accent)">web.snapchat.com</a> in your regular browser, export cookies with a browser extension (e.g. <b>EditThisCookie</b> or <b>Cookie-Editor</b>) as JSON, then paste below.
-    </p>
-    <textarea id="cookie-input" placeholder='[{"name":"sc-cookies-accepted","value":"1",...}]' style="min-height:80px"></textarea>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="importCookies()">📥 Import Cookies</button>
-    </div>
-  </div>
-
   <!-- ── LIVE LOG ── -->
   <div class="card wide">
-    <h2>Live Log</h2>
-    <div id="log-box">Connecting to live stream…</div>
+    <h2>Activity & Live Logs</h2>
+    <div id="log-box">Connecting to log stream…</div>
   </div>
 
 </div>
 
 <script>
-  const API = '';
-  let ws;
+  let ws = null;
+  let _shotLoop = null;
 
   // ── WebSocket live log ──
   function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
-    ws.onopen = () => appendLog('info', '⚡ Connected to live stream.');
+    ws.onopen = () => {
+      const box = document.getElementById('log-box');
+      if (box.textContent === 'Connecting to log stream…') box.textContent = '';
+      appendLog('info', '⚡ Connected to live stream.');
+    };
     ws.onmessage = e => appendLog('', e.data);
-    ws.onclose = () => { appendLog('err', '⚠ Stream disconnected. Reconnecting in 3s…'); setTimeout(connectWS, 3000); };
+    ws.onclose = () => {
+      appendLog('err', '⚠ Stream disconnected. Reconnecting in 3s…');
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => {
+      try { ws.close(); } catch(e) {}
+    };
   }
 
   function appendLog(cls, text) {
@@ -378,23 +370,61 @@
     line.textContent = text;
     box.appendChild(line);
     box.scrollTop = box.scrollHeight;
-    // Keep last 300 lines
     while (box.children.length > 300) box.removeChild(box.firstChild);
   }
 
-  // ── Poll status every 5s ──
+  // ── Poll status ──
   async function refreshStatus() {
     try {
+      const s = await fetch('/api/status').then(r => r.json());
+
+      const dotLogin = document.getElementById('dot-login');
+      const txtLogin = document.getElementById('txt-login');
+      dotLogin.className = 'dot ' + (s.logged_in ? 'green' : (s.login_active ? 'yellow' : 'red'));
+      txtLogin.textContent = s.logged_in ? 'Logged In' : (s.login_active ? 'Login In Progress' : 'Not Logged In');
+
+      const dotRun = document.getElementById('dot-running');
+      const txtRun = document.getElementById('txt-running');
+      dotRun.className = 'dot ' + (s.running ? 'yellow' : 'green');
+      txtRun.textContent = s.running ? 'Sending…' : 'Idle';
+
+      document.getElementById('txt-next').textContent = s.next_run ? s.next_run.slice(0, 16) : 'Disabled';
+      document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
+      document.getElementById('btn-send').disabled = s.running;
+
+      if (s.login_active && !_shotLoop) {
+        document.getElementById('login-idle').style.display = 'none';
+        document.getElementById('login-active').style.display = '';
+        _startShotLoop();
       }
-    } catch(e) { /* ignore */ }
+
+      const res = s.last_run_results || {};
+      const keys = Object.keys(res);
+      if (keys.length) {
+        let html = `<p style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Last run: ${s.last_run_time || ''}</p>`;
+        html += '<table class="results"><thead><tr><th>User</th><th>Status</th></tr></thead><tbody>';
+        keys.forEach(u => {
+          const ok = res[u] === 'ok';
+          html += `<tr><td>@${u}</td><td class="${ok ? 'ok' : 'fail'}">${ok ? '✓ Sent' : res[u]}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        document.getElementById('last-results').innerHTML = html;
+      }
+    } catch(e) {
+      console.error('Status fetch failed:', e);
+    }
   }
 
-  // ── Load config into UI ──
+  // ── Load config ──
   async function loadConfig() {
-    const cfg = await fetch('/api/config').then(r => r.json());
-    document.getElementById('friends-input').value = cfg.friends.join('\n');
-    document.getElementById('schedule-time').value = cfg.schedule_time;
-    document.getElementById('toggle-enabled').checked = cfg.enabled;
+    try {
+      const cfg = await fetch('/api/config').then(r => r.json());
+      document.getElementById('friends-input').value = (cfg.friends || []).join('\n');
+      document.getElementById('schedule-time').value = cfg.schedule_time || '09:00';
+      document.getElementById('toggle-enabled').checked = Boolean(cfg.enabled);
+    } catch(e) {
+      console.error('Config fetch failed:', e);
+    }
   }
 
   // ── Save friends ──
@@ -406,7 +436,7 @@
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ friends })
     });
-    appendLog('info', `✓ Saved ${friends.length} friends.`);
+    appendLog('info', `✓ Saved ${friends.length} recipients.`);
     refreshStatus();
   }
 
@@ -423,24 +453,18 @@
     refreshStatus();
   }
 
-  // ── Trigger login ──
-  async function doLogin() {
-    const r = await fetch('/api/login', { method: 'POST' });
-    const d = await r.json();
-    appendLog('info', d.message || d.detail);
-  }
-
   // ── Trigger send ──
   async function doSend() {
     const r = await fetch('/api/send', { method: 'POST' });
     const d = await r.json();
     appendLog('info', d.message || d.detail);
+    refreshStatus();
   }
 
-  // ── View browser screenshot ──
+  // ── View screenshot ──
   async function viewScreenshot() {
     const r = await fetch('/api/screenshot');
-    if (!r.ok) { appendLog('err', '⚠ No screenshot yet — trigger a send first.'); return; }
+    if (!r.ok) { appendLog('err', '⚠ No screenshot recorded yet.'); return; }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const img = document.getElementById('screenshot-img');
@@ -461,12 +485,10 @@
   }
 
   // ── Remote browser login ──
-  let _shotLoop = null;
-
   async function startLogin() {
     const statusEl = document.getElementById('login-status');
     statusEl.style.color = 'var(--text-dim)';
-    statusEl.textContent = 'Starting browser on server…';
+    statusEl.textContent = 'Starting browser session on server…';
     const r = await fetch('/api/login/start', { method: 'POST' });
     const d = await r.json();
     if (!r.ok) {
@@ -476,6 +498,7 @@
     }
     document.getElementById('login-idle').style.display   = 'none';
     document.getElementById('login-active').style.display = '';
+    document.getElementById('browser-loading').style.display = 'flex';
     statusEl.textContent = '';
     _startShotLoop();
   }
@@ -493,7 +516,7 @@
         }
         if (d.url) document.getElementById('browser-url').textContent = d.url;
       } catch(e) {}
-    }, 1200);
+    }, 1000);
   }
 
   function _stopShotLoop() {
@@ -503,7 +526,6 @@
   async function browserClick(evt) {
     const img = document.getElementById('browser-shot');
     const rect = img.getBoundingClientRect();
-    // Map click coords from display size → actual browser viewport (1440×900)
     const scaleX = 1440 / rect.width;
     const scaleY = 900  / rect.height;
     const x = Math.round((evt.clientX - rect.left) * scaleX);
@@ -547,14 +569,13 @@
     _stopShotLoop();
     const statusEl = document.getElementById('login-status');
     statusEl.style.color = 'var(--text-dim)';
-    statusEl.textContent = 'Saving session…';
+    statusEl.textContent = 'Saving session state…';
     const r = await fetch('/api/login/save', { method: 'POST' });
     const d = await r.json();
     statusEl.style.color = r.ok ? 'var(--green)' : 'var(--red)';
     statusEl.textContent = (r.ok ? '✓ ' : '✗ ') + (d.message || d.detail);
     document.getElementById('login-idle').style.display   = '';
     document.getElementById('login-active').style.display = 'none';
-    document.getElementById('browser-loading').style.display = '';
     refreshStatus();
   }
 
@@ -564,7 +585,6 @@
     document.getElementById('login-idle').style.display   = '';
     document.getElementById('login-active').style.display = 'none';
     document.getElementById('login-status').textContent   = '';
-    document.getElementById('browser-loading').style.display = '';
   }
 
   // ── Drag & drop for snap image ──
@@ -579,11 +599,17 @@
 
   // ── Load historical logs ──
   async function loadLogs() {
-    const data = await fetch('/api/logs').then(r => r.json());
-    data.lines.forEach(l => appendLog('', l));
+    try {
+      const data = await fetch('/api/logs').then(r => r.json());
+      if (data.lines && data.lines.length) {
+        const box = document.getElementById('log-box');
+        box.textContent = '';
+        data.lines.forEach(l => appendLog('', l));
+      }
+    } catch(e) {}
   }
 
-  // ── Init ──
+  // ── Initialise ──
   connectWS();
   loadConfig();
   loadLogs();
