@@ -12,14 +12,13 @@ from typing import Callable
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from automation import SESSION_FILE, USER_AGENT, VIEWPORT, _log
+from automation import SESSION_FILE, USER_AGENT, VIEWPORT, USER_DATA_DIR, _log
 
 NOVNC_PORT = 6080  # kept for API compat
 
 _state: dict = {
     "active":     False,
     "playwright": None,
-    "browser":    None,
     "context":    None,
     "page":       None,
     "last_shot":  b"",   # last JPEG screenshot bytes
@@ -29,8 +28,8 @@ _state: dict = {
 
 async def _cleanup():
     try:
-        if _state["browser"]:
-            await _state["browser"].close()
+        if _state["context"]:
+            await _state["context"].close()
     except Exception:
         pass
     try:
@@ -39,7 +38,7 @@ async def _cleanup():
     except Exception:
         pass
     _state.update(
-        active=False, playwright=None, browser=None,
+        active=False, playwright=None,
         context=None, page=None, last_shot=b"", url=""
     )
 
@@ -77,13 +76,18 @@ async def start(emit: Callable | None = None) -> str:
     if _state["active"]:
         return "Already running."
 
-    _log("Launching browser (headless)...", emit)
+    _log("Launching browser with persistent profile...", emit)
 
     pw = await async_playwright().start()
     _state["playwright"] = pw
 
-    browser = await pw.chromium.launch(
+    context = await pw.chromium.launch_persistent_context(
+        user_data_dir=str(USER_DATA_DIR),
         headless=True,
+        viewport=VIEWPORT,
+        user_agent=USER_AGENT,
+        locale="en-US",
+        timezone_id="America/Los_Angeles",
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -92,14 +96,6 @@ async def start(emit: Callable | None = None) -> str:
             f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
             "--disable-blink-features=AutomationControlled",
         ],
-    )
-    _state["browser"] = browser
-
-    context = await browser.new_context(
-        viewport=VIEWPORT,
-        user_agent=USER_AGENT,
-        locale="en-US",
-        timezone_id="America/Los_Angeles",
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
@@ -114,7 +110,7 @@ async def start(emit: Callable | None = None) -> str:
     )
     _state["context"] = context
 
-    page = await context.new_page()
+    page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page
     _state["active"] = True
 
@@ -123,6 +119,7 @@ async def start(emit: Callable | None = None) -> str:
     asyncio.create_task(_screenshot_loop())
     _log("✓ Browser ready — view it in the web UI login panel.", emit)
     return "ok"
+
 
 
 async def click(x: int, y: int):

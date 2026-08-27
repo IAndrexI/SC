@@ -23,6 +23,9 @@ SCREENSHOT_FILE = DATA_DIR / "last_screenshot.png"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+USER_DATA_DIR = DATA_DIR / "browser_profile"
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 # Realistic desktop Chrome fingerprint (matches Playwright Chromium 130)
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -83,26 +86,23 @@ async def _take_screenshot(page: Page, label: str = ""):
 
 
 # ---------------------------------------------------------------------------
-# Browser context — full desktop emulation
+# Browser context — persistent desktop profile (preserves Cookies + IndexedDB)
 # ---------------------------------------------------------------------------
 async def _build_context(playwright, headless: bool = True):
-    browser = await playwright.chromium.launch(
+    context = await playwright.chromium.launch_persistent_context(
+        user_data_dir=str(USER_DATA_DIR),
         headless=headless,
+        viewport=VIEWPORT,
+        user_agent=USER_AGENT,
+        locale="en-US",
+        timezone_id="America/Los_Angeles",
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled",  # hide automation flag
+            "--disable-blink-features=AutomationControlled",
         ],
-    )
-
-    ctx_kwargs = dict(
-        viewport=VIEWPORT,
-        user_agent=USER_AGENT,
-        locale="en-US",
-        timezone_id="America/Los_Angeles",
-        # Realistic desktop headers
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
@@ -114,12 +114,6 @@ async def _build_context(playwright, headless: bool = True):
         },
     )
 
-    if SESSION_FILE.exists():
-        ctx_kwargs["storage_state"] = json.loads(SESSION_FILE.read_text())
-
-    context = await browser.new_context(**ctx_kwargs)
-
-    # Mask navigator.webdriver so Snapchat doesn't detect automation
     await context.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -127,12 +121,15 @@ async def _build_context(playwright, headless: bool = True):
         window.chrome = { runtime: {} };
     """)
 
-    return browser, context
+    return context
 
 
 async def _save_session(context: BrowserContext):
-    storage = await context.storage_state()
-    SESSION_FILE.write_text(json.dumps(storage))
+    try:
+        storage = await context.storage_state()
+        SESSION_FILE.write_text(json.dumps(storage))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -150,45 +147,53 @@ async def check_logged_in(page: Page, emit=None) -> bool:
         _log(f"  Navigation error: {ex}", emit)
         return False
 
-    # Wait up to 15s to see where we end up
+    # Wait up to 15s to check page authentication state
     deadline = time.time() + 15
     while time.time() < deadline:
         url = page.url
         _log(f"  URL: {url}", emit)
 
-        # Unauthenticated — Snapchat redirects to www or shows login
+        # Definitively unauthenticated landing pages
         if any(x in url for x in [
-            "www.snapchat.com",
-            "original_referrer",
-            "/login",
             "accounts.snapchat.com",
-        ]):
+            "/accounts/login",
+            "snapchat.com/login",
+            "original_referrer",
+        ]) and "/web" not in url:
             await _take_screenshot(page, "unauthenticated")
             _log("  → Not logged in (redirected away from web app).", emit)
             return False
 
-        # Authenticated — stayed on web.snapchat.com
-        if "web.snapchat.com" in url:
-            # Extra confirmation: wait for the chat sidebar to appear
+        # Authenticated — stayed on Snapchat Web interface
+        if any(x in url for x in ["web.snapchat.com", "snapchat.com/web"]):
+            # Check for chat UI / navigation bar
             try:
-                await page.wait_for_selector(
+                el = await page.query_selector(
                     '[data-testid="chat-list-header"], '
                     '[aria-label="Chats"], '
-                    '[data-testid="nav-item-chat"]',
-                    timeout=10_000,
+                    '[data-testid="nav-item-chat"], '
+                    '[data-testid="search-input"], '
+                    'input[placeholder*="Search" i]'
                 )
-                await _take_screenshot(page, "logged_in")
-                _log("  → Chat UI detected — logged in ✓", emit)
-                return True
+                if el:
+                    await _take_screenshot(page, "logged_in")
+                    _log("  → Chat UI detected — logged in ✓", emit)
+                    return True
             except Exception:
-                # UI not found yet but URL is right — give it a moment
                 pass
 
         await asyncio.sleep(1.5)
 
+    # If still on /web after 15s and not on accounts page, proceed
+    if any(x in page.url for x in ["web.snapchat.com", "snapchat.com/web"]):
+        await _take_screenshot(page, "logged_in_web")
+        _log("  → On web interface — proceeding as logged in ✓", emit)
+        return True
+
     await _take_screenshot(page, "timeout")
     _log(f"  → Timed out. Final URL: {page.url}", emit)
     return False
+
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +225,8 @@ async def send_streaks(
         return {f: "no_session" for f in friends}
 
     async with async_playwright() as p:
-        browser, context = await _build_context(p, headless=True)
-        page = await context.new_page()
+        context = await _build_context(p, headless=True)
+        page = context.pages[0] if context.pages else await context.new_page()
 
         # Start live background screenshot loop
         run_flag = [True]
@@ -230,9 +235,9 @@ async def send_streaks(
         try:
             logged_in = await check_logged_in(page, emit)
             if not logged_in:
-                _log("Not logged in — re-login in the web UI first.", emit)
+                _log("Not logged in — please complete login in Step 1.", emit)
                 run_flag[0] = False
-                await browser.close()
+                await context.close()
                 return {f: "session_expired" for f in friends}
 
             await _human_delay(1500, 2500)
@@ -257,7 +262,8 @@ async def send_streaks(
                 await stream_task
             except asyncio.CancelledError:
                 pass
-            await browser.close()
+            await context.close()
+
 
     return results
 
