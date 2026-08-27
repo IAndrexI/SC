@@ -194,6 +194,16 @@ async def check_logged_in(page: Page, emit=None) -> bool:
 # ---------------------------------------------------------------------------
 # Send streaks — main entry point
 # ---------------------------------------------------------------------------
+async def _live_stream_task(page: Page, is_running_flag: list):
+    """Background task to continuously capture screenshot while automation is sending."""
+    while is_running_flag[0]:
+        try:
+            await page.screenshot(path=str(SCREENSHOT_FILE), type="jpeg", quality=75, full_page=False)
+        except Exception:
+            pass
+        await asyncio.sleep(0.8)
+
+
 async def send_streaks(
     friends: list[str],
     emit: Callable[[str], None] | None = None,
@@ -213,28 +223,41 @@ async def send_streaks(
         browser, context = await _build_context(p, headless=True)
         page = await context.new_page()
 
-        logged_in = await check_logged_in(page, emit)
-        if not logged_in:
-            _log("Not logged in — re-import cookies in the web UI.", emit)
-            await browser.close()
-            return {f: "session_expired" for f in friends}
+        # Start live background screenshot loop
+        run_flag = [True]
+        stream_task = asyncio.create_task(_live_stream_task(page, run_flag))
 
-        await _human_delay(1500, 2500)
+        try:
+            logged_in = await check_logged_in(page, emit)
+            if not logged_in:
+                _log("Not logged in — re-login in the web UI first.", emit)
+                run_flag[0] = False
+                await browser.close()
+                return {f: "session_expired" for f in friends}
 
-        for username in friends:
+            await _human_delay(1500, 2500)
+
+            for username in friends:
+                try:
+                    _log(f"Sending streak to @{username}...", emit)
+                    result = await _send_to_friend(page, username, emit)
+                    results[username] = result
+                    await _human_delay(3000, 5000)  # natural pause between sends
+                except Exception as ex:
+                    msg = f"error: {ex}"
+                    _log(f"  ✗ {username}: {msg}", emit)
+                    await _take_screenshot(page, f"error_{username}")
+                    results[username] = msg
+
+            await _save_session(context)
+        finally:
+            run_flag[0] = False
+            stream_task.cancel()
             try:
-                _log(f"Sending streak to @{username}...", emit)
-                result = await _send_to_friend(page, username, emit)
-                results[username] = result
-                await _human_delay(3000, 5000)  # natural pause between sends
-            except Exception as ex:
-                msg = f"error: {ex}"
-                _log(f"  ✗ {username}: {msg}", emit)
-                await _take_screenshot(page, f"error_{username}")
-                results[username] = msg
-
-        await _save_session(context)
-        await browser.close()
+                await stream_task
+            except asyncio.CancelledError:
+                pass
+            await browser.close()
 
     return results
 

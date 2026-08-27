@@ -307,18 +307,29 @@
   </div>
 
   <!-- ── ACTIONS ── -->
-  <div class="card">
-    <h2>Actions</h2>
-    <div class="btn-row">
+  <div class="card wide">
+    <h2>Streak Actions & Live Screen Monitor</h2>
+    <div class="btn-row" style="margin-bottom:12px">
       <button class="btn btn-success" id="btn-send" onclick="doSend()">🔥 Send Streaks Now</button>
-      <button class="btn btn-secondary" onclick="viewScreenshot()">📸 View Last Screen</button>
+      <button class="btn btn-secondary" onclick="toggleLiveMonitor()">👁️ Toggle Live Screen Feed</button>
+    </div>
+    
+    <div id="live-send-monitor" style="display:none;background:#05050a;border:2px solid var(--accent);border-radius:8px;padding:10px;margin-top:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:700;color:var(--accent)" id="live-monitor-status">🟢 Live Automation Feed</span>
+        <span style="font-size:11px;color:var(--text-dim)" id="live-monitor-ts">Streaming…</span>
+      </div>
+      <div style="position:relative;border-radius:6px;overflow:hidden;background:#000">
+        <img id="live-send-img" src="" style="width:100%;display:block;min-height:260px" />
+        <div id="live-send-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
+          ⏳ Waiting for streak sequence frame…
+        </div>
+      </div>
     </div>
     <div class="sep"></div>
-    <small>Triggers immediate streak sequence to configured friends list.</small>
-    <div id="screenshot-container" style="display:none;margin-top:12px">
-      <img id="screenshot-img" src="" style="width:100%;border-radius:8px;border:1px solid var(--border)" />
-    </div>
+    <small>When you click Send, the live screen feed above automatically streams the bot in action.</small>
   </div>
+
 
   <!-- ── SCHEDULE ── -->
   <div class="card">
@@ -417,6 +428,10 @@
       document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
       document.getElementById('btn-send').disabled = s.running;
 
+      if (s.running && !_sendMonitorLoop) {
+        _startSendMonitor();
+      }
+
       if (s.login_active && !_shotLoop) {
         document.getElementById('login-idle').style.display = 'none';
         document.getElementById('login-active').style.display = '';
@@ -478,25 +493,54 @@
     refreshStatus();
   }
 
+  let _sendMonitorLoop = null;
+
+  function _startSendMonitor() {
+    const box = document.getElementById('live-send-monitor');
+    box.style.display = 'block';
+    if (_sendMonitorLoop) return;
+
+    _sendMonitorLoop = setInterval(async () => {
+      try {
+        const url = '/api/screenshot?t=' + Date.now();
+        const img = document.getElementById('live-send-img');
+        
+        // Preload image before switching to avoid flicker
+        const testImg = new Image();
+        testImg.onload = () => {
+          img.src = url;
+          document.getElementById('live-send-loading').style.display = 'none';
+          document.getElementById('live-monitor-ts').textContent = 'Live • ' + new Date().toLocaleTimeString();
+        };
+        testImg.src = url;
+      } catch(e) {}
+    }, 800);
+  }
+
+  function _stopSendMonitor() {
+    if (_sendMonitorLoop) {
+      clearInterval(_sendMonitorLoop);
+      _sendMonitorLoop = null;
+    }
+  }
+
+  function toggleLiveMonitor() {
+    const box = document.getElementById('live-send-monitor');
+    if (box.style.display === 'none') {
+      _startSendMonitor();
+    } else {
+      box.style.display = 'none';
+      _stopSendMonitor();
+    }
+  }
+
   // ── Trigger send ──
   async function doSend() {
+    _startSendMonitor();
     const r = await fetch('/api/send', { method: 'POST' });
     const d = await r.json();
     appendLog('info', d.message || d.detail);
     refreshStatus();
-  }
-
-  // ── View screenshot ──
-  async function viewScreenshot() {
-    const r = await fetch('/api/screenshot');
-    if (!r.ok) { appendLog('err', '⚠ No screenshot recorded yet.'); return; }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    const img = document.getElementById('screenshot-img');
-    const container = document.getElementById('screenshot-container');
-    img.src = url;
-    container.style.display = 'block';
-    img.scrollIntoView({ behavior: 'smooth' });
   }
 
   // ── Upload snap image ──
@@ -508,6 +552,7 @@
     const d = await r.json();
     document.getElementById('snap-status').textContent = d.message || d.detail;
   }
+
 
   // ── Remote browser login ──
   async function startLogin() {
