@@ -211,6 +211,56 @@ async def upload_snap(file: UploadFile):
     return {"message": "Snap image updated."}
 
 
+class CookieImport(BaseModel):
+    cookies: list[dict]
+
+
+@app.post("/api/import-cookies")
+async def import_cookies(body: CookieImport):
+    """
+    Accept cookies exported from a browser extension (e.g. Cookie-Editor)
+    and convert them into a Playwright storage_state session file.
+    """
+    if not body.cookies:
+        raise HTTPException(status_code=400, detail="No cookies provided.")
+
+    # Convert browser extension cookie format → Playwright storage_state format
+    playwright_cookies = []
+    for c in body.cookies:
+        # Cookie-Editor / EditThisCookie export format varies slightly — normalise it
+        cookie = {
+            "name":     c.get("name", ""),
+            "value":    c.get("value", ""),
+            "domain":   c.get("domain", ".snapchat.com"),
+            "path":     c.get("path", "/"),
+            "secure":   c.get("secure", True),
+            "httpOnly": c.get("httpOnly", c.get("httponly", False)),
+            "sameSite": c.get("sameSite", c.get("samesite", "None")),
+        }
+        # Playwright needs sameSite to be "Strict" | "Lax" | "None"
+        ss = cookie["sameSite"]
+        if isinstance(ss, str):
+            cookie["sameSite"] = ss.capitalize() if ss.lower() in ("strict", "lax", "none") else "None"
+        else:
+            cookie["sameSite"] = "None"
+
+        if c.get("expirationDate"):
+            cookie["expires"] = int(c["expirationDate"])
+        elif c.get("expires") and isinstance(c["expires"], (int, float)):
+            cookie["expires"] = int(c["expires"])
+
+        playwright_cookies.append(cookie)
+
+    session_state = {
+        "cookies": playwright_cookies,
+        "origins": [],
+    }
+
+    automation.SESSION_FILE.write_text(json.dumps(session_state, indent=2))
+    _emit("✓ Cookies imported successfully. Session saved.")
+    return {"message": f"Imported {len(playwright_cookies)} cookies. You're logged in!"}
+
+
 @app.get("/api/logs")
 async def get_logs():
     if not automation.LOG_FILE.exists():
@@ -231,3 +281,4 @@ async def ws_stream(websocket: WebSocket):
             await websocket.receive_text()  # keep alive
     except WebSocketDisconnect:
         _ws_clients.remove(websocket)
+

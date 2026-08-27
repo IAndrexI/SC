@@ -227,19 +227,44 @@
     <div id="last-results"></div>
   </div>
 
+  <!-- ── HOW TO LOGIN ── -->
+  <div class="card wide">
+    <h2>Step 1 — Login via Cookie Import</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
+      The server has no screen, so login works by copying your session cookies from your browser. Takes ~60 seconds.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px">
+        <div style="color:var(--accent);font-weight:700;margin-bottom:6px">① Install Cookie-Editor</div>
+        Chrome: <a href="https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank" style="color:var(--accent)">Chrome Web Store</a><br>
+        Firefox: <a href="https://addons.mozilla.org/firefox/addon/cookie-editor/" target="_blank" style="color:var(--accent)">Firefox Add-ons</a>
+      </div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px">
+        <div style="color:var(--accent);font-weight:700;margin-bottom:6px">② Export Cookies</div>
+        1. Open <a href="https://web.snapchat.com" target="_blank" style="color:var(--accent)">web.snapchat.com</a> and log in<br>
+        2. Click the Cookie-Editor icon<br>
+        3. Click <b>Export → Export as JSON</b><br>
+        4. It's copied to your clipboard ✓
+      </div>
+    </div>
+    <label>③ Paste the JSON here and click Import</label>
+    <textarea id="cookie-input" placeholder='[{"name":"sc-cookies-accepted","value":"1",...}]' style="min-height:90px;margin-bottom:10px"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="importCookies()">📥 Import Cookies & Login</button>
+    </div>
+    <p id="cookie-status" style="font-size:12px;margin-top:8px;color:var(--green)"></p>
+  </div>
+
   <!-- ── ACTIONS ── -->
   <div class="card">
     <h2>Actions</h2>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-      First time? Click <b>Login to Snapchat</b>. A headless browser session will open on the server — follow the instructions below.
-    </p>
     <div class="btn-row">
-      <button class="btn btn-primary" onclick="doLogin()">🔑 Login to Snapchat</button>
       <button class="btn btn-success" id="btn-send" onclick="doSend()">🔥 Send Streaks Now</button>
     </div>
     <div class="sep"></div>
-    <small>Login opens a browser on the server. You'll need to complete it via the server's VNC/display or use the cookie import method below.</small>
+    <small>Sends to all friends in your list immediately. Watch the live log below.</small>
   </div>
+
 
   <!-- ── FRIENDS ── -->
   <div class="card">
@@ -419,16 +444,26 @@
   // ── Import cookies ──
   async function importCookies() {
     const raw = document.getElementById('cookie-input').value.trim();
-    if (!raw) return;
+    const statusEl = document.getElementById('cookie-status');
+    if (!raw) { statusEl.textContent = '⚠ Paste your cookie JSON first.'; return; }
     let cookies;
-    try { cookies = JSON.parse(raw); } catch(e) { alert('Invalid JSON'); return; }
+    try { cookies = JSON.parse(raw); } catch(e) { statusEl.style.color='var(--red)'; statusEl.textContent = '✗ Invalid JSON — make sure you copied the full export.'; return; }
+    statusEl.style.color = 'var(--text-dim)';
+    statusEl.textContent = 'Importing…';
     const r = await fetch('/api/import-cookies', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ cookies })
     });
     const d = await r.json();
-    appendLog('info', d.message || d.detail);
+    if (r.ok) {
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = '✓ ' + d.message;
+      document.getElementById('cookie-input').value = '';
+    } else {
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = '✗ ' + (d.detail || 'Import failed.');
+    }
     refreshStatus();
   }
 
