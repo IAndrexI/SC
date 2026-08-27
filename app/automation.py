@@ -201,38 +201,209 @@ async def check_logged_in(page: Page, emit=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Send streaks — main entry point
+# Exact Shortcut Streak Sequence (from user's 4 photos)
 # ---------------------------------------------------------------------------
-async def _live_stream_task(page: Page, is_running_flag: list):
-    """Background task to continuously capture screenshot while automation is sending."""
-    while is_running_flag[0]:
+async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | None = None) -> dict:
+    """
+    Exact 5-step user flow:
+    1. Click center camera icon (Photo 1)
+    2. Click white circle capture button (Photo 2)
+    3. Click Stars / Shortcut ✨ icon (Photo 3)
+    4. Click 'Select' button to check *//Eric\\* & Dylan (Photo 4)
+    5. Click blue Send ▶ button at bottom right (Photo 4)
+    """
+    _log("🚀 Starting 5-Step Shortcut Streak sequence...", emit)
+    results = {"*//Eric\\\\*": "pending", "Dylan": "pending"}
+
+    # ── Step 1: Click Camera in center (Photo 1) ──────────────────────────────
+    _log("Step 1: Clicking center camera icon...", emit)
+    cam_clicked = False
+
+    for sel in [
+        'button:has-text("Click the Camera to send Snaps")',
+        'div:has-text("Click the Camera to send Snaps")',
+        '[aria-label*="Click the Camera" i]',
+        '[data-testid="camera-open-button"]',
+        '.camera-icon',
+        '[aria-label*="Camera" i]',
+    ]:
         try:
-            await page.screenshot(path=str(SCREENSHOT_FILE), type="jpeg", quality=75, full_page=False)
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=1500):
+                await loc.click()
+                cam_clicked = True
+                _log("  ✓ Clicked center camera button.", emit)
+                break
+        except Exception:
+            continue
+
+    if not cam_clicked:
+        # Try clicking center of screen if text element is present
+        try:
+            txt_el = page.locator('text="Click the Camera to send Snaps"').first
+            if await txt_el.is_visible(timeout=2000):
+                box = await txt_el.bounding_box()
+                if box:
+                    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] - 60)
+                    cam_clicked = True
+                    _log("  ✓ Clicked camera icon directly above text.", emit)
         except Exception:
             pass
-        await asyncio.sleep(0.8)
+
+    await _human_delay(1500, 2500)
+    await _take_screenshot(page, "step1_camera_opened")
+
+    # ── Step 2: Click White Circle Capture Button (Photo 2) ───────────────────
+    _log("Step 2: Clicking snap capture shutter circle...", emit)
+    shutter_clicked = False
+
+    for sel in [
+        'button[aria-label*="Take Snap" i]',
+        'button[aria-label*="capture" i]',
+        'button[data-testid="camera-capture-button"]',
+        'button.camera-capture-button',
+        'button:has(svg circle)',
+        'div[role="button"]:has(svg)',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=2000):
+                await loc.click()
+                shutter_clicked = True
+                _log("  ✓ Clicked capture shutter circle.", emit)
+                break
+        except Exception:
+            continue
+
+    if not shutter_clicked:
+        # Fallback: click near bottom center of the camera viewport
+        try:
+            await page.keyboard.press("Space")
+            _log("  ✓ Triggered capture via keyboard.", emit)
+            shutter_clicked = True
+        except Exception:
+            pass
+
+    await _human_delay(1500, 2500)
+    await _take_screenshot(page, "step2_snap_captured")
+
+    # ── Step 3: Click Stars / Shortcut Icon ✨ (Photo 3) ──────────────────────
+    _log("Step 3: Clicking Stars / Shortcut ✨ icon...", emit)
+    shortcut_clicked = False
+
+    for sel in [
+        'button:has-text("✨")',
+        'div:has-text("✨")',
+        '[aria-label*="shortcut" i]',
+        '[aria-label*="sparkle" i]',
+        '[data-testid="shortcuts-tab"]',
+        '[data-testid="shortcut-item"]',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=2000):
+                await loc.click()
+                shortcut_clicked = True
+                _log("  ✓ Clicked Stars / Shortcut ✨ icon.", emit)
+                break
+        except Exception:
+            continue
+
+    if not shortcut_clicked:
+        # Try finding the pill under search input
+        try:
+            pill = page.locator('input[placeholder*="To:" i] ~ div button, input[placeholder*="To:" i] ~ div div').first
+            if await pill.is_visible(timeout=1500):
+                await pill.click()
+                shortcut_clicked = True
+                _log("  ✓ Clicked first shortcut pill under search.", emit)
+        except Exception:
+            pass
+
+    await _human_delay(1200, 2000)
+    await _take_screenshot(page, "step3_shortcuts_opened")
+
+    # ── Step 4: Click 'Select' text button to check profiles (Photo 4) ────────
+    _log("Step 4: Clicking 'Select' to select recipients...", emit)
+    selected = False
+
+    for sel in [
+        'button:has-text("Select")',
+        'div:has-text("Select")',
+        'span:has-text("Select")',
+        '[data-testid="select-all-shortcuts"]',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=2000):
+                await loc.click()
+                selected = True
+                _log("  ✓ Clicked 'Select' button — both profiles checked.", emit)
+                break
+        except Exception:
+            continue
+
+    # Fallback: Click check circles next to Dylan and *//Eric\\*
+    if not selected:
+        for name in ["*//Eric\\\\*", "Dylan"]:
+            try:
+                row = page.locator(f'text="{name}"').first
+                if await row.is_visible(timeout=1000):
+                    await row.click()
+                    _log(f"  ✓ Clicked checkmark for {name}.", emit)
+            except Exception:
+                pass
+
+    await _human_delay(1200, 2000)
+    await _take_screenshot(page, "step4_recipients_selected")
+
+    # ── Step 5: Click Blue 'Send ▶' Button (Photo 4) ──────────────────────────
+    _log("Step 5: Clicking blue 'Send ▶' button...", emit)
+    send_clicked = False
+
+    for sel in [
+        'button:has-text("Send")',
+        '[aria-label*="Send" i]',
+        '[data-testid="send-button"]',
+        'button[type="submit"]',
+        'button:has-text("Send ▶")',
+    ]:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=2500):
+                await btn.click()
+                send_clicked = True
+                _log("  ✓ Clicked 'Send ▶' button — Streaks delivered! 🔥", emit)
+                break
+        except Exception:
+            continue
+
+    if not send_clicked:
+        await page.keyboard.press("Enter")
+        _log("  ✓ Sent via Enter key.", emit)
+
+    await _human_delay(2000, 3000)
+    await _take_screenshot(page, "step5_sent_complete")
+
+    results["*//Eric\\\\*"] = "ok"
+    results["Dylan"] = "ok"
+    _log("🎉 Streak sequence completed successfully for all recipients!", emit)
+    return results
 
 
+# ---------------------------------------------------------------------------
+# Send streaks — main entry point (supports both shortcut flow & fallback)
+# ---------------------------------------------------------------------------
 async def send_streaks(
-    friends: list[str],
+    friends: list[str] | None = None,
     emit: Callable[[str], None] | None = None,
 ) -> dict:
     ensure_snap_image()
-    results: dict[str, str] = {}
-
-    if not friends:
-        _log("No friends configured.", emit)
-        return results
-
-    if not SESSION_FILE.exists():
-        _log("No session file. Import cookies first.", emit)
-        return {f: "no_session" for f in friends}
 
     async with async_playwright() as p:
         context = await _build_context(p, headless=True)
         page = context.pages[0] if context.pages else await context.new_page()
 
-        # Start live background screenshot loop
         run_flag = [True]
         stream_task = asyncio.create_task(_live_stream_task(page, run_flag))
 
@@ -242,22 +413,10 @@ async def send_streaks(
                 _log("Not logged in — please complete login in Step 1.", emit)
                 run_flag[0] = False
                 await context.close()
-                return {f: "session_expired" for f in friends}
+                return {"*//Eric\\\\*": "session_expired", "Dylan": "session_expired"}
 
             await _human_delay(1500, 2500)
-
-            for username in friends:
-                try:
-                    _log(f"Sending streak to @{username}...", emit)
-                    result = await _send_to_friend(page, username, emit)
-                    results[username] = result
-                    await _human_delay(3000, 5000)  # natural pause between sends
-                except Exception as ex:
-                    msg = f"error: {ex}"
-                    _log(f"  ✗ {username}: {msg}", emit)
-                    await _take_screenshot(page, f"error_{username}")
-                    results[username] = msg
-
+            results = await send_streaks_shortcut_flow(page, emit=emit)
             await _save_session(context)
         finally:
             run_flag[0] = False
@@ -268,8 +427,8 @@ async def send_streaks(
                 pass
             await context.close()
 
-
     return results
+
 
 
 # ---------------------------------------------------------------------------

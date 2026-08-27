@@ -288,27 +288,17 @@ async def upload_snap_to_chat() -> dict:
     return {"ok": False, "error": "Could not find upload button on active page."}
 
 
-async def run_streak_in_active_session(friends: list[str], emit: Callable | None = None) -> dict:
-    """Execute streak sequence directly inside the currently visible interactive browser."""
+async def run_streak_in_active_session(friends: list[str] | None = None, emit: Callable | None = None) -> dict:
+    """Execute shortcut streak sequence directly inside the currently visible interactive browser."""
     if not _state["active"] or not _state["page"]:
         return {"error": "Browser not active"}
 
-    from automation import _send_to_friend, ensure_snap_image
+    from automation import send_streaks_shortcut_flow, ensure_snap_image
     ensure_snap_image()
     page = _state["page"]
-    results = {}
-
-    for username in friends:
-        try:
-            _log(f"⚡ Live sending streak to @{username} in open browser...", emit)
-            res = await _send_to_friend(page, username, emit)
-            results[username] = res
-            await asyncio.sleep(2)
-        except Exception as ex:
-            results[username] = f"error: {ex}"
-            _log(f"  ✗ @{username}: {ex}", emit)
-
+    results = await send_streaks_shortcut_flow(page, emit=emit)
     return results
+
 
 
 async def save(emit: Callable | None = None) -> str:
