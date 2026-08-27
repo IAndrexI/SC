@@ -227,33 +227,43 @@
     <div id="last-results"></div>
   </div>
 
-  <!-- ── HOW TO LOGIN ── -->
+  <!-- ── LOGIN ── -->
   <div class="card wide">
-    <h2>Step 1 — Login via Cookie Import</h2>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-      The server has no screen, so login works by copying your session cookies from your browser. Takes ~60 seconds.
+    <h2>Step 1 — Login to Snapchat</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px">
+      Starts a real Chrome browser on the server. A link appears — open it in your browser, log into Snapchat normally, then click <b>Save Session</b>.
     </p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px">
-        <div style="color:var(--accent);font-weight:700;margin-bottom:6px">① Install Cookie-Editor</div>
-        Chrome: <a href="https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank" style="color:var(--accent)">Chrome Web Store</a><br>
-        Firefox: <a href="https://addons.mozilla.org/firefox/addon/cookie-editor/" target="_blank" style="color:var(--accent)">Firefox Add-ons</a>
-      </div>
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px">
-        <div style="color:var(--accent);font-weight:700;margin-bottom:6px">② Export Cookies</div>
-        1. Open <a href="https://web.snapchat.com" target="_blank" style="color:var(--accent)">web.snapchat.com</a> and log in<br>
-        2. Click the Cookie-Editor icon<br>
-        3. Click <b>Export → Export as JSON</b><br>
-        4. It's copied to your clipboard ✓
+
+    <!-- Not active -->
+    <div id="login-idle">
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="startLogin()">🖥️ Start Login Session</button>
       </div>
     </div>
-    <label>③ Paste the JSON here and click Import</label>
-    <textarea id="cookie-input" placeholder='[{"name":"sc-cookies-accepted","value":"1",...}]' style="min-height:90px;margin-bottom:10px"></textarea>
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="importCookies()">📥 Import Cookies & Login</button>
+
+    <!-- Active: show VNC link + save/cancel -->
+    <div id="login-active" style="display:none">
+      <div style="background:var(--surface2);border:1px solid var(--accent);border-radius:8px;padding:16px;margin-bottom:14px">
+        <div style="font-size:13px;color:var(--accent);font-weight:700;margin-bottom:8px">🟢 Login session is running</div>
+        <div style="font-size:13px;margin-bottom:10px">
+          1. Click the link below to open the browser<br>
+          2. Log into Snapchat as you normally would<br>
+          3. Once logged in, click <b>Save Session ✓</b>
+        </div>
+        <a id="novnc-link" href="#" target="_blank"
+           style="display:inline-block;background:var(--accent);color:#000;font-weight:700;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:13px">
+          🌐 Open Browser Window →
+        </a>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="saveLogin()">✓ Save Session & Finish</button>
+        <button class="btn btn-secondary" onclick="cancelLogin()">✗ Cancel</button>
+      </div>
     </div>
-    <p id="cookie-status" style="font-size:12px;margin-top:8px;color:var(--green)"></p>
+
+    <p id="login-status" style="font-size:12px;margin-top:10px;color:var(--green)"></p>
   </div>
+
 
   <!-- ── ACTIONS ── -->
   <div class="card">
@@ -354,35 +364,6 @@
   // ── Poll status every 5s ──
   async function refreshStatus() {
     try {
-      const s = await fetch('/api/status').then(r => r.json());
-
-      const dotLogin = document.getElementById('dot-login');
-      const txtLogin = document.getElementById('txt-login');
-      dotLogin.className = 'dot ' + (s.logged_in ? 'green' : 'red');
-      txtLogin.textContent = s.logged_in ? 'Logged In' : 'Not Logged In';
-
-      const dotRun = document.getElementById('dot-running');
-      const txtRun = document.getElementById('txt-running');
-      dotRun.className = 'dot ' + (s.running ? 'yellow' : 'green');
-      txtRun.textContent = s.running ? 'Sending…' : 'Idle';
-
-      document.getElementById('txt-next').textContent = s.next_run ? s.next_run.slice(0, 16) : '—';
-      document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
-
-      document.getElementById('btn-send').disabled = s.running;
-
-      // Results table
-      const res = s.last_run_results || {};
-      const keys = Object.keys(res);
-      if (keys.length) {
-        let html = `<p style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Last run: ${s.last_run_time}</p>`;
-        html += '<table class="results"><thead><tr><th>Username</th><th>Result</th></tr></thead><tbody>';
-        keys.forEach(u => {
-          const ok = res[u] === 'ok';
-          html += `<tr><td>@${u}</td><td class="${ok ? 'ok' : 'fail'}">${ok ? '✓ Sent' : res[u]}</td></tr>`;
-        });
-        html += '</tbody></table>';
-        document.getElementById('last-results').innerHTML = html;
       }
     } catch(e) { /* ignore */ }
   }
@@ -458,30 +439,39 @@
     document.getElementById('snap-status').textContent = d.message || d.detail;
   }
 
-  // ── Import cookies ──
-  async function importCookies() {
-    const raw = document.getElementById('cookie-input').value.trim();
-    const statusEl = document.getElementById('cookie-status');
-    if (!raw) { statusEl.textContent = '⚠ Paste your cookie JSON first.'; return; }
-    let cookies;
-    try { cookies = JSON.parse(raw); } catch(e) { statusEl.style.color='var(--red)'; statusEl.textContent = '✗ Invalid JSON — make sure you copied the full export.'; return; }
+  // ── Login session (VNC) ──
+  async function startLogin() {
+    const statusEl = document.getElementById('login-status');
     statusEl.style.color = 'var(--text-dim)';
-    statusEl.textContent = 'Importing…';
-    const r = await fetch('/api/import-cookies', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ cookies })
-    });
+    statusEl.textContent = 'Starting virtual display and browser…';
+    const r = await fetch('/api/login/start', { method: 'POST' });
     const d = await r.json();
     if (r.ok) {
-      statusEl.style.color = 'var(--green)';
-      statusEl.textContent = '✓ ' + d.message;
-      document.getElementById('cookie-input').value = '';
+      statusEl.textContent = '⏳ Launching… the link will appear in ~5 seconds.';
+      setTimeout(refreshStatus, 4000);
+      setTimeout(refreshStatus, 8000);
     } else {
       statusEl.style.color = 'var(--red)';
-      statusEl.textContent = '✗ ' + (d.detail || 'Import failed.');
+      statusEl.textContent = '✗ ' + (d.detail || d.message);
     }
+  }
+
+  async function saveLogin() {
+    const statusEl = document.getElementById('login-status');
+    statusEl.style.color = 'var(--text-dim)';
+    statusEl.textContent = 'Saving session…';
+    const r = await fetch('/api/login/save', { method: 'POST' });
+    const d = await r.json();
+    statusEl.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+    statusEl.textContent = (r.ok ? '✓ ' : '✗ ') + (d.message || d.detail);
     refreshStatus();
+  }
+
+  async function cancelLogin() {
+    await fetch('/api/login/cancel', { method: 'POST' });
+    document.getElementById('login-idle').style.display = '';
+    document.getElementById('login-active').style.display = 'none';
+    document.getElementById('login-status').textContent = '';
   }
 
   // ── Drag & drop for snap image ──

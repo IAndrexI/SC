@@ -29,6 +29,8 @@ from pydantic import BaseModel
 
 import config
 import automation
+import login_session
+import socket
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -155,37 +157,57 @@ async def get_status():
     job = _scheduler.get_job("daily_streak")
     if job:
         next_run = str(job.next_run_time)
+
+    # Detect server IP for noVNC link
+    try:
+        server_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        server_ip = "YOUR_SERVER_IP"
+
     return {
-        "logged_in": automation.SESSION_FILE.exists(),
-        "running": _state["running"],
-        "last_run_time": _state["last_run_time"],
+        "logged_in":       automation.SESSION_FILE.exists(),
+        "login_active":    login_session.is_active(),
+        "novnc_url":       f"http://{server_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale",
+        "running":         _state["running"],
+        "last_run_time":   _state["last_run_time"],
         "last_run_results": _state["last_run_results"],
-        "next_run": next_run,
-        "enabled": cfg["enabled"],
-        "friend_count": len(cfg["friends"]),
+        "next_run":        next_run,
+        "enabled":         cfg["enabled"],
+        "friend_count":    len(cfg["friends"]),
     }
 
 
-@app.post("/api/login")
-async def trigger_login():
-    """
-    Tells the user to connect to the server display / VNC to complete login.
-    Since we're headless on a server, we use a virtual display (Xvfb) and 
-    a VNC/noVNC session — OR we return a message explaining they need X11 
-    forwarding. The simplest server approach: use --no-sandbox visible browser
-    via virtual display.
-    """
+@app.post("/api/login/start")
+async def login_start():
+    """Start a visible browser session via VNC so you can log in manually."""
     if _state["running"]:
-        raise HTTPException(status_code=409, detail="A send job is currently running.")
-    
-    asyncio.create_task(_run_login())
-    return {"message": "Login browser session started. Check the /api/logs endpoint for progress."}
+        raise HTTPException(status_code=409, detail="A send job is running.")
+    if login_session.is_active():
+        raise HTTPException(status_code=409, detail="Login session already active.")
+    asyncio.create_task(_do_login_start())
+    return {"message": "Starting login session..."}
 
 
-async def _run_login():
-    msg = await automation.manual_login_and_save(emit=_emit)
-    _state["logged_in"] = automation.SESSION_FILE.exists()
-    _emit(f"LOGIN_DONE: {msg}")
+async def _do_login_start():
+    await login_session.start(emit=_emit)
+    _emit("LOGIN_SESSION_READY")
+
+
+@app.post("/api/login/save")
+async def login_save():
+    """Save the current VNC browser session as the active login."""
+    if not login_session.is_active():
+        raise HTTPException(status_code=400, detail="No active login session.")
+    msg = await login_session.save(emit=_emit)
+    _emit("LOGIN_DONE")
+    return {"message": msg}
+
+
+@app.post("/api/login/cancel")
+async def login_cancel():
+    """Cancel the active VNC login session without saving."""
+    await login_session.cancel(emit=_emit)
+    return {"message": "Login session cancelled."}
 
 
 @app.post("/api/send")
