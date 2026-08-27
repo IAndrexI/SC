@@ -22,7 +22,8 @@ fi
 step "Installing system dependencies..."
 apt-get update -qq
 apt-get install -y -qq \
-  git curl python3 python3-pip python3-venv \
+  git curl python3 python3-pip python3-venv python3-dev \
+  gcc g++ make \
   libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
   libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
   libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 \
