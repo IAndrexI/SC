@@ -250,16 +250,40 @@
         <code id="browser-url" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)">loading…</code>
       </div>
 
+      <!-- Quick Auto-Fill Helper Form -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:8px">⚡ Quick Fill & Input Helper</div>
+        
+        <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px">
+          <input id="quick-user" type="text" placeholder="Snapchat Username / Email" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('username')">Fill Username ↵</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px">
+          <input id="quick-pass" type="password" placeholder="Password" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('password')">Fill Password ↵</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:6px">
+          <input id="quick-code" type="text" placeholder="2FA / SMS Code" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('code')">Fill Code ↵</button>
+          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="submitQuick()">👉 Click Next / Log In</button>
+        </div>
+      </div>
+
+      <!-- Live screenshot with click indicator -->
       <div style="position:relative;border:2px solid var(--accent);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px;background:#000"
            id="browser-frame" onclick="browserClick(event)">
         <img id="browser-shot" src="" style="width:100%;display:block;min-height:260px" />
+        <div id="click-dot" style="position:absolute;width:12px;height:12px;background:#ff0055;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);display:none;pointer-events:none;z-index:10;box-shadow:0 0 8px #ff0055"></div>
         <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
           ⏳ Launching browser and navigating to Snapchat…
         </div>
       </div>
 
+      <!-- Raw text / key input -->
       <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
-        <input id="browser-text" type="text" placeholder="Type text here and hit Enter or Send ↵"
+        <input id="browser-text" type="text" placeholder="Raw typing into focused field…"
                onkeydown="if(event.key==='Enter'){browserKey('Enter');this.value='';event.preventDefault()}" />
         <button class="btn btn-secondary" onclick="browserSendText()">Send ↵</button>
       </div>
@@ -277,6 +301,7 @@
         <button class="btn btn-secondary" onclick="cancelLogin()">✗ Cancel</button>
       </div>
     </div>
+
 
     <p id="login-status" style="font-size:13px;margin-top:10px;font-weight:600"></p>
   </div>
@@ -523,18 +548,71 @@
     if (_shotLoop) { clearInterval(_shotLoop); _shotLoop = null; }
   }
 
+  async function triggerRefreshNow() {
+    try {
+      const d = await fetch('/api/login/screenshot').then(r => r.json());
+      if (d.image) {
+        const img = document.getElementById('browser-shot');
+        img.src = 'data:image/jpeg;base64,' + d.image;
+        document.getElementById('browser-loading').style.display = 'none';
+      }
+      if (d.url) document.getElementById('browser-url').textContent = d.url;
+    } catch(e) {}
+  }
+
+  async function fillQuick(fieldName) {
+    let val = '';
+    if (fieldName === 'username') val = document.getElementById('quick-user').value.trim();
+    if (fieldName === 'password') val = document.getElementById('quick-pass').value;
+    if (fieldName === 'code') val = document.getElementById('quick-code').value.trim();
+    if (!val) { appendLog('err', `Please enter a ${fieldName} first.`); return; }
+
+    appendLog('info', `Filling ${fieldName}…`);
+    const r = await fetch('/api/login/fill', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ field: fieldName, value: val }),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      appendLog('info', `✓ ${fieldName} filled.`);
+    } else {
+      appendLog('err', `Could not find field automatically: ${res.error || 'unknown'}`);
+    }
+    setTimeout(triggerRefreshNow, 600);
+    setTimeout(triggerRefreshNow, 1400);
+  }
+
+  async function submitQuick() {
+    appendLog('info', 'Clicking Next / Submit…');
+    await fetch('/api/login/submit', { method: 'POST' });
+    setTimeout(triggerRefreshNow, 800);
+    setTimeout(triggerRefreshNow, 1800);
+  }
+
   async function browserClick(evt) {
     const img = document.getElementById('browser-shot');
     const rect = img.getBoundingClientRect();
     const scaleX = 1440 / rect.width;
     const scaleY = 900  / rect.height;
-    const x = Math.round((evt.clientX - rect.left) * scaleX);
-    const y = Math.round((evt.clientY - rect.top)  * scaleY);
+    const clickX = evt.clientX - rect.left;
+    const clickY = evt.clientY - rect.top;
+    const x = Math.round(clickX * scaleX);
+    const y = Math.round(clickY * scaleY);
+
+    // Show visual click dot
+    const dot = document.getElementById('click-dot');
+    dot.style.left = clickX + 'px';
+    dot.style.top = clickY + 'px';
+    dot.style.display = 'block';
+    setTimeout(() => { dot.style.display = 'none'; }, 400);
+
     await fetch('/api/login/click', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ x, y }),
     });
+    setTimeout(triggerRefreshNow, 500);
   }
 
   async function browserSendText() {
@@ -547,6 +625,7 @@
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ text }),
     });
+    setTimeout(triggerRefreshNow, 600);
   }
 
   async function browserKey(key) {
@@ -555,6 +634,7 @@
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ key }),
     });
+    setTimeout(triggerRefreshNow, 600);
   }
 
   async function browserNav(url) {
@@ -563,7 +643,9 @@
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ url }),
     });
+    setTimeout(triggerRefreshNow, 1200);
   }
+
 
   async function saveLogin() {
     _stopShotLoop();

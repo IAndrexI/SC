@@ -234,6 +234,20 @@ class NavInput(BaseModel):
     url: str
 
 
+class FillInput(BaseModel):
+    field: str
+    value: str
+
+@app.post("/api/login/fill")
+async def login_fill(body: FillInput):
+    res = await login_session.fill_field(body.field, body.value)
+    return res
+
+@app.post("/api/login/submit")
+async def login_submit():
+    res = await login_session.click_submit()
+    return res
+
 @app.post("/api/login/click")
 async def login_click(body: ClickInput):
     await login_session.click(body.x, body.y)
@@ -253,6 +267,7 @@ async def login_key(body: KeyInput):
 async def login_navigate(body: NavInput):
     await login_session.navigate(body.url)
     return {"ok": True}
+
 
 
 @app.post("/api/send")

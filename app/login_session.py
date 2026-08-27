@@ -126,11 +126,102 @@ async def start(emit: Callable | None = None) -> str:
 
 
 async def click(x: int, y: int):
-    """Forward a click at (x, y) to the browser."""
+    """Forward a click at (x, y) to the browser with realistic mouse move and down/up."""
     page: Page | None = _state["page"]
     if page:
-        await page.mouse.click(x, y)
-        await asyncio.sleep(0.3)
+        try:
+            await page.mouse.move(x, y)
+            await asyncio.sleep(0.05)
+            await page.mouse.down()
+            await asyncio.sleep(0.08)
+            await page.mouse.up()
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
+
+
+async def fill_field(field: str, value: str) -> dict:
+    """Smart field focus and fill for username, password, or verification code."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No active browser"}
+
+    selectors_map = {
+        "username": [
+            "input#accountIdentifier",
+            "input[name='accountIdentifier']",
+            "input[autocomplete='username']",
+            "input[name='username']",
+            "input[type='email']",
+            "input[type='text']",
+        ],
+        "password": [
+            "input#password",
+            "input[name='password']",
+            "input[autocomplete='current-password']",
+            "input[type='password']",
+        ],
+        "code": [
+            "input[inputmode='numeric']",
+            "input[type='number']",
+            "input[name='code']",
+            "input[name='verificationCode']",
+            "input[maxlength='6']",
+            "input[type='text']",
+        ]
+    }
+
+    selectors = selectors_map.get(field.lower(), ["input[type='text']"])
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=1500):
+                await loc.click()
+                await asyncio.sleep(0.1)
+                await loc.fill("")
+                await asyncio.sleep(0.1)
+                await loc.type(value, delay=50)
+                return {"ok": True, "selector": sel}
+        except Exception:
+            continue
+
+    # Fallback: type directly into currently active element
+    try:
+        await page.keyboard.type(value, delay=50)
+        return {"ok": True, "fallback": "active_element"}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+
+async def click_submit() -> dict:
+    """Click primary submit / Next / Log In button."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No active browser"}
+
+    submit_selectors = [
+        "button[type='submit']",
+        "button:has-text('Next')",
+        "button:has-text('Log In')",
+        "button:has-text('Sign In')",
+        "button:has-text('Continue')",
+        "button:has-text('Submit')",
+        "[data-testid='submit-button']",
+    ]
+    for sel in submit_selectors:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=1500):
+                await btn.click()
+                return {"ok": True, "selector": sel}
+        except Exception:
+            continue
+
+    try:
+        await page.keyboard.press("Enter")
+        return {"ok": True, "fallback": "Enter"}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
 
 
 async def type_text(text: str):
