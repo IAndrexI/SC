@@ -1,25 +1,35 @@
 """
-automation.py – Snapchat Web automation via Playwright.
+automation.py – Emulates a real desktop user on web.snapchat.com
 """
 
 import asyncio
 import json
 import os
+import random
 import time
 from pathlib import Path
 from typing import Callable
 
-from playwright.async_api import async_playwright, BrowserContext, Page
+from playwright.async_api import async_playwright, BrowserContext, Page, Locator
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+DATA_DIR   = Path(os.environ.get("DATA_DIR", "/data"))
 SESSION_FILE = DATA_DIR / "session.json"
-SNAP_IMAGE = DATA_DIR / "snap.png"
-LOG_FILE = DATA_DIR / "activity.log"
+SNAP_IMAGE   = DATA_DIR / "snap.png"
+LOG_FILE     = DATA_DIR / "activity.log"
+SCREENSHOT_FILE = DATA_DIR / "last_screenshot.png"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Realistic desktop Chrome fingerprint (matches Playwright Chromium 130)
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.6723.31 Safari/537.36"
+)
+VIEWPORT = {"width": 1440, "height": 900}
 
 
 # ---------------------------------------------------------------------------
@@ -36,14 +46,16 @@ def _log(msg: str, emit: Callable[[str], None] | None = None):
 
 
 # ---------------------------------------------------------------------------
-# Snap image – create a solid dark PNG if none exists
+# Snap image
 # ---------------------------------------------------------------------------
 def ensure_snap_image():
     if SNAP_IMAGE.exists():
         return
     try:
-        from PIL import Image
-        img = Image.new("RGB", (400, 400), color=(30, 30, 30))
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (800, 600), color=(20, 20, 30))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, 800, 600], fill=(random.randint(10,40), random.randint(10,40), random.randint(10,40)))
         img.save(SNAP_IMAGE)
     except ImportError:
         _tiny = (
@@ -56,9 +68,24 @@ def ensure_snap_image():
 
 
 # ---------------------------------------------------------------------------
-# Browser context
+# Human-like helpers
 # ---------------------------------------------------------------------------
-async def _load_context(playwright, headless: bool = True) -> tuple:
+async def _human_delay(min_ms: int = 600, max_ms: int = 1400):
+    await asyncio.sleep(random.uniform(min_ms / 1000, max_ms / 1000))
+
+
+async def _take_screenshot(page: Page, label: str = ""):
+    try:
+        await page.screenshot(path=str(SCREENSHOT_FILE), full_page=False)
+        _log(f"  📸 Screenshot saved [{label}]")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Browser context — full desktop emulation
+# ---------------------------------------------------------------------------
+async def _build_context(playwright, headless: bool = True):
     browser = await playwright.chromium.launch(
         headless=headless,
         args=[
@@ -66,21 +93,40 @@ async def _load_context(playwright, headless: bool = True) -> tuple:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",  # hide automation flag
         ],
     )
-    kwargs = dict(
-        viewport={"width": 1280, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/130.0.0.0 Safari/537.36"
-        ),
-        locale="en-US",
-    )
-    if SESSION_FILE.exists():
-        kwargs["storage_state"] = json.loads(SESSION_FILE.read_text())
 
-    context = await browser.new_context(**kwargs)
+    ctx_kwargs = dict(
+        viewport=VIEWPORT,
+        user_agent=USER_AGENT,
+        locale="en-US",
+        timezone_id="America/Los_Angeles",
+        # Realistic desktop headers
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Upgrade-Insecure-Requests": "1",
+        },
+    )
+
+    if SESSION_FILE.exists():
+        ctx_kwargs["storage_state"] = json.loads(SESSION_FILE.read_text())
+
+    context = await browser.new_context(**ctx_kwargs)
+
+    # Mask navigator.webdriver so Snapchat doesn't detect automation
+    await context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        window.chrome = { runtime: {} };
+    """)
+
     return browser, context
 
 
@@ -90,56 +136,63 @@ async def _save_session(context: BrowserContext):
 
 
 # ---------------------------------------------------------------------------
-# Login check – robust version
+# Login check
 # ---------------------------------------------------------------------------
 async def check_logged_in(page: Page, emit=None) -> bool:
-    """
-    Navigate to Snapchat web and check if we land on the main app.
-    - web.snapchat.com  = logged in ✓
-    - www.snapchat.com  = NOT logged in (unauthenticated redirect) ✗
-    - accounts/login    = NOT logged in ✗
-    """
+    _log("Navigating to web.snapchat.com...", emit)
     try:
-        _log("Checking session...", emit)
         await page.goto(
             "https://web.snapchat.com/",
             wait_until="domcontentloaded",
-            timeout=30_000,
+            timeout=35_000,
         )
-
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            url = page.url
-            _log(f"  URL: {url}", emit)
-
-            # NOT logged in indicators
-            if any(x in url for x in [
-                "www.snapchat.com",   # unauthenticated redirect
-                "/login",
-                "accounts.snapchat.com",
-                "/unlock",
-                "original_referrer",  # always means unauthenticated redirect
-            ]):
-                _log("  → Unauthenticated redirect detected.", emit)
-                return False
-
-            # Logged in indicators — stayed on web.snapchat.com
-            if "web.snapchat.com" in url:
-                _log("  → Confirmed on web.snapchat.com — logged in!", emit)
-                return True
-
-            await asyncio.sleep(1.5)
-
-        _log(f"  → Timed out, final URL: {page.url}", emit)
-        return False
-
     except Exception as ex:
-        _log(f"  Login check error: {ex}", emit)
+        _log(f"  Navigation error: {ex}", emit)
         return False
+
+    # Wait up to 15s to see where we end up
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        url = page.url
+        _log(f"  URL: {url}", emit)
+
+        # Unauthenticated — Snapchat redirects to www or shows login
+        if any(x in url for x in [
+            "www.snapchat.com",
+            "original_referrer",
+            "/login",
+            "accounts.snapchat.com",
+        ]):
+            await _take_screenshot(page, "unauthenticated")
+            _log("  → Not logged in (redirected away from web app).", emit)
+            return False
+
+        # Authenticated — stayed on web.snapchat.com
+        if "web.snapchat.com" in url:
+            # Extra confirmation: wait for the chat sidebar to appear
+            try:
+                await page.wait_for_selector(
+                    '[data-testid="chat-list-header"], '
+                    '[aria-label="Chats"], '
+                    '[data-testid="nav-item-chat"]',
+                    timeout=10_000,
+                )
+                await _take_screenshot(page, "logged_in")
+                _log("  → Chat UI detected — logged in ✓", emit)
+                return True
+            except Exception:
+                # UI not found yet but URL is right — give it a moment
+                pass
+
+        await asyncio.sleep(1.5)
+
+    await _take_screenshot(page, "timeout")
+    _log(f"  → Timed out. Final URL: {page.url}", emit)
+    return False
 
 
 # ---------------------------------------------------------------------------
-# Send streaks
+# Send streaks — main entry point
 # ---------------------------------------------------------------------------
 async def send_streaks(
     friends: list[str],
@@ -153,30 +206,31 @@ async def send_streaks(
         return results
 
     if not SESSION_FILE.exists():
-        _log("No session file found. Import cookies first.", emit)
+        _log("No session file. Import cookies first.", emit)
         return {f: "no_session" for f in friends}
 
     async with async_playwright() as p:
-        browser, context = await _load_context(p, headless=True)
+        browser, context = await _build_context(p, headless=True)
         page = await context.new_page()
 
         logged_in = await check_logged_in(page, emit)
         if not logged_in:
-            _log("Session expired – go to the web UI and re-import cookies.", emit)
+            _log("Not logged in — re-import cookies in the web UI.", emit)
             await browser.close()
             return {f: "session_expired" for f in friends}
 
-        await asyncio.sleep(2)
+        await _human_delay(1500, 2500)
 
         for username in friends:
             try:
-                _log(f"Sending streak to @{username} ...", emit)
+                _log(f"Sending streak to @{username}...", emit)
                 result = await _send_to_friend(page, username, emit)
                 results[username] = result
-                await asyncio.sleep(3)
+                await _human_delay(3000, 5000)  # natural pause between sends
             except Exception as ex:
                 msg = f"error: {ex}"
                 _log(f"  ✗ {username}: {msg}", emit)
+                await _take_screenshot(page, f"error_{username}")
                 results[username] = msg
 
         await _save_session(context)
@@ -186,31 +240,136 @@ async def send_streaks(
 
 
 # ---------------------------------------------------------------------------
-# Send to a single friend
+# Send to a single friend — navigates like a real user
 # ---------------------------------------------------------------------------
 async def _send_to_friend(page: Page, username: str, emit) -> str:
-    dm_url = f"https://web.snapchat.com/web/deeplink/directchat?username={username}"
-    await page.goto(dm_url, wait_until="domcontentloaded", timeout=25_000)
-    await asyncio.sleep(4)
+    """
+    Real desktop flow:
+    1. Use the search box to find the friend
+    2. Click their chat thread
+    3. Click the camera/media button in the chat
+    4. Upload the snap image via file input
+    5. Click Send
+    """
 
-    # Try clicking a camera/media button first
+    # ── Step 1: Search for the friend ──────────────────────────────────────
+    _log(f"  Searching for @{username}...", emit)
+
+    search_selectors = [
+        '[data-testid="search-input"]',
+        'input[placeholder*="Search" i]',
+        'input[placeholder*="search" i]',
+        '[aria-label*="Search" i]',
+        'input[type="search"]',
+    ]
+
+    search_box = None
+    for sel in search_selectors:
+        try:
+            search_box = await page.wait_for_selector(sel, timeout=5_000)
+            if search_box:
+                break
+        except Exception:
+            pass
+
+    if not search_box:
+        # Fallback: try clicking the search/new chat icon first
+        for icon_sel in [
+            '[aria-label*="new chat" i]',
+            '[aria-label*="compose" i]',
+            '[data-testid="new-chat"]',
+        ]:
+            try:
+                btn = await page.wait_for_selector(icon_sel, timeout=2_000)
+                if btn:
+                    await btn.click()
+                    await _human_delay()
+                    break
+            except Exception:
+                pass
+
+        for sel in search_selectors:
+            try:
+                search_box = await page.wait_for_selector(sel, timeout=4_000)
+                if search_box:
+                    break
+            except Exception:
+                pass
+
+    if not search_box:
+        raise RuntimeError("Could not find search box in Snapchat Web UI.")
+
+    # Click search box and type username naturally
+    await search_box.click()
+    await _human_delay(300, 600)
+    await search_box.fill("")
+    await _human_delay(200, 400)
+
+    # Type character by character like a human
+    for char in username:
+        await page.keyboard.type(char)
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+
+    await _human_delay(1200, 2000)
+    await _take_screenshot(page, f"search_{username}")
+
+    # ── Step 2: Click the friend's result ──────────────────────────────────
+    _log(f"  Clicking @{username} in results...", emit)
+
+    result_selectors = [
+        f'[data-testid="user-result-{username}"]',
+        f'[aria-label*="{username}" i]',
+        f'[title*="{username}" i]',
+        '[data-testid="search-result"]:first-child',
+        '[data-testid="user-row"]:first-child',
+        '.search-result:first-child',
+    ]
+
+    clicked_result = False
+    for sel in result_selectors:
+        try:
+            result = await page.wait_for_selector(sel, timeout=4_000)
+            if result:
+                await result.click()
+                clicked_result = True
+                break
+        except Exception:
+            pass
+
+    if not clicked_result:
+        # Last resort: press Enter to open first result
+        await page.keyboard.press("Enter")
+
+    await _human_delay(1500, 2500)
+    await _take_screenshot(page, f"chat_{username}")
+
+    # ── Step 3: Clear search and open the chat ─────────────────────────────
+    # Press Escape to close search if needed
+    await page.keyboard.press("Escape")
+    await _human_delay(500, 800)
+
+    # ── Step 4: Upload snap via file input ────────────────────────────────
+    _log(f"  Uploading snap to @{username}...", emit)
+
+    # Try clicking a camera/media/attachment button first
     for sel in [
-        'button[data-testid="camera-button"]',
-        'button[aria-label*="camera" i]',
-        '[data-e2e="camera-button"]',
-        'button[aria-label*="media" i]',
-        'button[aria-label*="attachment" i]',
+        '[aria-label*="camera" i]',
+        '[aria-label*="photo" i]',
+        '[aria-label*="media" i]',
+        '[aria-label*="attachment" i]',
+        '[data-testid="camera-button"]',
+        '[data-testid="media-button"]',
     ]:
         try:
             btn = await page.wait_for_selector(sel, timeout=3_000)
             if btn:
                 await btn.click()
-                await asyncio.sleep(1)
+                await _human_delay(600, 1000)
                 break
         except Exception:
             pass
 
-    # Upload file via any visible file input
+    # Find the file input (may be hidden)
     file_input = None
     for sel in [
         'input[type="file"][accept*="image"]',
@@ -225,33 +384,38 @@ async def _send_to_friend(page: Page, username: str, emit) -> str:
             pass
 
     if not file_input:
+        await _take_screenshot(page, f"no_input_{username}")
         raise RuntimeError(
-            f"Could not find file upload input for @{username}. "
-            "Snapchat's DOM may have changed."
+            "Could not find file upload input. "
+            "Check the screenshot at /api/screenshot to see what the browser sees."
         )
 
     await file_input.set_input_files(str(SNAP_IMAGE))
-    await asyncio.sleep(3)
+    await _human_delay(2000, 3000)
+    await _take_screenshot(page, f"uploaded_{username}")
 
-    # Click send
+    # ── Step 5: Send ──────────────────────────────────────────────────────
+    _log(f"  Sending to @{username}...", emit)
+
     for sel in [
-        'button[data-testid="send-button"]',
-        'button[aria-label*="send" i]',
-        '[data-e2e="send-button"]',
+        '[data-testid="send-button"]',
+        '[aria-label*="send" i]',
         'button[type="submit"]',
+        '[data-e2e="send-button"]',
     ]:
         try:
             btn = await page.wait_for_selector(sel, timeout=4_000)
             if btn:
+                await _human_delay(400, 700)
                 await btn.click()
-                await asyncio.sleep(2)
-                _log(f"  ✓ Sent to @{username}", emit)
+                await _human_delay(2000, 3000)
+                _log(f"  ✓ Streak sent to @{username}", emit)
                 return "ok"
         except Exception:
             pass
 
-    # Last resort
+    # Fallback: Enter key
     await page.keyboard.press("Enter")
-    await asyncio.sleep(2)
-    _log(f"  ✓ Sent to @{username} (Enter fallback)", emit)
+    await _human_delay(2000, 3000)
+    _log(f"  ✓ Streak sent to @{username} (Enter)", emit)
     return "ok"

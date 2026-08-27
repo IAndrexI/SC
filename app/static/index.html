@@ -260,9 +260,13 @@
     <h2>Actions</h2>
     <div class="btn-row">
       <button class="btn btn-success" id="btn-send" onclick="doSend()">🔥 Send Streaks Now</button>
+      <button class="btn btn-secondary" onclick="viewScreenshot()">📸 View Browser Screen</button>
     </div>
     <div class="sep"></div>
     <small>Sends to all friends in your list immediately. Watch the live log below.</small>
+    <div id="screenshot-container" style="display:none;margin-top:12px">
+      <img id="screenshot-img" src="" style="width:100%;border-radius:8px;border:1px solid var(--border)" />
+    </div>
   </div>
 
 
@@ -429,6 +433,19 @@
     const r = await fetch('/api/send', { method: 'POST' });
     const d = await r.json();
     appendLog('info', d.message || d.detail);
+  }
+
+  // ── View browser screenshot ──
+  async function viewScreenshot() {
+    const r = await fetch('/api/screenshot');
+    if (!r.ok) { appendLog('err', '⚠ No screenshot yet — trigger a send first.'); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const img = document.getElementById('screenshot-img');
+    const container = document.getElementById('screenshot-container');
+    img.src = url;
+    container.style.display = 'block';
+    img.scrollIntoView({ behavior: 'smooth' });
   }
 
   // ── Upload snap image ──

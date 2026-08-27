@@ -211,6 +211,15 @@ async def upload_snap(file: UploadFile):
     return {"message": "Snap image updated."}
 
 
+@app.get("/api/screenshot")
+async def get_screenshot():
+    """Return the last screenshot taken by the headless browser."""
+    from fastapi.responses import FileResponse as FR
+    if not automation.SCREENSHOT_FILE.exists():
+        raise HTTPException(status_code=404, detail="No screenshot yet. Trigger a send first.")
+    return FR(str(automation.SCREENSHOT_FILE), media_type="image/png")
+
+
 class CookieImport(BaseModel):
     cookies: list[dict]
 
