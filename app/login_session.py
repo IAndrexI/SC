@@ -1,24 +1,20 @@
 """
-login_session.py – Remote browser login via Playwright screenshot streaming.
+login_session.py – Remote browser login via headless Playwright + screenshot streaming.
 
-No VNC, no extra ports. Works on the same port as the web UI.
-The browser runs on Xvfb (virtual display), takes screenshots every second,
-and forwards mouse/keyboard events from the web UI to the browser.
+No extra ports, no VNC, no Xvfb. Works entirely through port 8080.
+Browser runs headless, takes screenshots every second, forwards
+mouse/keyboard events from the web UI.
 """
 
 import asyncio
 import base64
-import os
-import subprocess
-import time
-from pathlib import Path
 from typing import Callable
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from automation import SESSION_FILE, USER_AGENT, VIEWPORT, _log
 
-NOVNC_PORT = 6080  # kept for API compat, not used anymore
+NOVNC_PORT = 6080  # kept for API compat
 
 _state: dict = {
     "active":     False,
@@ -26,22 +22,9 @@ _state: dict = {
     "browser":    None,
     "context":    None,
     "page":       None,
-    "xvfb":       None,
     "last_shot":  b"",   # last JPEG screenshot bytes
     "url":        "",
 }
-
-
-def _kill(proc):
-    if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
 
 
 async def _cleanup():
@@ -55,10 +38,9 @@ async def _cleanup():
             await _state["playwright"].stop()
     except Exception:
         pass
-    _kill(_state["xvfb"])
     _state.update(
         active=False, playwright=None, browser=None,
-        context=None, page=None, xvfb=None, last_shot=b"", url=""
+        context=None, page=None, last_shot=b"", url=""
     )
 
 
@@ -95,34 +77,20 @@ async def start(emit: Callable | None = None) -> str:
     if _state["active"]:
         return "Already running."
 
-    _log("Starting virtual display (Xvfb)...", emit)
-    xvfb = subprocess.Popen(
-        ["Xvfb", ":99", "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _state["xvfb"] = xvfb
-    await asyncio.sleep(2)
-
-    if xvfb.poll() is not None:
-        _log("⚠ Xvfb failed to start — trying without virtual display (may not work).", emit)
-
-    _log("Launching browser...", emit)
-    env = {**os.environ, "DISPLAY": ":99"}
+    _log("Launching browser (headless)...", emit)
 
     pw = await async_playwright().start()
     _state["playwright"] = pw
 
     browser = await pw.chromium.launch(
-        headless=False,
-        env=env,
+        headless=True,
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
+            "--disable-setuid-sandbox",
             f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
             "--disable-blink-features=AutomationControlled",
-            "--start-maximized",
         ],
     )
     _state["browser"] = browser
@@ -132,10 +100,17 @@ async def start(emit: Callable | None = None) -> str:
         user_agent=USER_AGENT,
         locale="en-US",
         timezone_id="America/Los_Angeles",
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+        },
     )
     await context.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
         "window.chrome={runtime:{}};"
+        "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
     )
     _state["context"] = context
 
@@ -145,10 +120,8 @@ async def start(emit: Callable | None = None) -> str:
 
     await page.goto("https://web.snapchat.com/", timeout=30_000)
 
-    # Start screenshot loop in background
     asyncio.create_task(_screenshot_loop())
-
-    _log("✓ Login browser ready. View it in the web UI.", emit)
+    _log("✓ Browser ready — view it in the web UI login panel.", emit)
     return "ok"
 
 
