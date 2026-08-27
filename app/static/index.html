@@ -296,13 +296,29 @@
         <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
       </div>
 
+      <!-- Live Action Macro Recorder Toolbar -->
+      <div style="background:#13141f;border:2px dashed var(--accent2);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:12px;font-weight:700;color:var(--accent2)">🎬 Action Macro Recorder (Record Your Exact Clicks)</span>
+          <span id="macro-status-badge" style="font-size:11px;color:var(--text-dim)">No custom macro recorded</span>
+        </div>
+        <div id="macro-rec-banner" style="display:none;background:#ff2b55;color:#fff;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:700;margin-bottom:8px;animation:pulse 1s infinite">
+          🔴 RECORDING ACTIVE: Click your exact steps on the live screen below (Ghost icon, camera, ✨, Select, Send). When done, click Stop & Save!
+        </div>
+        <div class="btn-row" style="margin-top:0;gap:6px">
+          <button class="btn btn-danger" id="btn-macro-start" style="font-size:12px;padding:6px 14px" onclick="startMacroRec()">🔴 Start Recording Clicks</button>
+          <button class="btn btn-secondary" id="btn-macro-stop" style="font-size:12px;padding:6px 14px;display:none" onclick="stopMacroRec()">⏹️ Stop & Save Macro</button>
+          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="sendStreaksInOpenBrowser()">🚀 Run Streaks (Replay Macro)</button>
+        </div>
+      </div>
+
       <!-- Live Chat & Streak Tools inside the open browser -->
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
-        <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px">📸 Live Snap & Streak Tools</div>
+        <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px">📸 Live Controls</div>
         <div class="btn-row" style="margin-top:0;gap:6px">
-          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="sendStreaksInOpenBrowser()">🚀 Run Auto-Streaks in this Browser</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="uploadSnapToOpenChat()">📷 Attach Snap to Active Chat</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="browserKey('Enter')">↵ Send (Enter)</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
         </div>
       </div>
 
@@ -311,6 +327,7 @@
         <button class="btn btn-secondary" onclick="cancelLogin()">✗ Close Browser</button>
       </div>
     </div>
+
 
 
 
@@ -658,13 +675,38 @@
     setTimeout(triggerRefreshNow, 800);
   }
 
-  async function sendStreaksInOpenBrowser() {
-    appendLog('info', '🚀 Running auto-streaks sequence inside active browser…');
-    const r = await fetch('/api/login/send-streaks-live', { method: 'POST' });
-    const res = await r.json();
-    appendLog('info', 'Streaks sequence finished: ' + JSON.stringify(res));
-    refreshStatus();
+  async function startMacroRec() {
+    await fetch('/api/macro/record/start', { method: 'POST' });
+    document.getElementById('btn-macro-start').style.display = 'none';
+    document.getElementById('btn-macro-stop').style.display = 'inline-flex';
+    document.getElementById('macro-rec-banner').style.display = 'block';
+    appendLog('info', '🔴 MACRO RECORDING STARTED: Click on the live screen to record your exact actions.');
   }
+
+  async function stopMacroRec() {
+    const r = await fetch('/api/macro/record/stop', { method: 'POST' });
+    const res = await r.json();
+    document.getElementById('btn-macro-start').style.display = 'inline-flex';
+    document.getElementById('btn-macro-stop').style.display = 'none';
+    document.getElementById('macro-rec-banner').style.display = 'none';
+    appendLog('info', `⏹️ MACRO SAVED: ${res.count} steps recorded! Future runs will replay this exact sequence.`);
+    refreshMacroInfo();
+  }
+
+  async function refreshMacroInfo() {
+    try {
+      const info = await fetch('/api/macro/info').then(r => r.json());
+      const badge = document.getElementById('macro-status-badge');
+      if (info.has_macro) {
+        badge.style.color = 'var(--green)';
+        badge.textContent = `✓ Custom Macro Active (${info.count} steps)`;
+      } else {
+        badge.style.color = 'var(--text-dim)';
+        badge.textContent = 'No custom macro recorded (using default flow)';
+      }
+    } catch(e) {}
+  }
+
 
 
   async function browserClick(evt) {
@@ -773,8 +815,10 @@
   loadConfig();
   loadLogs();
   refreshStatus();
+  refreshMacroInfo();
   setInterval(refreshStatus, 5000);
 </script>
+
 
 </body>
 </html>

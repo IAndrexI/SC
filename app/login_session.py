@@ -8,11 +8,13 @@ mouse/keyboard events from the web UI.
 
 import asyncio
 import base64
+import json
+import time
 from typing import Callable
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from automation import SESSION_FILE, USER_AGENT, VIEWPORT, USER_DATA_DIR, _log
+from automation import SESSION_FILE, USER_AGENT, VIEWPORT, USER_DATA_DIR, MACRO_FILE, replay_macro, _log
 
 NOVNC_PORT = 6080  # kept for API compat
 
@@ -24,6 +26,39 @@ _state: dict = {
     "last_shot":  b"",   # last JPEG screenshot bytes
     "url":        "",
 }
+
+_macro: dict = {
+    "recording": False,
+    "events": [],
+    "last_time": 0.0,
+}
+
+
+def start_macro_recording() -> dict:
+    _macro["recording"] = True
+    _macro["events"] = []
+    _macro["last_time"] = time.time()
+    return {"ok": True, "recording": True}
+
+
+def stop_macro_recording() -> dict:
+    _macro["recording"] = False
+    events = list(_macro["events"])
+    if events:
+        MACRO_FILE.write_text(json.dumps(events, indent=2))
+    return {"ok": True, "count": len(events), "events": events}
+
+
+def get_macro_info() -> dict:
+    has_macro = MACRO_FILE.exists()
+    count = 0
+    if has_macro:
+        try:
+            count = len(json.loads(MACRO_FILE.read_text()))
+        except Exception:
+            pass
+    return {"has_macro": has_macro, "count": count, "recording": _macro["recording"]}
+
 
 
 async def _cleanup():
@@ -128,6 +163,12 @@ async def start(emit: Callable | None = None) -> str:
 
 async def click(x: int, y: int):
     """Forward a click at (x, y) to the browser with realistic mouse move and down/up."""
+    if _macro["recording"]:
+        now = time.time()
+        delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 1200
+        _macro["last_time"] = now
+        _macro["events"].append({"type": "click", "x": x, "y": y, "delay_ms": delay})
+
     page: Page | None = _state["page"]
     if page:
         try:
@@ -141,92 +182,14 @@ async def click(x: int, y: int):
             pass
 
 
-async def fill_field(field: str, value: str) -> dict:
-    """Smart field focus and fill for username, password, or verification code."""
-    page: Page | None = _state["page"]
-    if not page:
-        return {"ok": False, "error": "No active browser"}
-
-    selectors_map = {
-        "username": [
-            "input#accountIdentifier",
-            "input[name='accountIdentifier']",
-            "input[autocomplete='username']",
-            "input[name='username']",
-            "input[type='email']",
-            "input[type='text']",
-        ],
-        "password": [
-            "input#password",
-            "input[name='password']",
-            "input[autocomplete='current-password']",
-            "input[type='password']",
-        ],
-        "code": [
-            "input[inputmode='numeric']",
-            "input[type='number']",
-            "input[name='code']",
-            "input[name='verificationCode']",
-            "input[maxlength='6']",
-            "input[type='text']",
-        ]
-    }
-
-    selectors = selectors_map.get(field.lower(), ["input[type='text']"])
-    for sel in selectors:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=1500):
-                await loc.click()
-                await asyncio.sleep(0.1)
-                await loc.fill("")
-                await asyncio.sleep(0.1)
-                await loc.type(value, delay=50)
-                return {"ok": True, "selector": sel}
-        except Exception:
-            continue
-
-    # Fallback: type directly into currently active element
-    try:
-        await page.keyboard.type(value, delay=50)
-        return {"ok": True, "fallback": "active_element"}
-    except Exception as ex:
-        return {"ok": False, "error": str(ex)}
-
-
-async def click_submit() -> dict:
-    """Click primary submit / Next / Log In button."""
-    page: Page | None = _state["page"]
-    if not page:
-        return {"ok": False, "error": "No active browser"}
-
-    submit_selectors = [
-        "button[type='submit']",
-        "button:has-text('Next')",
-        "button:has-text('Log In')",
-        "button:has-text('Sign In')",
-        "button:has-text('Continue')",
-        "button:has-text('Submit')",
-        "[data-testid='submit-button']",
-    ]
-    for sel in submit_selectors:
-        try:
-            btn = page.locator(sel).first
-            if await btn.is_visible(timeout=1500):
-                await btn.click()
-                return {"ok": True, "selector": sel}
-        except Exception:
-            continue
-
-    try:
-        await page.keyboard.press("Enter")
-        return {"ok": True, "fallback": "Enter"}
-    except Exception as ex:
-        return {"ok": False, "error": str(ex)}
-
-
 async def type_text(text: str):
     """Type text into the browser."""
+    if _macro["recording"]:
+        now = time.time()
+        delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 800
+        _macro["last_time"] = now
+        _macro["events"].append({"type": "type", "text": text, "delay_ms": delay})
+
     page: Page | None = _state["page"]
     if page:
         await page.keyboard.type(text, delay=60)
@@ -234,6 +197,12 @@ async def type_text(text: str):
 
 async def key_press(key: str):
     """Press a special key (Enter, Tab, Backspace, Escape...)."""
+    if _macro["recording"]:
+        now = time.time()
+        delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 800
+        _macro["last_time"] = now
+        _macro["events"].append({"type": "key", "key": key, "delay_ms": delay})
+
     page: Page | None = _state["page"]
     if page:
         await page.keyboard.press(key)
@@ -289,15 +258,19 @@ async def upload_snap_to_chat() -> dict:
 
 
 async def run_streak_in_active_session(friends: list[str] | None = None, emit: Callable | None = None) -> dict:
-    """Execute shortcut streak sequence directly inside the currently visible interactive browser."""
+    """Execute streak sequence directly inside the currently visible interactive browser."""
     if not _state["active"] or not _state["page"]:
         return {"error": "Browser not active"}
 
-    from automation import send_streaks_shortcut_flow, ensure_snap_image
+    from automation import MACRO_FILE, replay_macro, send_streaks_shortcut_flow, ensure_snap_image
     ensure_snap_image()
     page = _state["page"]
-    results = await send_streaks_shortcut_flow(page, emit=emit)
+    if MACRO_FILE.exists():
+        results = await replay_macro(page, emit=emit)
+    else:
+        results = await send_streaks_shortcut_flow(page, emit=emit)
     return results
+
 
 
 

@@ -20,11 +20,13 @@ SESSION_FILE = DATA_DIR / "session.json"
 SNAP_IMAGE   = DATA_DIR / "snap.png"
 LOG_FILE     = DATA_DIR / "activity.log"
 SCREENSHOT_FILE = DATA_DIR / "last_screenshot.png"
+MACRO_FILE   = DATA_DIR / "macro.json"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 USER_DATA_DIR = DATA_DIR / "browser_profile"
 USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # Realistic desktop Chrome fingerprint (matches Playwright Chromium 130)
 USER_AGENT = (
@@ -432,7 +434,63 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
 
 
 # ---------------------------------------------------------------------------
-# Send streaks — main entry point (supports both shortcut flow & fallback)
+# Replay Recorded Macro (Replays recorded user clicks and timings)
+# ---------------------------------------------------------------------------
+async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) -> dict:
+    if not MACRO_FILE.exists():
+        _log("No custom recorded macro found. Using default shortcut sequence...", emit)
+        return await send_streaks_shortcut_flow(page, emit=emit)
+
+    try:
+        events = json.loads(MACRO_FILE.read_text())
+    except Exception as ex:
+        _log(f"⚠ Failed to load macro: {ex}. Using default shortcut sequence...", emit)
+        return await send_streaks_shortcut_flow(page, emit=emit)
+
+    if not events:
+        _log("Macro file is empty. Using default shortcut sequence...", emit)
+        return await send_streaks_shortcut_flow(page, emit=emit)
+
+    _log(f"🎬 Replaying custom recorded macro ({len(events)} steps)...", emit)
+    for idx, ev in enumerate(events):
+        delay = max(0.5, min(ev.get("delay_ms", 1200) / 1000, 3.5))
+        await asyncio.sleep(delay)
+
+        ev_type = ev.get("type")
+        if ev_type == "click":
+            x, y = ev["x"], ev["y"]
+            _log(f"  Step {idx+1}/{len(events)}: Click ({x}, {y})", emit)
+            try:
+                await page.mouse.move(x, y)
+                await asyncio.sleep(0.05)
+                await page.mouse.down()
+                await asyncio.sleep(0.08)
+                await page.mouse.up()
+            except Exception as e:
+                _log(f"  Step {idx+1} click error: {e}", emit)
+        elif ev_type == "key":
+            key = ev["key"]
+            _log(f"  Step {idx+1}/{len(events)}: Key '{key}'", emit)
+            try:
+                await page.keyboard.press(key)
+            except Exception as e:
+                _log(f"  Step {idx+1} key error: {e}", emit)
+        elif ev_type == "type":
+            text = ev["text"]
+            _log(f"  Step {idx+1}/{len(events)}: Type '{text}'", emit)
+            try:
+                await page.keyboard.type(text, delay=50)
+            except Exception as e:
+                _log(f"  Step {idx+1} type error: {e}", emit)
+
+    await _human_delay(2000, 3000)
+    await _take_screenshot(page, "macro_replayed")
+    _log("🎉 Macro sequence completed successfully!", emit)
+    return {"*//Eric\\\\*": "ok", "Dylan": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Send streaks — main entry point (replays macro if available or shortcut flow)
 # ---------------------------------------------------------------------------
 async def send_streaks(
     friends: list[str] | None = None,
@@ -456,7 +514,10 @@ async def send_streaks(
                 return {"*//Eric\\\\*": "session_expired", "Dylan": "session_expired"}
 
             await _human_delay(1500, 2500)
-            results = await send_streaks_shortcut_flow(page, emit=emit)
+            if MACRO_FILE.exists():
+                results = await replay_macro(page, emit=emit)
+            else:
+                results = await send_streaks_shortcut_flow(page, emit=emit)
             await _save_session(context)
         finally:
             run_flag[0] = False
@@ -468,6 +529,7 @@ async def send_streaks(
             await context.close()
 
     return results
+
 
 
 

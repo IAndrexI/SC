@@ -278,14 +278,22 @@ async def login_upload_snap_here():
     res = await login_session.upload_snap_to_chat()
     return res
 
-@app.post("/api/login/send-streaks-live")
-async def login_send_streaks_live():
-    cfg = config.load()
-    friends = cfg.get("friends", [])
-    if not friends:
-        raise HTTPException(status_code=400, detail="No friends configured.")
-    res = await login_session.run_streak_in_active_session(friends, emit=_emit)
+@app.post("/api/macro/record/start")
+async def macro_record_start():
+    res = login_session.start_macro_recording()
+    _emit("🔴 Macro recording started! Perform your actions on the live screen now...")
     return res
+
+@app.post("/api/macro/record/stop")
+async def macro_record_stop():
+    res = login_session.stop_macro_recording()
+    _emit(f"⏹️ Macro recording saved ({res['count']} steps recorded)!")
+    return res
+
+@app.get("/api/macro/info")
+async def macro_info():
+    return login_session.get_macro_info()
+
 
 
 
