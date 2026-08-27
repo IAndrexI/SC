@@ -205,9 +205,54 @@ async def login_save():
 
 @app.post("/api/login/cancel")
 async def login_cancel():
-    """Cancel the active VNC login session without saving."""
+    """Cancel the active login session without saving."""
     await login_session.cancel(emit=_emit)
     return {"message": "Login session cancelled."}
+
+
+@app.get("/api/login/screenshot")
+async def login_screenshot():
+    """Return the latest browser screenshot as a base64 JPEG."""
+    return {
+        "image": login_session.last_screenshot_b64(),
+        "url":   login_session.current_url(),
+        "active": login_session.is_active(),
+    }
+
+
+class ClickInput(BaseModel):
+    x: int
+    y: int
+
+class TypeInput(BaseModel):
+    text: str
+
+class KeyInput(BaseModel):
+    key: str
+
+class NavInput(BaseModel):
+    url: str
+
+
+@app.post("/api/login/click")
+async def login_click(body: ClickInput):
+    await login_session.click(body.x, body.y)
+    return {"ok": True}
+
+@app.post("/api/login/type")
+async def login_type(body: TypeInput):
+    await login_session.type_text(body.text)
+    return {"ok": True}
+
+@app.post("/api/login/key")
+async def login_key(body: KeyInput):
+    await login_session.key_press(body.key)
+    return {"ok": True}
+
+@app.post("/api/login/navigate")
+async def login_navigate(body: NavInput):
+    await login_session.navigate(body.url)
+    return {"ok": True}
 
 
 @app.post("/api/send")
