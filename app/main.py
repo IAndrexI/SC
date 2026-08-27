@@ -227,27 +227,46 @@ async def import_cookies(body: CookieImport):
     # Convert browser extension cookie format → Playwright storage_state format
     playwright_cookies = []
     for c in body.cookies:
-        # Cookie-Editor / EditThisCookie export format varies slightly — normalise it
-        cookie = {
-            "name":     c.get("name", ""),
-            "value":    c.get("value", ""),
-            "domain":   c.get("domain", ".snapchat.com"),
-            "path":     c.get("path", "/"),
-            "secure":   c.get("secure", True),
-            "httpOnly": c.get("httpOnly", c.get("httponly", False)),
-            "sameSite": c.get("sameSite", c.get("samesite", "None")),
-        }
-        # Playwright needs sameSite to be "Strict" | "Lax" | "None"
-        ss = cookie["sameSite"]
-        if isinstance(ss, str):
-            cookie["sameSite"] = ss.capitalize() if ss.lower() in ("strict", "lax", "none") else "None"
-        else:
-            cookie["sameSite"] = "None"
+        name  = c.get("name", "")
+        value = c.get("value", "")
+        if not name or not value:
+            continue
 
-        if c.get("expirationDate"):
-            cookie["expires"] = int(c["expirationDate"])
-        elif c.get("expires") and isinstance(c["expires"], (int, float)):
-            cookie["expires"] = int(c["expires"])
+        # Only keep Snapchat-related cookies
+        raw_domain = c.get("domain", ".snapchat.com")
+        if "snapchat" not in raw_domain and "snap.com" not in raw_domain:
+            continue
+
+        # Ensure domain starts with a dot so it applies to all subdomains
+        domain = raw_domain if raw_domain.startswith(".") else f".{raw_domain}"
+        # Normalise to .snapchat.com for all snap domains
+        if not domain.endswith("snapchat.com"):
+            domain = ".snapchat.com"
+
+        ss_raw = c.get("sameSite", c.get("samesite", "no_restriction"))
+        ss_map = {
+            "no_restriction": "None",
+            "unspecified":    "None",
+            "lax":            "Lax",
+            "strict":         "Strict",
+            "none":           "None",
+        }
+        same_site = ss_map.get(str(ss_raw).lower(), "None")
+
+        cookie: dict = {
+            "name":     name,
+            "value":    value,
+            "domain":   domain,
+            "path":     c.get("path", "/"),
+            "secure":   bool(c.get("secure", True)),
+            "httpOnly": bool(c.get("httpOnly", c.get("httponly", False))),
+            "sameSite": same_site,
+        }
+
+        # Expiry
+        exp = c.get("expirationDate", c.get("expires"))
+        if isinstance(exp, (int, float)) and exp > 0:
+            cookie["expires"] = int(exp)
 
         playwright_cookies.append(cookie)
 
