@@ -341,8 +341,9 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
         except Exception:
             pass
 
-    await _human_delay(1500, 2500)
     await _take_screenshot(page, "step0_after_ghost_click")
+    _log("  ⏳ Waiting 30 seconds before Step 1...", emit)
+    await asyncio.sleep(30)
 
     # ── Step 1: Click Camera in center (Photo 1) ──────────────────────────────
     _log("Step 1: Clicking center camera icon...", emit)
@@ -374,9 +375,9 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
         except Exception:
             pass
 
-    await _human_delay(1500, 2500)
     await _take_screenshot(page, "step1_camera_opened")
-
+    _log("  ⏳ Waiting 30 seconds before Step 2...", emit)
+    await asyncio.sleep(30)
 
     # ── Step 2: Click White Circle Capture Button (Photo 2) ───────────────────
     _log("Step 2: Clicking snap capture shutter circle...", emit)
@@ -409,8 +410,9 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
         except Exception:
             pass
 
-    await _human_delay(1500, 2500)
     await _take_screenshot(page, "step2_snap_captured")
+    _log("  ⏳ Waiting 30 seconds before Step 3...", emit)
+    await asyncio.sleep(30)
 
     # ── Step 3: Click Stars / Shortcut Icon ✨ (Photo 3) ──────────────────────
     _log("Step 3: Clicking Stars / Shortcut ✨ icon...", emit)
@@ -445,8 +447,9 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
         except Exception:
             pass
 
-    await _human_delay(1200, 2000)
     await _take_screenshot(page, "step3_shortcuts_opened")
+    _log("  ⏳ Waiting 30 seconds before Step 4...", emit)
+    await asyncio.sleep(30)
 
     # ── Step 4: Click 'Select' text button to check profiles (Photo 4) ────────
     _log("Step 4: Clicking 'Select' to select recipients...", emit)
@@ -479,8 +482,9 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
             except Exception:
                 pass
 
-    await _human_delay(1200, 2000)
     await _take_screenshot(page, "step4_recipients_selected")
+    _log("  ⏳ Waiting 30 seconds before Step 5...", emit)
+    await asyncio.sleep(30)
 
     # ── Step 5: Click Blue 'Send ▶' Button (Photo 4) ──────────────────────────
     _log("Step 5: Clicking blue 'Send ▶' button...", emit)
@@ -517,7 +521,7 @@ async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | N
 
 
 # ---------------------------------------------------------------------------
-# Replay Recorded Macro (Replays recorded user clicks and timings)
+# Replay Recorded Macro (Replays recorded user clicks with 30s pause between steps)
 # ---------------------------------------------------------------------------
 async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) -> dict:
     if not MACRO_FILE.exists():
@@ -534,10 +538,13 @@ async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) ->
         _log("Macro file is empty. Using default shortcut sequence...", emit)
         return await send_streaks_shortcut_flow(page, emit=emit)
 
-    _log(f"🎬 Replaying custom recorded macro ({len(events)} steps)...", emit)
+    _log(f"🎬 Replaying custom recorded macro ({len(events)} steps, 30s between steps)...", emit)
     for idx, ev in enumerate(events):
-        delay = max(0.5, min(ev.get("delay_ms", 1200) / 1000, 3.5))
-        await asyncio.sleep(delay)
+        if idx > 0:
+            _log(f"  ⏳ Waiting 30 seconds before step {idx+1}...", emit)
+            await asyncio.sleep(30)
+        else:
+            await asyncio.sleep(1.5)
 
         ev_type = ev.get("type")
         if ev_type == "click":
@@ -545,9 +552,9 @@ async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) ->
             _log(f"  Step {idx+1}/{len(events)}: Click ({x}, {y})", emit)
             try:
                 await page.mouse.move(x, y)
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.1)
                 await page.mouse.down()
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(0.1)
                 await page.mouse.up()
             except Exception as e:
                 _log(f"  Step {idx+1} click error: {e}", emit)
@@ -566,10 +573,13 @@ async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) ->
             except Exception as e:
                 _log(f"  Step {idx+1} type error: {e}", emit)
 
+        await _take_screenshot(page, f"macro_step_{idx+1}")
+
     await _human_delay(2000, 3000)
     await _take_screenshot(page, "macro_replayed")
     _log("🎉 Macro sequence completed successfully!", emit)
     return {"*//Eric\\\\*": "ok", "Dylan": "ok"}
+
 
 
 # ---------------------------------------------------------------------------
