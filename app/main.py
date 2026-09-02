@@ -249,6 +249,40 @@ async def login_cancel():
     return {"message": "Login session cancelled."}
 
 
+@app.post("/api/login/clear-browser-data")
+async def clear_browser_data():
+    """Use CDP to clear the live browser's cache, cookies, and site storage."""
+    cdp = login_session._state.get("cdp")
+    page = login_session._state.get("page")
+    context = login_session._state.get("context")
+
+    if not cdp and not page:
+        raise HTTPException(status_code=400, detail="No active browser session. Start a login session first.")
+
+    try:
+        # Clear network cache (images, scripts, stylesheets, etc.)
+        await cdp.send("Network.clearBrowserCache")
+
+        # Clear all site data for snapchat origins
+        for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com", "https://snapchat.com"]:
+            try:
+                await cdp.send("Storage.clearDataForOrigin", {
+                    "origin": origin,
+                    "storageTypes": "all"
+                })
+            except Exception:
+                pass
+
+        # Also clear cookies via context if available
+        if context:
+            await context.clear_cookies()
+
+        _emit("🧹 Browser cache, cookies, and site data cleared successfully.")
+        return {"ok": True, "message": "Browser cache and data cleared."}
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 class SessionImportInput(BaseModel):
     data: str
 

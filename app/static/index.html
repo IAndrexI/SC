@@ -341,6 +341,7 @@
         <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Backspace')">⌫ Backspace</button>
         <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Escape')">Esc</button>
         <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
+        <button class="btn btn-danger" style="font-size:11px;padding:5px 12px" onclick="clearBrowserData()">🧹 Clear Cache &amp; Cookies</button>
       </div>
 
       <!-- Live Action Macro Recorder Toolbar -->
@@ -699,7 +700,24 @@
     }
   }
 
+  async function clearBrowserData() {
+    appendLog('info', 'Clearing browser cache, cookies, and site data…');
+    try {
+      const r = await fetch('/api/login/clear-browser-data', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        appendLog('info', '✓ Browser cache and cookies cleared. Reloading…');
+        setTimeout(() => browserNav('https://web.snapchat.com/'), 800);
+      } else {
+        appendLog('err', '✗ ' + (d.detail || 'Clear failed'));
+      }
+    } catch(e) {
+      appendLog('err', '✗ ' + e.message);
+    }
+  }
+
   async function clearSession() {
+
     if (!confirm('Clear all cookies, session data, and browser cache? You will need to log in again.')) return;
     appendLog('info', 'Clearing cookies and browser cache…');
     const r = await fetch('/api/session/clear', { method: 'POST' });
