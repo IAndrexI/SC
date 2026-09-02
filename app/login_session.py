@@ -74,7 +74,23 @@ def get_macro_info() -> dict:
 
 
 
+_state: dict = {
+    "active":        False,
+    "playwright":    None,
+    "context":       None,
+    "page":          None,
+    "cdp":           None,
+    "last_shot_b64": "",
+    "url":           "",
+}
+
+
 async def _cleanup():
+    try:
+        if _state["cdp"]:
+            await _state["cdp"].detach()
+    except Exception:
+        pass
     try:
         if _state["context"]:
             await _state["context"].close()
@@ -87,7 +103,7 @@ async def _cleanup():
         pass
     _state.update(
         active=False, playwright=None,
-        context=None, page=None, last_shot=b"", url=""
+        context=None, page=None, cdp=None, last_shot_b64="", url=""
     )
 
 
@@ -97,27 +113,26 @@ def is_active() -> bool:
 
 def last_screenshot_b64() -> str:
     """Return the latest screenshot as a base64 JPEG string."""
-    if not _state["last_shot"]:
-        return ""
-    return base64.b64encode(_state["last_shot"]).decode()
+    return _state.get("last_shot_b64", "")
 
 
 def current_url() -> str:
     return _state.get("url", "")
 
 
-async def _screenshot_loop():
-    """Background task: keeps refreshing the screenshot every second."""
+async def _fast_frame_loop():
+    """Fallback frame loop in case CDP screencast is idle."""
     while _state["active"]:
         try:
             page: Page = _state["page"]
-            if page:
-                img = await page.screenshot(type="jpeg", quality=75, full_page=False)
-                _state["last_shot"] = img
+            if page and not _state["last_shot_b64"]:
+                img = await page.screenshot(type="jpeg", quality=60, full_page=False)
+                _state["last_shot_b64"] = base64.b64encode(img).decode()
                 _state["url"] = page.url
         except Exception:
             pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
+
 
 
 async def start(emit: Callable | None = None) -> str:
@@ -177,8 +192,37 @@ async def start(emit: Callable | None = None) -> str:
     _state["page"] = page
     _state["active"] = True
 
-    # Start screenshot stream immediately so UI updates
-    asyncio.create_task(_screenshot_loop())
+    # Start native real-time CDP Screencast (high-speed, low-latency)
+    try:
+        cdp = await context.new_cdp_session(page)
+        _state["cdp"] = cdp
+
+        async def on_screencast_frame(params):
+            session_id = params.get("sessionId")
+            data_b64 = params.get("data", "")
+            if session_id:
+                try:
+                    await cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
+                except Exception:
+                    pass
+            if data_b64:
+                _state["last_shot_b64"] = data_b64
+                _state["url"] = page.url
+                if emit:
+                    emit(json.dumps({"type": "screencast", "image": data_b64, "url": page.url}))
+
+        cdp.on("Page.screencastFrame", lambda params: asyncio.create_task(on_screencast_frame(params)))
+
+        await cdp.send("Page.startScreencast", {
+            "format": "jpeg",
+            "quality": 60,
+            "maxWidth": 1440,
+            "maxHeight": 900,
+            "everyNthFrame": 1,
+        })
+    except Exception as ex:
+        _log(f"CDP Screencast fallback: {ex}", emit)
+        asyncio.create_task(_fast_frame_loop())
 
     _log("Navigating to Snapchat Web...", emit)
     try:
@@ -186,8 +230,9 @@ async def start(emit: Callable | None = None) -> str:
     except Exception as ex:
         _log(f"Navigation notice: {ex}", emit)
 
-    _log("✓ Browser ready — view it in the web UI login panel.", emit)
+    _log("✓ Browser ready — live stream active.", emit)
     return "ok"
+
 
 
 

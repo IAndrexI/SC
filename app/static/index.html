@@ -392,10 +392,25 @@
     ws.onopen = () => {
       const box = document.getElementById('log-box');
       if (box.textContent === 'Connecting to log stream…') box.textContent = '';
-      appendLog('info', '⚡ Connected to live stream.');
+    ws.onmessage = e => {
+      if (e.data && e.data.startsWith('{')) {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.type === 'screencast' && d.image) {
+            const img = document.getElementById('browser-shot');
+            if (img) {
+              img.src = 'data:image/jpeg;base64,' + d.image;
+              const loader = document.getElementById('browser-loading');
+              if (loader) loader.style.display = 'none';
+            }
+            if (d.url) document.getElementById('browser-url').textContent = d.url;
+            return;
+          }
+        } catch(err) {}
+      }
+      appendLog('', e.data);
     };
-    ws.onmessage = e => appendLog('', e.data);
-    ws.onclose = () => {
+
       appendLog('err', '⚠ Stream disconnected. Reconnecting in 3s…');
       setTimeout(connectWS, 3000);
     };
