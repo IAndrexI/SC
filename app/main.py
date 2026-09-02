@@ -249,6 +249,76 @@ async def login_cancel():
     return {"message": "Login session cancelled."}
 
 
+class SessionImportInput(BaseModel):
+    data: str
+
+
+@app.post("/api/session/import")
+async def session_import(body: SessionImportInput):
+    """Import cookies/storage state directly from standard JSON or cookie string."""
+    raw = body.data.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty session data.")
+
+    storage_state = {"cookies": [], "origins": []}
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and "cookies" in parsed:
+            # Playwright storage state format
+            storage_state = parsed
+        elif isinstance(parsed, list):
+            # Standard Cookie-Editor / EditThisCookie array format
+            cookies = []
+            for c in parsed:
+                cookie = {
+                    "name": c.get("name"),
+                    "value": c.get("value"),
+                    "domain": c.get("domain", ".snapchat.com"),
+                    "path": c.get("path", "/"),
+                    "expires": int(c.get("expirationDate", time.time() + 86400 * 180)) if c.get("expirationDate") else -1,
+                    "httpOnly": bool(c.get("httpOnly", False)),
+                    "secure": bool(c.get("secure", True)),
+                    "sameSite": "None" if c.get("sameSite") == "no_restriction" else (c.get("sameSite", "Lax").capitalize() if c.get("sameSite") else "Lax")
+                }
+                cookies.append(cookie)
+            storage_state["cookies"] = cookies
+            storage_state["origins"] = [{
+                "origin": "https://web.snapchat.com",
+                "localStorage": []
+            }]
+    except json.JSONDecodeError:
+        # Cookie string format: key=val; key2=val2
+        cookies = []
+        for pair in raw.split(";"):
+            if "=" in pair:
+                k, v = pair.strip().split("=", 1)
+                cookies.append({
+                    "name": k.strip(),
+                    "value": v.strip(),
+                    "domain": ".snapchat.com",
+                    "path": "/",
+                    "expires": int(time.time() + 86400 * 180),
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax"
+                })
+        if not cookies:
+            raise HTTPException(status_code=400, detail="Could not parse cookie string.")
+        storage_state["cookies"] = cookies
+        storage_state["origins"] = [{
+            "origin": "https://web.snapchat.com",
+            "localStorage": []
+        }]
+
+    # Save to session.json
+    automation.SESSION_FILE.write_text(json.dumps(storage_state, indent=2))
+    _state["logged_in"] = True
+    _emit(f"✓ Successfully imported {len(storage_state.get('cookies', []))} session cookies! Server is now authenticated.")
+    return {"ok": True, "cookies_count": len(storage_state.get("cookies", []))}
+
+
+
 @app.get("/api/login/screenshot")
 async def login_screenshot():
     """Return the latest browser screenshot as a base64 JPEG."""

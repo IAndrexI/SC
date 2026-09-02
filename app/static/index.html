@@ -261,8 +261,18 @@
       <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
         Start a browser or Android session on the server to interact with Snapchat, record macros, or test automated streak sending.
       </p>
-      <div class="btn-row">
+      <div class="btn-row" style="margin-bottom:16px">
         <button class="btn btn-primary" onclick="startLogin()">🖥️ Open Live Browser Session</button>
+      </div>
+
+      <!-- 1-Click Session / Cookie Importer -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:10px">
+        <div style="font-size:13px;font-weight:700;color:var(--yellow);margin-bottom:6px">🍪 1-Click Cookie / Session Import (Bypass Login & Captchas)</div>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
+          If Snapchat Web blocks login on server IPs, export cookies from <code>web.snapchat.com</code> on your PC (e.g. using the <b>Cookie-Editor</b> Chrome extension → <i>Export JSON</i>) and paste below:
+        </p>
+        <textarea id="session-import-text" rows="3" placeholder='Paste Cookie-Editor JSON or cookies string here ([{"name":"sc-a-nonce", ...}])' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:8px;resize:vertical"></textarea>
+        <button class="btn btn-success" style="font-size:12px;padding:6px 16px" onclick="importSession()">📥 Import Session & Save Login</button>
       </div>
     </div>
 
@@ -272,6 +282,15 @@
         <span style="font-size:12px;color:var(--text-dim);white-space:nowrap">URL:</span>
         <code id="browser-url" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)">loading…</code>
       </div>
+
+      <!-- 1-Click Session / Cookie Importer inside active view -->
+      <details style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px">
+        <summary style="font-size:12px;font-weight:700;color:var(--yellow);cursor:pointer">🍪 Bypass Login: Import Cookies / Session JSON</summary>
+        <p style="font-size:11px;color:var(--text-dim);margin:6px 0">Paste Cookie-Editor JSON from your desktop browser to log in instantly:</p>
+        <textarea id="session-import-text-active" rows="2" placeholder='Paste Cookie-Editor JSON here...' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:6px;resize:vertical"></textarea>
+        <button class="btn btn-success" style="font-size:11px;padding:4px 12px" onclick="importSessionActive()">📥 Inject Cookies & Reload</button>
+      </details>
+
 
 
       <!-- Quick Auto-Fill Helper Form -->
@@ -634,7 +653,50 @@
     if (_shotLoop) { clearInterval(_shotLoop); _shotLoop = null; }
   }
 
+  async function importSession() {
+    const text = document.getElementById('session-import-text').value.trim();
+    if (!text) { alert('Please paste your Cookie-Editor JSON or cookie string first.'); return; }
+    appendLog('info', 'Importing session cookies into server profile…');
+    const r = await fetch('/api/session/import', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ data: text })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', `✓ Imported ${d.cookies_count} cookies! Session authenticated.`);
+      alert(`Success! Imported ${d.cookies_count} cookies. You are now logged in.`);
+      refreshStatus();
+    } else {
+      appendLog('err', `✗ Failed to import cookies: ${d.detail || 'Invalid format'}`);
+      alert('Error: ' + (d.detail || 'Invalid format'));
+    }
+  }
+
+  async function importSessionActive() {
+    const text = document.getElementById('session-import-text-active').value.trim();
+    if (!text) { alert('Please paste your Cookie-Editor JSON first.'); return; }
+    appendLog('info', 'Injecting session cookies into active browser…');
+    const r = await fetch('/api/session/import', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ data: text })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', `✓ Injected ${d.cookies_count} cookies! Reloading page…`);
+      await fetch('/api/login/navigate', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ url: 'https://web.snapchat.com/' })
+      });
+      setTimeout(triggerRefreshNow, 1000);
+      setTimeout(triggerRefreshNow, 2500);
+    }
+  }
+
   async function triggerRefreshNow() {
+
     try {
       const d = await fetch('/api/login/screenshot').then(r => r.json());
       if (d.image) {
