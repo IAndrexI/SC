@@ -319,6 +319,27 @@ async def session_import(body: SessionImportInput):
 
 
 
+@app.post("/api/session/clear")
+async def session_clear():
+    """Delete all stored cookies, session data, and user-data-dir cache."""
+    import shutil
+    cleared = []
+
+    # Remove session.json
+    if automation.SESSION_FILE.exists():
+        automation.SESSION_FILE.unlink()
+        cleared.append("session.json")
+
+    # Remove Playwright user-data-dir (profile cache, IndexedDB, cookies)
+    if automation.USER_DATA_DIR.exists():
+        shutil.rmtree(automation.USER_DATA_DIR, ignore_errors=True)
+        cleared.append("browser profile cache")
+
+    _state["logged_in"] = False
+    _emit("🗑️ Cleared: " + (", ".join(cleared) if cleared else "nothing to clear") + ". All cookies and cache wiped.")
+    return {"ok": True, "cleared": cleared}
+
+
 @app.get("/api/login/screenshot")
 async def login_screenshot():
     """Return the latest browser screenshot as a base64 JPEG."""

@@ -272,7 +272,10 @@
           If Snapchat Web blocks login on server IPs, export cookies from <code>web.snapchat.com</code> on your PC (e.g. using the <b>Cookie-Editor</b> Chrome extension → <i>Export JSON</i>) and paste below:
         </p>
         <textarea id="session-import-text" rows="3" placeholder='Paste Cookie-Editor JSON or cookies string here ([{"name":"sc-a-nonce", ...}])' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:8px;resize:vertical"></textarea>
-        <button class="btn btn-success" style="font-size:12px;padding:6px 16px" onclick="importSession()">📥 Import Session & Save Login</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-success" style="font-size:12px;padding:6px 16px" onclick="importSession()">📥 Import Session &amp; Save Login</button>
+          <button class="btn btn-danger" style="font-size:12px;padding:6px 16px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
+        </div>
       </div>
     </div>
 
@@ -288,10 +291,11 @@
         <summary style="font-size:12px;font-weight:700;color:var(--yellow);cursor:pointer">🍪 Bypass Login: Import Cookies / Session JSON</summary>
         <p style="font-size:11px;color:var(--text-dim);margin:6px 0">Paste Cookie-Editor JSON from your desktop browser to log in instantly:</p>
         <textarea id="session-import-text-active" rows="2" placeholder='Paste Cookie-Editor JSON here...' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:6px;resize:vertical"></textarea>
-        <button class="btn btn-success" style="font-size:11px;padding:4px 12px" onclick="importSessionActive()">📥 Inject Cookies & Reload</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-success" style="font-size:11px;padding:4px 12px" onclick="importSessionActive()">📥 Inject Cookies &amp; Reload</button>
+          <button class="btn btn-danger" style="font-size:11px;padding:4px 12px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
+        </div>
       </details>
-
-
 
       <!-- Quick Auto-Fill Helper Form -->
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
@@ -695,7 +699,23 @@
     }
   }
 
+  async function clearSession() {
+    if (!confirm('Clear all cookies, session data, and browser cache? You will need to log in again.')) return;
+    appendLog('info', 'Clearing cookies and browser cache…');
+    const r = await fetch('/api/session/clear', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      const cleared = d.cleared.length ? d.cleared.join(', ') : 'nothing to clear';
+      appendLog('info', `✓ Cleared: ${cleared}. Logged out.`);
+      alert('Done! All cookies and cache cleared. Import new cookies to log back in.');
+      refreshStatus();
+    } else {
+      appendLog('err', 'Failed to clear session.');
+    }
+  }
+
   async function triggerRefreshNow() {
+
 
     try {
       const d = await fetch('/api/login/screenshot').then(r => r.json());
