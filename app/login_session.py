@@ -21,11 +21,13 @@ from automation import (
     USER_DATA_DIR,
     MACRO_FILE,
     Y4M_FILE,
+    STEALTH_INIT_SCRIPT,
     replay_macro,
     fetch_webcam_image,
     _cleanup_stale_locks,
     _log,
 )
+
 
 
 
@@ -151,10 +153,14 @@ async def start(emit: Callable | None = None) -> str:
     args = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
         "--disable-setuid-sandbox",
         f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
         "--disable-blink-features=AutomationControlled",
+        "--enable-webgl",
+        "--enable-webgl2",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--ignore-certificate-errors",
         "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",
     ]
@@ -179,13 +185,9 @@ async def start(emit: Callable | None = None) -> str:
         },
     )
 
-    await context.add_init_script(
-        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-        "window.chrome={runtime:{}};"
-        "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
-    )
-
+    await context.add_init_script(STEALTH_INIT_SCRIPT)
     _state["context"] = context
+
 
 
     page = context.pages[0] if context.pages else await context.new_page()

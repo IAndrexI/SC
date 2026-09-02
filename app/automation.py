@@ -203,6 +203,86 @@ async def _take_screenshot(page: Page, label: str = ""):
         pass
 
 
+STEALTH_INIT_SCRIPT = """
+(() => {
+    // 1. Strip navigator.webdriver
+    try {
+        delete Object.getPrototypeOf(navigator).webdriver;
+    } catch(e) {}
+    try {
+        delete navigator.webdriver;
+    } catch(e) {}
+    Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true
+    });
+
+    // 2. Mock chrome object
+    window.chrome = {
+        app: {
+            isInstalled: false,
+            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+        },
+        runtime: {
+            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+            PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
+        },
+        csi: function() {},
+        loadTimes: function() {}
+    };
+
+    // 3. Mock plugins and mimeTypes
+    const fakePlugins = [
+        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+    ];
+    Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins, configurable: true });
+    Object.defineProperty(navigator, 'mimeTypes', {
+        get: () => [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }],
+        configurable: true
+    });
+
+    // 4. Mock hardware & languages
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
+
+    // 5. Mock WebGL Vendor & Renderer (NVIDIA / ANGLE)
+    const getParam = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return 'Google Inc. (NVIDIA)';
+        if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+        return getParam.call(this, parameter);
+    };
+
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParam2 = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) return 'Google Inc. (NVIDIA)';
+            if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            return getParam2.call(this, parameter);
+        };
+    }
+
+    // 6. Notification permission mock
+    if (navigator.permissions && navigator.permissions.query) {
+        const origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (p) => (
+            p.name === 'notifications' ? Promise.resolve({ state: 'granted' }) : origQuery(p)
+        );
+    }
+})();
+"""
+
+
 # ---------------------------------------------------------------------------
 # Browser context — persistent desktop profile (preserves Cookies + IndexedDB)
 # ---------------------------------------------------------------------------
@@ -213,10 +293,14 @@ async def _build_context(playwright, headless: bool = True):
     args = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
         "--disable-setuid-sandbox",
         "--disable-blink-features=AutomationControlled",
-        "--use-fake-ui-for-media-stream",  # Auto-grants camera permission without prompt
+        "--enable-webgl",
+        "--enable-webgl2",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--ignore-certificate-errors",
+        "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",
     ]
     if Y4M_FILE.exists():
@@ -242,14 +326,9 @@ async def _build_context(playwright, headless: bool = True):
         },
     )
 
-    await context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        window.chrome = { runtime: {} };
-    """)
-
+    await context.add_init_script(STEALTH_INIT_SCRIPT)
     return context
+
 
 
 
