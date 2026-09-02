@@ -329,10 +329,41 @@ async def macro_info():
     return login_session.get_macro_info()
 
 
+# ---------------------------------------------------------------------------
+# Android ADB Routes
+# ---------------------------------------------------------------------------
+import android_client
 
+@app.post("/api/android/connect")
+async def android_connect():
+    ok = await android_client.connect_adb(_emit)
+    if ok:
+        asyncio.create_task(android_client.start_screen_stream(_emit))
+    return {"ok": ok, "connected": android_client.is_connected()}
+
+@app.post("/api/android/tap")
+async def android_tap(body: ClickInput):
+    await android_client.tap(body.x, body.y)
+    return {"ok": True}
+
+@app.post("/api/android/type")
+async def android_type(body: TypeInput):
+    await android_client.type_text(body.text)
+    return {"ok": True}
+
+@app.post("/api/android/key")
+async def android_key(body: KeyInput):
+    await android_client.key_event(body.key)
+    return {"ok": True}
+
+@app.post("/api/android/launch")
+async def android_launch():
+    await android_client.launch_snapchat()
+    return {"ok": True}
 
 
 @app.post("/api/send")
+
 async def trigger_send():
     """Immediately trigger a streak send."""
     if _state["running"]:

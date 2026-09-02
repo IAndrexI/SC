@@ -233,13 +233,33 @@
   <div class="card wide">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h2 style="margin:0">Snapchat Automation & Live Control</h2>
-      <button class="btn btn-success" id="btn-send" style="padding:7px 18px;font-size:13px" onclick="doSend()">🔥 Send Streaks Now</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('web')">🖥️ Browser Mode</button>
+        <button class="btn btn-secondary" id="btn-mode-android" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('android')">📱 Android App Mode</button>
+        <button class="btn btn-success" id="btn-send" style="padding:6px 16px;font-size:12px" onclick="doSend()">🔥 Send Streaks Now</button>
+      </div>
+    </div>
+
+    <!-- Android App Mode View -->
+    <div id="android-view" style="display:none">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:700;color:var(--green)">📱 Android Container (ReDroid / ADB)</span>
+          <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="launchAndroidSnapchat()">🚀 Launch Snapchat App</button>
+        </div>
+        <div class="btn-row" style="margin-top:0;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="androidKey(4)">◀ Back</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="androidKey(3)">⭕ Home</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="androidKey(187)">▢ Recents</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="connectAndroid()">⚡ Reconnect ADB</button>
+        </div>
+      </div>
     </div>
 
     <!-- Idle state -->
     <div id="login-idle">
       <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-        Start a browser session on the server to interact with Snapchat, record macros, or test automated streak sending.
+        Start a browser or Android session on the server to interact with Snapchat, record macros, or test automated streak sending.
       </p>
       <div class="btn-row">
         <button class="btn btn-primary" onclick="startLogin()">🖥️ Open Live Browser Session</button>
@@ -252,6 +272,7 @@
         <span style="font-size:12px;color:var(--text-dim);white-space:nowrap">URL:</span>
         <code id="browser-url" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)">loading…</code>
       </div>
+
 
       <!-- Quick Auto-Fill Helper Form -->
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
@@ -701,11 +722,53 @@
 
 
 
+  let currentPlatform = 'web';
+
+  function switchPlatform(plat) {
+    currentPlatform = plat;
+    document.getElementById('btn-mode-web').style.background = plat === 'web' ? 'var(--accent)' : 'var(--surface2)';
+    document.getElementById('btn-mode-android').style.background = plat === 'android' ? 'var(--accent)' : 'var(--surface2)';
+    document.getElementById('android-view').style.display = plat === 'android' ? 'block' : 'none';
+    if (plat === 'android') {
+      document.getElementById('login-idle').style.display = 'none';
+      document.getElementById('login-active').style.display = 'block';
+      connectAndroid();
+    }
+  }
+
+  async function connectAndroid() {
+    appendLog('info', 'Connecting to Android container via ADB…');
+    const r = await fetch('/api/android/connect', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', '✓ Connected to Android container! Live screen active.');
+    } else {
+      appendLog('err', '⚠ Failed to connect to Android. Run ./setup_android_lxc.sh if not yet started.');
+    }
+  }
+
+  async function launchAndroidSnapchat() {
+    appendLog('info', 'Launching Snapchat APK on Android…');
+    await fetch('/api/android/launch', { method: 'POST' });
+  }
+
+  async function androidKey(code) {
+    await fetch('/api/android/key', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: String(code) })
+    });
+  }
+
   async function browserClick(evt) {
     const img = document.getElementById('browser-shot');
     const rect = img.getBoundingClientRect();
-    const scaleX = 1440 / rect.width;
-    const scaleY = 900  / rect.height;
+    const isAndroid = (currentPlatform === 'android');
+    const targetW = isAndroid ? 720 : 1440;
+    const targetH = isAndroid ? 1280 : 900;
+
+    const scaleX = targetW / rect.width;
+    const scaleY = targetH / rect.height;
     const clickX = evt.clientX - rect.left;
     const clickY = evt.clientY - rect.top;
     const x = Math.round(clickX * scaleX);
@@ -718,12 +781,20 @@
     dot.style.display = 'block';
     setTimeout(() => { dot.style.display = 'none'; }, 400);
 
-    await fetch('/api/login/click', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ x, y }),
-    });
-    setTimeout(triggerRefreshNow, 500);
+    if (isAndroid) {
+      await fetch('/api/android/tap', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ x, y }),
+      });
+    } else {
+      await fetch('/api/login/click', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ x, y }),
+      });
+      setTimeout(triggerRefreshNow, 500);
+    }
   }
 
   async function browserSendText() {
@@ -731,17 +802,33 @@
     const text = input.value;
     if (!text) return;
     input.value = '';
-    await fetch('/api/login/type', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ text }),
-    });
-    setTimeout(triggerRefreshNow, 600);
+    if (currentPlatform === 'android') {
+      await fetch('/api/android/type', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text }),
+      });
+    } else {
+      await fetch('/api/login/type', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text }),
+      });
+      setTimeout(triggerRefreshNow, 600);
+    }
   }
 
   async function browserKey(key) {
+    if (currentPlatform === 'android') {
+      if (key === 'Enter') androidKey(66);
+      else if (key === 'Backspace') androidKey(67);
+      else if (key === 'Tab') androidKey(61);
+      else if (key === 'Escape') androidKey(4);
+      return;
+    }
     await fetch('/api/login/key', {
       method: 'POST',
+
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ key }),
     });
