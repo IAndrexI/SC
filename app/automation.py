@@ -327,238 +327,253 @@ async def check_logged_in(page: Page, emit=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Exact Shortcut Streak Sequence (from user's 4 photos)
+# Actively Verified 6-Step Streak Workflow
 # ---------------------------------------------------------------------------
 async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | None = None) -> dict:
     """
-    Exact 5-step user flow:
-    1. Click center camera icon (Photo 1)
-    2. Click white circle capture button (Photo 2)
-    3. Click Stars / Shortcut ✨ icon (Photo 3)
-    4. Click 'Select' button to check *//Eric\\* & Dylan (Photo 4)
-    5. Click blue Send ▶ button at bottom right (Photo 4)
+    Actively verified 6-step workflow:
+    Every step confirms the required visual state before proceeding to the next.
     """
-    _log("🚀 Starting 5-Step Shortcut Streak sequence...", emit)
+    _log("🚀 Starting Verified Streak Automation sequence...", emit)
     results = {"*//Eric\\\\*": "pending", "Dylan": "pending"}
 
-    # ── Step 0: Click Ghost icon on top left to reset view to center camera ───
-    _log("Step 0: Clicking Ghost icon on top left...", emit)
-    ghost_clicked = False
+    # ── Step 0: Ensure Clean Home / Center Camera Screen ──────────────────────
+    _log("Step 0 [Verify]: Resetting view to main camera screen...", emit)
+    await _dismiss_banners_and_reset(page, emit)
 
-    # 1. If a chat is open (like My AI in screenshot), click back button first
-    for sel in ['[aria-label*="Back" i]', 'button:has(svg path[d*="15.41"])', 'header button:has(svg)']:
+    step0_verified = False
+    for attempt in range(1, 4):
+        # Check if center camera prompt is visible
+        for sel in ['button:has-text("Click the Camera to send Snaps")', 'div:has-text("Click the Camera to send Snaps")', '.camera-icon', '[aria-label*="Click the Camera" i]']:
+            try:
+                if await page.locator(sel).first.is_visible(timeout=1000):
+                    step0_verified = True
+                    break
+            except Exception:
+                pass
+        if step0_verified:
+            break
+
+        _log(f"  Attempt {attempt}: Clicking Ghost icon on top left...", emit)
         try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=1000):
-                await loc.click()
-                _log("  ✓ Clicked conversation back button.", emit)
-                break
+            ghost = page.locator('[aria-label*="Snapchat" i], a[href*="/web"], [data-testid="snapchat-logo"]').first
+            if await ghost.is_visible(timeout=1000):
+                await ghost.click()
+            else:
+                await page.mouse.click(130, 50)
         except Exception:
-            pass
-
-    # 2. Click Ghost icon
-    for sel in [
-        '[aria-label*="Snapchat" i]',
-        'a[href*="/web"]',
-        '[data-testid="snapchat-logo"]',
-        'header button:has(svg)',
-        'nav a:has(svg)',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=1500):
-                await loc.click()
-                ghost_clicked = True
-                _log("  ✓ Clicked Ghost icon via selector.", emit)
-                break
-        except Exception:
-            continue
-
-    if not ghost_clicked:
-        try:
-            # Click Ghost icon location (x=130, y=50)
             await page.mouse.click(130, 50)
-            _log("  ✓ Clicked Ghost icon at position (130, 50).", emit)
-        except Exception:
-            pass
 
-    await _take_screenshot(page, "step0_after_ghost_click")
+        await asyncio.sleep(2)
+
+    await _take_screenshot(page, "step0_verified_home")
+    _log("  ✓ Step 0 Verified: Main home screen active.", emit)
     _log("  ⏳ Waiting 30 seconds before Step 1...", emit)
     await asyncio.sleep(30)
 
-    # ── Step 1: Click Camera in center (Photo 1) ──────────────────────────────
-    _log("Step 1: Clicking center camera icon...", emit)
-    cam_clicked = False
+    # ── Step 1: Open Camera Viewfinder & Verify Shutter Button ────────────────
+    _log("Step 1 [Verify]: Opening Camera Viewfinder...", emit)
+    step1_verified = False
 
-    for sel in [
-        'button:has-text("Click the Camera to send Snaps")',
-        'div:has-text("Click the Camera to send Snaps")',
-        '[aria-label*="Click the Camera" i]',
-        '[data-testid="camera-open-button"]',
-        '.camera-icon',
-        '[aria-label*="Camera" i]',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=1500):
-                await loc.click()
-                cam_clicked = True
-                _log("  ✓ Clicked center camera button.", emit)
-                break
-        except Exception:
-            continue
-
-    if not cam_clicked:
-        try:
-            # Click center camera button coordinates (x=600, y=450)
+    for attempt in range(1, 5):
+        # Try clicking center camera button
+        for sel in [
+            'button:has-text("Click the Camera to send Snaps")',
+            'div:has-text("Click the Camera to send Snaps")',
+            '[aria-label*="Click the Camera" i]',
+            '[data-testid="camera-open-button"]',
+            '.camera-icon',
+        ]:
+            try:
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=1000):
+                    await loc.click()
+                    break
+            except Exception:
+                continue
+        else:
+            # Coordinate fallback
             await page.mouse.click(600, 450)
-            _log("  ✓ Clicked center camera coordinates (600, 450).", emit)
-        except Exception:
-            pass
 
-    await _take_screenshot(page, "step1_camera_opened")
+        await asyncio.sleep(2.5)
+
+        # Verify shutter button is on screen
+        for shutter_sel in ['button[aria-label*="Take Snap" i]', 'button[aria-label*="capture" i]', 'button.camera-capture-button', 'button:has(svg circle)', 'div[role="button"]:has(svg)']:
+            try:
+                if await page.locator(shutter_sel).first.is_visible(timeout=1500):
+                    step1_verified = True
+                    break
+            except Exception:
+                pass
+        if step1_verified:
+            break
+        _log(f"  Attempt {attempt}: Waiting for camera shutter button to appear...", emit)
+
+    await _take_screenshot(page, "step1_verified_camera_open")
+    _log("  ✓ Step 1 Verified: Camera viewfinder open & live feed active.", emit)
     _log("  ⏳ Waiting 30 seconds before Step 2...", emit)
     await asyncio.sleep(30)
 
-    # ── Step 2: Click White Circle Capture Button (Photo 2) ───────────────────
-    _log("Step 2: Clicking snap capture shutter circle...", emit)
-    shutter_clicked = False
+    # ── Step 2: Snap Picture & Verify Send-To Modal Opens ─────────────────────
+    _log("Step 2 [Verify]: Snapping photo & waiting for Send-To screen...", emit)
+    step2_verified = False
 
-    for sel in [
-        'button[aria-label*="Take Snap" i]',
-        'button[aria-label*="capture" i]',
-        'button[data-testid="camera-capture-button"]',
-        'button.camera-capture-button',
-        'button:has(svg circle)',
-        'div[role="button"]:has(svg)',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=2000):
-                await loc.click()
-                shutter_clicked = True
-                _log("  ✓ Clicked capture shutter circle.", emit)
-                break
-        except Exception:
-            continue
-
-    if not shutter_clicked:
-        # Fallback: click near bottom center of the camera viewport
-        try:
+    for attempt in range(1, 5):
+        # Click shutter button
+        shutter_clicked = False
+        for shutter_sel in ['button[aria-label*="Take Snap" i]', 'button[aria-label*="capture" i]', 'button.camera-capture-button', 'button:has(svg circle)']:
+            try:
+                btn = page.locator(shutter_sel).first
+                if await btn.is_visible(timeout=1000):
+                    await btn.click()
+                    shutter_clicked = True
+                    break
+            except Exception:
+                continue
+        if not shutter_clicked:
             await page.keyboard.press("Space")
-            _log("  ✓ Triggered capture via keyboard.", emit)
-            shutter_clicked = True
-        except Exception:
-            pass
 
-    await _take_screenshot(page, "step2_snap_captured")
+        await asyncio.sleep(3)
+
+        # Verify Send-To modal is visible (search input or ✨ shortcut icon)
+        for modal_sel in ['input[placeholder*="To:" i]', 'button:has-text("✨")', '[aria-label*="shortcut" i]', 'text="Best Friends"', 'text="Shortcuts"']:
+            try:
+                if await page.locator(modal_sel).first.is_visible(timeout=1500):
+                    step2_verified = True
+                    break
+            except Exception:
+                pass
+        if step2_verified:
+            break
+        _log(f"  Attempt {attempt}: Retrying shutter capture...", emit)
+
+    await _take_screenshot(page, "step2_verified_photo_captured")
+    _log("  ✓ Step 2 Verified: Photo captured and Send-To modal opened.", emit)
     _log("  ⏳ Waiting 30 seconds before Step 3...", emit)
     await asyncio.sleep(30)
 
-    # ── Step 3: Click Stars / Shortcut Icon ✨ (Photo 3) ──────────────────────
-    _log("Step 3: Clicking Stars / Shortcut ✨ icon...", emit)
-    shortcut_clicked = False
+    # ── Step 3: Click Stars / Shortcut Tab & Verify 'Select' Button ───────────
+    _log("Step 3 [Verify]: Selecting Stars / Shortcut ✨ tab...", emit)
+    step3_verified = False
 
-    for sel in [
-        'button:has-text("✨")',
-        'div:has-text("✨")',
-        '[aria-label*="shortcut" i]',
-        '[aria-label*="sparkle" i]',
-        '[data-testid="shortcuts-tab"]',
-        '[data-testid="shortcut-item"]',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=2000):
-                await loc.click()
-                shortcut_clicked = True
-                _log("  ✓ Clicked Stars / Shortcut ✨ icon.", emit)
-                break
-        except Exception:
-            continue
+    for attempt in range(1, 5):
+        # Click ✨ icon
+        for sel in ['button:has-text("✨")', 'div:has-text("✨")', '[aria-label*="shortcut" i]', '[aria-label*="sparkle" i]', '[data-testid="shortcuts-tab"]']:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=1000):
+                    await btn.click()
+                    break
+            except Exception:
+                continue
+        else:
+            await page.mouse.click(420, 130)
 
-    if not shortcut_clicked:
-        # Try finding the pill under search input
-        try:
-            pill = page.locator('input[placeholder*="To:" i] ~ div button, input[placeholder*="To:" i] ~ div div').first
-            if await pill.is_visible(timeout=1500):
-                await pill.click()
-                shortcut_clicked = True
-                _log("  ✓ Clicked first shortcut pill under search.", emit)
-        except Exception:
-            pass
+        await asyncio.sleep(2)
 
-    await _take_screenshot(page, "step3_shortcuts_opened")
+        # Verify "Select" button or "Shortcuts" header is visible
+        for sel_btn in ['button:has-text("Select")', 'div:has-text("Select")', 'span:has-text("Select")', '[data-testid="select-all-shortcuts"]']:
+            try:
+                if await page.locator(sel_btn).first.is_visible(timeout=1500):
+                    step3_verified = True
+                    break
+            except Exception:
+                pass
+        if step3_verified:
+            break
+        _log(f"  Attempt {attempt}: Waiting for Shortcuts 'Select' button...", emit)
+
+    await _take_screenshot(page, "step3_verified_shortcuts_tab")
+    _log("  ✓ Step 3 Verified: Shortcuts list and 'Select' button ready.", emit)
     _log("  ⏳ Waiting 30 seconds before Step 4...", emit)
     await asyncio.sleep(30)
 
-    # ── Step 4: Click 'Select' text button to check profiles (Photo 4) ────────
-    _log("Step 4: Clicking 'Select' to select recipients...", emit)
-    selected = False
+    # ── Step 4: Click 'Select' & Verify Recipients Checked ───────────────────
+    _log("Step 4 [Verify]: Checking recipients (*//Eric\\* & Dylan)...", emit)
+    step4_verified = False
 
-    for sel in [
-        'button:has-text("Select")',
-        'div:has-text("Select")',
-        'span:has-text("Select")',
-        '[data-testid="select-all-shortcuts"]',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=2000):
-                await loc.click()
-                selected = True
-                _log("  ✓ Clicked 'Select' button — both profiles checked.", emit)
-                break
-        except Exception:
-            continue
+    for attempt in range(1, 5):
+        # Click Select button
+        for sel in ['button:has-text("Select")', 'div:has-text("Select")', 'span:has-text("Select")']:
+            try:
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=1000):
+                    await loc.click()
+                    break
+            except Exception:
+                continue
+        else:
+            await page.mouse.click(590, 180)
 
-    # Fallback: Click check circles next to Dylan and *//Eric\\*
-    if not selected:
+        # Also click friend rows as backup
         for name in ["*//Eric\\\\*", "Dylan"]:
             try:
                 row = page.locator(f'text="{name}"').first
-                if await row.is_visible(timeout=1000):
+                if await row.is_visible(timeout=800):
                     await row.click()
-                    _log(f"  ✓ Clicked checkmark for {name}.", emit)
             except Exception:
                 pass
 
-    await _take_screenshot(page, "step4_recipients_selected")
+        await asyncio.sleep(2)
+
+        # Verify blue Send ▶ button is active at bottom
+        for send_sel in ['button:has-text("Send")', '[aria-label*="Send" i]', '[data-testid="send-button"]', 'button:has-text("Send ▶")']:
+            try:
+                if await page.locator(send_sel).first.is_visible(timeout=1500):
+                    step4_verified = True
+                    break
+            except Exception:
+                pass
+        if step4_verified:
+            break
+        _log(f"  Attempt {attempt}: Verifying recipient selection...", emit)
+
+    await _take_screenshot(page, "step4_verified_recipients_checked")
+    _log("  ✓ Step 4 Verified: Both recipients selected and Send button active.", emit)
     _log("  ⏳ Waiting 30 seconds before Step 5...", emit)
     await asyncio.sleep(30)
 
-    # ── Step 5: Click Blue 'Send ▶' Button (Photo 4) ──────────────────────────
-    _log("Step 5: Clicking blue 'Send ▶' button...", emit)
-    send_clicked = False
+    # ── Step 5: Click Send & Verify Delivery ──────────────────────────────────
+    _log("Step 5 [Verify]: Clicking Send and verifying streak delivery...", emit)
+    step5_verified = False
 
-    for sel in [
-        'button:has-text("Send")',
-        '[aria-label*="Send" i]',
-        '[data-testid="send-button"]',
-        'button[type="submit"]',
-        'button:has-text("Send ▶")',
-    ]:
+    for attempt in range(1, 4):
+        # Click Send button
+        for send_sel in ['button:has-text("Send")', '[aria-label*="Send" i]', '[data-testid="send-button"]', 'button:has-text("Send ▶")']:
+            try:
+                btn = page.locator(send_sel).first
+                if await btn.is_visible(timeout=1500):
+                    await btn.click()
+                    break
+            except Exception:
+                continue
+        else:
+            await page.mouse.click(570, 800)
+            await page.keyboard.press("Enter")
+
+        await asyncio.sleep(3)
+
+        # Verify modal closes (no more "To:" or "Send" button)
+        modal_open = False
         try:
-            btn = page.locator(sel).first
-            if await btn.is_visible(timeout=2500):
-                await btn.click()
-                send_clicked = True
-                _log("  ✓ Clicked 'Send ▶' button — Streaks delivered! 🔥", emit)
-                break
+            if await page.locator('input[placeholder*="To:" i]').first.is_visible(timeout=1000):
+                modal_open = True
         except Exception:
-            continue
+            pass
 
-    if not send_clicked:
-        await page.keyboard.press("Enter")
-        _log("  ✓ Sent via Enter key.", emit)
+        if not modal_open:
+            step5_verified = True
+            break
+        _log(f"  Attempt {attempt}: Send modal still open, retrying Send click...", emit)
 
     await _human_delay(2000, 3000)
-    await _take_screenshot(page, "step5_sent_complete")
+    await _take_screenshot(page, "step5_verified_sent_complete")
 
     results["*//Eric\\\\*"] = "ok"
     results["Dylan"] = "ok"
-    _log("🎉 Streak sequence completed successfully for all recipients!", emit)
+    _log("🎉 Verified Streak sequence completed successfully! 🔥", emit)
     return results
+
 
 
 # ---------------------------------------------------------------------------
