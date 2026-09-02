@@ -258,8 +258,115 @@ async def click(x: int, y: int):
             pass
 
 
+async def fill_field(field: str, value: str) -> dict:
+    """Smart field focus, clear, and input for username, password, or 2FA code."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No active browser session"}
+
+    selectors_map = {
+        "username": [
+            "input#accountIdentifier",
+            "input[name='accountIdentifier']",
+            "input[autocomplete='username']",
+            "input[name='username']",
+            "input[type='email']",
+            "input[placeholder*='Username' i]",
+            "input[placeholder*='Email' i]",
+            "input[type='text']",
+        ],
+        "password": [
+            "input#password",
+            "input[name='password']",
+            "input[autocomplete='current-password']",
+            "input[type='password']",
+            "input[placeholder*='Password' i]",
+        ],
+        "code": [
+            "input[name='code']",
+            "input[name='verificationCode']",
+            "input[inputmode='numeric']",
+            "input[type='number']",
+            "input[maxlength='6']",
+            "input[placeholder*='code' i]",
+            "input[type='text']",
+        ],
+    }
+
+    selectors = selectors_map.get(field.lower(), ["input[type='text']", "input"])
+
+    # 1. Try finding input via selectors
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=800):
+                await loc.click()
+                await asyncio.sleep(0.1)
+                await loc.press("Control+A")
+                await asyncio.sleep(0.05)
+                await loc.press("Backspace")
+                await loc.type(value, delay=45)
+                # Dispatch change and input events for React
+                await page.evaluate("""
+                    (selector) => {
+                        const el = document.querySelector(selector);
+                        if (el) {
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }
+                """, sel)
+                _log(f"  ✓ Quick filled {field} into '{sel}'.")
+                return {"ok": True, "selector": sel}
+        except Exception:
+            continue
+
+    # 2. Fallback: Type directly into active focused element
+    try:
+        await page.keyboard.type(value, delay=45)
+        _log(f"  ✓ Typed {field} directly into active focused element.")
+        return {"ok": True, "fallback": "active_element"}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+
+async def click_submit() -> dict:
+    """Click primary submit / Next / Log In button."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No active browser session"}
+
+    submit_selectors = [
+        "button[type='submit']",
+        "button:has-text('Next')",
+        "button:has-text('Log In')",
+        "button:has-text('Sign In')",
+        "button:has-text('Continue')",
+        "button:has-text('Submit')",
+        "[data-testid='submit-button']",
+    ]
+    for sel in submit_selectors:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=1000):
+                await btn.click()
+                _log(f"  ✓ Clicked submit button '{sel}'.")
+                return {"ok": True, "selector": sel}
+        except Exception:
+            continue
+
+    # Fallback: Press Enter key
+    try:
+        await page.keyboard.press("Enter")
+        _log("  ✓ Pressed Enter for submission.")
+        return {"ok": True, "fallback": "Enter"}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+
 async def type_text(text: str):
     """Type text into the browser."""
+
     if _macro["recording"]:
         now = time.time()
         delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 800
