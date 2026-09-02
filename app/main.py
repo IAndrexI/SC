@@ -31,6 +31,12 @@ import config
 import automation
 import login_session
 import socket
+try:
+    import adb_automation
+    ADB_AVAILABLE = True
+except ImportError:
+    ADB_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -606,6 +612,76 @@ async def get_logs():
         return {"lines": []}
     lines = automation.LOG_FILE.read_text().splitlines()
     return {"lines": lines[-100:]}  # last 100 lines
+
+
+# ---------------------------------------------------------------------------
+# Waydroid / ADB endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/waydroid/status")
+async def waydroid_status():
+    """Return Waydroid + ADB + Snapchat installation status."""
+    if not ADB_AVAILABLE:
+        return {"available": False, "error": "adb_automation module not loaded"}
+    status = adb_automation.waydroid_status()
+    status["available"] = True
+    return status
+
+
+@app.get("/api/waydroid/screenshot")
+async def waydroid_screenshot():
+    """Return a live screenshot from the Waydroid Android display."""
+    if not ADB_AVAILABLE:
+        return {"image": None, "error": "adb_automation not available"}
+    img = adb_automation.adb_screenshot_b64()
+    return {"image": img}
+
+
+@app.post("/api/waydroid/connect")
+async def waydroid_connect():
+    """Connect ADB to Waydroid and launch Snapchat."""
+    if not ADB_AVAILABLE:
+        raise HTTPException(status_code=500, detail="adb_automation not available")
+    ok = adb_automation.connect_adb()
+    if not ok:
+        raise HTTPException(status_code=503, detail="ADB connect failed — is Waydroid running?")
+    _emit("✓ ADB connected to Waydroid!")
+    return {"ok": True, "adb_host": adb_automation.ADB_HOST}
+
+
+@app.post("/api/waydroid/send-streaks")
+async def waydroid_send_streaks():
+    """Send streaks via the real Snapchat Android app through Waydroid/ADB."""
+    if not ADB_AVAILABLE:
+        raise HTTPException(status_code=500, detail="adb_automation not available")
+    cfg = config.load()
+    friends = cfg.get("friends", [])
+    if not friends:
+        raise HTTPException(status_code=400, detail="No friends configured.")
+
+    _emit("🤖 Starting Snapchat Android streak automation via Waydroid...")
+    results = await adb_automation.send_streaks_adb(friends, emit=_emit)
+    _state["last_run_time"] = time.time() if "time" in dir() else None
+    _state["last_run_results"] = results
+    return {"ok": True, "results": results}
+
+
+@app.post("/api/waydroid/tap")
+async def waydroid_tap(body: dict):
+    """Tap a coordinate on the Waydroid screen."""
+    if not ADB_AVAILABLE:
+        raise HTTPException(status_code=500, detail="adb_automation not available")
+    x, y = int(body.get("x", 0)), int(body.get("y", 0))
+    adb_automation.adb_tap(x, y)
+    return {"ok": True}
+
+
+@app.post("/api/waydroid/key")
+async def waydroid_key(body: dict):
+    """Send a keyevent to Waydroid (e.g. KEYCODE_BACK)."""
+    if not ADB_AVAILABLE:
+        raise HTTPException(status_code=500, detail="adb_automation not available")
+    adb_automation.adb_key(body.get("key", "KEYCODE_BACK"))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
