@@ -67,6 +67,9 @@ async def _do_send():
     _state["running"] = True
     cfg = config.load()
     try:
+        # Always fetch fresh webcam frame before sending
+        automation.fetch_webcam_image(force_refresh=True)
+
         if login_session.is_active():
             _emit("Using currently active live browser session to send streaks...")
             results = await login_session.run_streak_in_active_session(cfg["friends"], emit=_emit)
@@ -82,8 +85,11 @@ async def _do_send():
 
 
 def _reschedule(schedule_time: str):
-    """Update APScheduler job with a new HH:MM time."""
-    _scheduler.remove_all_jobs()
+    """Update APScheduler job with a new HH:MM time without wiping other jobs."""
+    try:
+        _scheduler.remove_job("daily_streak")
+    except Exception:
+        pass
     hour, minute = schedule_time.split(":")
     _scheduler.add_job(
         _do_send,
@@ -102,15 +108,18 @@ async def lifespan(app: FastAPI):
     if cfg["enabled"]:
         _reschedule(cfg["schedule_time"])
 
-    # Hourly webcam frame refresh
+    # 15-minute webcam frame refresh
+    def _refresh_cam():
+        automation.fetch_webcam_image(force_refresh=True)
+
     _scheduler.add_job(
-        automation.fetch_webcam_image,
-        trigger=CronTrigger(minute=0),
-        id="webcam_hourly_refresh",
+        _refresh_cam,
+        trigger=CronTrigger(minute="*/15"),
+        id="webcam_refresh_job",
         replace_existing=True,
     )
     # Fetch initial webcam frame on startup
-    asyncio.create_task(asyncio.to_thread(automation.fetch_webcam_image))
+    asyncio.create_task(asyncio.to_thread(_refresh_cam))
 
     _scheduler.start()
     yield
@@ -127,12 +136,13 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 async def get_webcam_feed():
     """Return the latest meteorology webcam frame."""
     from fastapi.responses import Response
-    data = automation.fetch_webcam_image()
+    data = automation.fetch_webcam_image(force_refresh=True)
     return Response(
         content=data,
         media_type="image/jpeg",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
     )
+
 
 
 

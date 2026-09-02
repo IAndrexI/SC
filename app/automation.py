@@ -68,32 +68,72 @@ def _cleanup_stale_locks():
             pass
 
 
-def fetch_webcam_image() -> bytes:
-    """Fetch latest frame from meteorology webcam without blocking."""
-    # Fast path: return existing cached image immediately
-    if WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
-        return WEBCAM_FILE.read_bytes()
+def fetch_webcam_image(force_refresh: bool = False) -> bytes:
+    """Fetch latest frame from meteorology webcam with automatic freshness check and cache-busting."""
+    now = time.time()
+    # If cached file exists and is less than 5 minutes old and not forced, return cached
+    if not force_refresh and WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
+        age_seconds = now - WEBCAM_FILE.stat().st_mtime
+        if age_seconds < 300:  # 5 minutes
+            return WEBCAM_FILE.read_bytes()
 
     import urllib.request
     try:
+        cache_buster_url = f"{WEBCAM_URL}?t={int(now)}"
         req = urllib.request.Request(
-            WEBCAM_URL,
-            headers={"User-Agent": USER_AGENT}
+            cache_buster_url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
         )
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=6) as resp:
             data = resp.read()
             if data and len(data) > 1000:
                 WEBCAM_FILE.write_bytes(data)
                 SNAP_IMAGE.write_bytes(data)
+                _log("  📷 Fresh SJSU meteorology webcam frame updated.")
                 return data
     except Exception as ex:
-        pass
+        _log(f"  ⚠ Webcam download notice: {ex} (using local frame).")
 
-    if WEBCAM_FILE.exists():
+    if WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
         return WEBCAM_FILE.read_bytes()
-    if SNAP_IMAGE.exists():
+    if SNAP_IMAGE.exists() and SNAP_IMAGE.stat().st_size > 1000:
         return SNAP_IMAGE.read_bytes()
     return b""
+
+
+async def _dismiss_banners_and_reset(page: Page, emit=None):
+    """Dismiss any notification popups, cookie alerts, or active chats to ensure clean view."""
+    # 1. Close notification/learn more banners
+    for sel in [
+        '[aria-label*="close" i]',
+        'button:has-text("✕")',
+        'button:has-text("Not now")',
+        'button:has-text("Dismiss")',
+        '[data-testid="close-button"]',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=800):
+                await loc.click()
+                _log("  ✓ Dismissed overlay banner.", emit)
+        except Exception:
+            pass
+
+    # 2. If an open conversation is active, click back button
+    for sel in ['[aria-label*="Back" i]', 'button:has(svg path[d*="15.41"])']:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=800):
+                await loc.click()
+                _log("  ✓ Closed active chat conversation.", emit)
+                break
+        except Exception:
+            pass
 
 
 def get_camera_stream_init_script() -> str:
@@ -111,7 +151,7 @@ def get_camera_stream_init_script() -> str:
                         const ctx = canvas.getContext('2d');
                         
                         const img = new Image();
-                        img.src = '/fake_webcam_feed.jpg';
+                        img.src = '/fake_webcam_feed.jpg?t=' + Date.now();
                         
                         const draw = () => {
                             if (img.complete && img.naturalWidth) {
@@ -131,6 +171,7 @@ def get_camera_stream_init_script() -> str:
             };
         })();
     """
+
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +580,10 @@ async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) ->
         return await send_streaks_shortcut_flow(page, emit=emit)
 
     _log(f"🎬 Replaying custom recorded macro ({len(events)} steps, 30s between steps)...", emit)
+    await _dismiss_banners_and_reset(page, emit)
+
     for idx, ev in enumerate(events):
+
         if idx > 0:
             _log(f"  ⏳ Waiting 30 seconds before step {idx+1}...", emit)
             await asyncio.sleep(30)
