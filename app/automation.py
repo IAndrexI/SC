@@ -55,6 +55,7 @@ WEBCAM_URL = os.environ.get(
     "https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg"
 )
 WEBCAM_FILE = DATA_DIR / "webcam_latest.jpg"
+Y4M_FILE    = DATA_DIR / "webcam.y4m"
 
 
 def _cleanup_stale_locks():
@@ -68,13 +69,47 @@ def _cleanup_stale_locks():
             pass
 
 
+def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width: int = 1280, height: int = 720, fps: int = 30, frames: int = 10):
+    """Convert JPEG/PNG image bytes into standard Y4M video for Chromium native fake video capture."""
+    try:
+        from PIL import Image, ImageOps
+        import io
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        # Scale to 1280x720 with black letterboxing
+        img.thumbnail((width, height), Image.Resampling.LANCZOS)
+        padded = Image.new("RGB", (width, height), (10, 15, 25))
+        padded.paste(img, ((width - img.width) // 2, (height - img.height) // 2))
+
+        # Convert to YUV420p
+        ycbcr = padded.convert("YCbCr")
+        y = ycbcr.getchannel(0).tobytes()
+        cb = ycbcr.getchannel(1).resize((width // 2, height // 2), Image.Resampling.BILINEAR).tobytes()
+        cr = ycbcr.getchannel(2).resize((width // 2, height // 2), Image.Resampling.BILINEAR).tobytes()
+        raw_frame = y + cb + cr
+
+        # Write Y4M stream (Chromium loops this natively as real webcam)
+        header = f"YUV4MPEG2 W{width} H{height} F{fps}:1 Ip A1:1 C420\n".encode("ascii")
+        frame_marker = b"FRAME\n"
+
+        with open(out_path, "wb") as f:
+            f.write(header)
+            for _ in range(frames):
+                f.write(frame_marker)
+                f.write(raw_frame)
+    except Exception as ex:
+        _log(f"  ⚠ Notice generating Y4M: {ex}")
+
+
 def fetch_webcam_image(force_refresh: bool = False) -> bytes:
-    """Fetch latest frame from meteorology webcam with automatic freshness check and cache-busting."""
+    """Fetch latest frame from meteorology webcam with automatic freshness check, cache-busting, and Y4M generation."""
     now = time.time()
     # If cached file exists and is less than 5 minutes old and not forced, return cached
     if not force_refresh and WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
         age_seconds = now - WEBCAM_FILE.stat().st_mtime
         if age_seconds < 300:  # 5 minutes
+            if not Y4M_FILE.exists():
+                generate_y4m_from_image(WEBCAM_FILE.read_bytes())
             return WEBCAM_FILE.read_bytes()
 
     import urllib.request
@@ -94,15 +129,22 @@ def fetch_webcam_image(force_refresh: bool = False) -> bytes:
             if data and len(data) > 1000:
                 WEBCAM_FILE.write_bytes(data)
                 SNAP_IMAGE.write_bytes(data)
-                _log("  📷 Fresh SJSU meteorology webcam frame updated.")
+                generate_y4m_from_image(data)
+                _log("  📷 Fresh SJSU meteorology webcam frame & native video track updated.")
                 return data
     except Exception as ex:
         _log(f"  ⚠ Webcam download notice: {ex} (using local frame).")
 
     if WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
-        return WEBCAM_FILE.read_bytes()
+        data = WEBCAM_FILE.read_bytes()
+        if not Y4M_FILE.exists():
+            generate_y4m_from_image(data)
+        return data
     if SNAP_IMAGE.exists() and SNAP_IMAGE.stat().st_size > 1000:
-        return SNAP_IMAGE.read_bytes()
+        data = SNAP_IMAGE.read_bytes()
+        if not Y4M_FILE.exists():
+            generate_y4m_from_image(data)
+        return data
     return b""
 
 
@@ -136,42 +178,6 @@ async def _dismiss_banners_and_reset(page: Page, emit=None):
             pass
 
 
-def get_camera_stream_init_script() -> str:
-    """Lightweight canvas-based live webcam stream for navigator.mediaDevices.getUserMedia."""
-    return """
-        (() => {
-            if (!navigator.mediaDevices) return;
-            const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-            navigator.mediaDevices.getUserMedia = async function(constraints) {
-                if (constraints && (constraints.video || constraints === true)) {
-                    try {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = 1280;
-                        canvas.height = 720;
-                        const ctx = canvas.getContext('2d');
-                        
-                        const img = new Image();
-                        img.src = '/fake_webcam_feed.jpg?t=' + Date.now();
-                        
-                        const draw = () => {
-                            if (img.complete && img.naturalWidth) {
-                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                            } else {
-                                ctx.fillStyle = '#0a0d18';
-                                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                            }
-                            requestAnimationFrame(draw);
-                        };
-                        draw();
-
-                        return canvas.captureStream(30);
-                    } catch(e) {}
-                }
-                return origGUM(constraints);
-            };
-        })();
-    """
-
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +208,20 @@ async def _take_screenshot(page: Page, label: str = ""):
 # ---------------------------------------------------------------------------
 async def _build_context(playwright, headless: bool = True):
     _cleanup_stale_locks()
+    fetch_webcam_image()  # ensure Y4M_FILE is ready before launch
+
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--use-fake-ui-for-media-stream",  # Auto-grants camera permission without prompt
+        "--use-fake-device-for-media-stream",
+    ]
+    if Y4M_FILE.exists():
+        args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(USER_DATA_DIR),
         headless=headless,
@@ -210,15 +230,7 @@ async def _build_context(playwright, headless: bool = True):
         locale="en-US",
         timezone_id="America/Los_Angeles",
         permissions=["camera", "microphone", "notifications"],
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--use-fake-ui-for-media-stream",  # Auto-grants camera permission without prompt
-            "--use-fake-device-for-media-stream",
-        ],
+        args=args,
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
@@ -237,17 +249,8 @@ async def _build_context(playwright, headless: bool = True):
         window.chrome = { runtime: {} };
     """)
 
-    # Inject camera hook
-    await context.add_init_script(get_camera_stream_init_script())
-
-    # Fulfill virtual webcam feed route instantly from local cache
-    async def _handle_feed(route):
-        data = fetch_webcam_image()
-        await route.fulfill(status=200, content_type="image/jpeg", body=data)
-
-    await context.route("**/fake_webcam_feed.jpg", _handle_feed)
-
     return context
+
 
 
 

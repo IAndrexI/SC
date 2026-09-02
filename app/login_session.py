@@ -20,12 +20,13 @@ from automation import (
     VIEWPORT,
     USER_DATA_DIR,
     MACRO_FILE,
+    Y4M_FILE,
     replay_macro,
-    get_camera_stream_init_script,
     fetch_webcam_image,
     _cleanup_stale_locks,
     _log,
 )
+
 
 
 
@@ -141,10 +142,24 @@ async def start(emit: Callable | None = None) -> str:
 
     await _cleanup()
     _cleanup_stale_locks()
+    fetch_webcam_image()  # ensure Y4M_FILE is ready before launch
     _log("Launching browser with persistent profile...", emit)
 
     pw = await async_playwright().start()
     _state["playwright"] = pw
+
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-setuid-sandbox",
+        f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
+        "--disable-blink-features=AutomationControlled",
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
+    ]
+    if Y4M_FILE.exists():
+        args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
 
     context = await pw.chromium.launch_persistent_context(
         user_data_dir=str(USER_DATA_DIR),
@@ -154,16 +169,7 @@ async def start(emit: Callable | None = None) -> str:
         locale="en-US",
         timezone_id="America/Los_Angeles",
         permissions=["camera", "microphone", "notifications"],
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-setuid-sandbox",
-            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-            "--disable-blink-features=AutomationControlled",
-            "--use-fake-ui-for-media-stream",
-            "--use-fake-device-for-media-stream",
-        ],
+        args=args,
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
@@ -178,15 +184,9 @@ async def start(emit: Callable | None = None) -> str:
         "window.chrome={runtime:{}};"
         "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
     )
-    await context.add_init_script(get_camera_stream_init_script())
-
-    async def _handle_feed(route):
-        data = fetch_webcam_image()
-        await route.fulfill(status=200, content_type="image/jpeg", body=data)
-
-    await context.route("**/fake_webcam_feed.jpg", _handle_feed)
 
     _state["context"] = context
+
 
     page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page
