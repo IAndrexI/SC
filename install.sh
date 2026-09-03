@@ -75,8 +75,9 @@ Environment="DATA_DIR=${DATA_DIR}"
 Environment="PORT=${PORT}"
 Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers"
 ExecStart=${APP_DIR}/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT}
-Restart=on-failure
-RestartSec=10
+Restart=always
+RestartSec=5
+
 
 [Install]
 WantedBy=multi-user.target
