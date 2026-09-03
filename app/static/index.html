@@ -259,29 +259,12 @@
     <!-- Idle state -->
     <div id="login-idle">
       <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-        Start a browser or Android session on the server to interact with Snapchat, record macros, or test automated streak sending.
+        Start a browser session on the server to interact with Snapchat, record macros, or test automated streak sending.
       </p>
       <div class="btn-row" style="margin-bottom:16px">
         <button class="btn btn-primary" onclick="startLogin()">🖥️ Open Live Browser Session</button>
-        <button class="btn btn-success" onclick="waydroidConnect()" style="background:#27ae60">🤖 Connect Android (Waydroid)</button>
       </div>
 
-      <!-- Waydroid Android Panel -->
-      <div id="waydroid-panel" style="display:none;background:var(--surface2);border:2px solid #27ae60;border-radius:8px;padding:14px;margin-bottom:14px">
-        <div style="font-size:13px;font-weight:700;color:#2ecc71;margin-bottom:10px">🤖 Android (Waydroid) — Live Screen</div>
-        <div style="position:relative;background:#000;border-radius:6px;overflow:hidden;margin-bottom:10px;cursor:crosshair" onclick="waydroidTapFromClick(event)" id="waydroid-screen-wrap">
-          <img id="waydroid-screen" src="" style="width:100%;display:block;max-height:500px;object-fit:contain" />
-          <div id="waydroid-screen-placeholder" style="color:#555;text-align:center;padding:40px;font-size:12px">Click "Connect Android" to start live view</div>
-        </div>
-        <div class="btn-row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
-          <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="waydroidKey('KEYCODE_BACK')">← Back</button>
-          <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="waydroidKey('KEYCODE_HOME')">⌂ Home</button>
-          <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="waydroidKey('KEYCODE_APP_SWITCH')">⧉ Apps</button>
-          <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="waydroidRefreshScreen()">🔄 Refresh</button>
-          <button class="btn btn-success" style="font-size:11px;padding:5px 10px" onclick="waydroidSendStreaks()">🚀 Send Streaks (Android)</button>
-        </div>
-        <div id="waydroid-status-line" style="font-size:11px;color:var(--text-dim)">Not connected</div>
-      </div>
 
       <!-- 1-Click Session / Cookie Importer -->
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:10px">
@@ -954,9 +937,8 @@
   async function browserClick(evt) {
     const img = document.getElementById('browser-shot');
     const rect = img.getBoundingClientRect();
-    const isAndroid = (currentPlatform === 'android');
-    const targetW = isAndroid ? 720 : 1440;
-    const targetH = isAndroid ? 1280 : 900;
+    const targetW = 1440;
+    const targetH = 900;
 
     const scaleX = targetW / rect.width;
     const scaleY = targetH / rect.height;
@@ -972,21 +954,15 @@
     dot.style.display = 'block';
     setTimeout(() => { dot.style.display = 'none'; }, 400);
 
-    if (isAndroid) {
-      await fetch('/api/android/tap', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ x, y }),
-      });
-    } else {
-      await fetch('/api/login/click', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ x, y }),
-      });
-      setTimeout(triggerRefreshNow, 500);
-    }
+    await fetch('/api/login/click', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ x, y }),
+    });
+    setTimeout(triggerRefreshNow, 400);
+    setTimeout(triggerRefreshNow, 1200);
   }
+
 
   async function browserSendText() {
     const input = document.getElementById('browser-text');

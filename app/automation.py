@@ -69,8 +69,8 @@ def _cleanup_stale_locks():
             pass
 
 
-def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width: int = 1280, height: int = 720, fps: int = 30, frames: int = 10):
-    """Convert JPEG/PNG image bytes into standard Y4M video for Chromium native fake video capture."""
+def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width: int = 1280, height: int = 720, fps: int = 15, frames: int = 150):
+    """Convert JPEG/PNG image bytes into standard Y4M video for Chromium native fake video capture (150 frames = 10s video stream)."""
     try:
         from PIL import Image, ImageOps
         import io
@@ -99,6 +99,7 @@ def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width
                 f.write(raw_frame)
     except Exception as ex:
         _log(f"  ⚠ Notice generating Y4M: {ex}")
+
 
 
 def fetch_webcam_image(force_refresh: bool = False) -> bytes:
@@ -294,12 +295,10 @@ async def _build_context(playwright, headless: bool = True):
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-setuid-sandbox",
+        f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
         "--disable-blink-features=AutomationControlled",
         "--enable-webgl",
         "--enable-webgl2",
-        "--use-gl=angle",
-        "--use-angle=swiftshader",
-        "--ignore-certificate-errors",
         "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",
     ]
