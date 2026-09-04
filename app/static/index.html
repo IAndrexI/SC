@@ -438,6 +438,7 @@
     ws.onopen = () => {
       const box = document.getElementById('log-box');
       if (box.textContent === 'Connecting to log stream…') box.textContent = '';
+    };
     ws.onmessage = e => {
       if (e.data && e.data.startsWith('{')) {
         try {
@@ -456,13 +457,14 @@
       }
       appendLog('', e.data);
     };
-
+    ws.onclose = () => {
       appendLog('err', '⚠ Stream disconnected. Reconnecting in 3s…');
       setTimeout(connectWS, 3000);
     };
     ws.onerror = () => {
       try { ws.close(); } catch(e) {}
     };
+
   }
 
   function appendLog(cls, text) {
