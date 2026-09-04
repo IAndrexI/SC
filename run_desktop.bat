@@ -7,20 +7,14 @@ echo  Starting Snapchat Streak Bot (Desktop Mode)
 echo ===================================================
 echo.
 
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Python is not installed or not in PATH!
-    echo Please install Python 3.10+ from https://www.python.org/
-    pause
-    exit /b 1
+if not exist ".venv\Scripts\python.exe" (
+    echo Setting up Python 3.11 environment with uv...
+    uv venv .venv --python 3.11
+    .venv\Scripts\python -m pip install -r requirements.txt
+    .venv\Scripts\python -m playwright install chromium
 )
 
-echo Checking dependencies...
-python -m pip install -r requirements.txt
-python -m playwright install chromium
-
-echo.
 echo Launching bot...
-python run_desktop.py
+.venv\Scripts\python run_desktop.py
 
 pause
