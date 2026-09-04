@@ -6,7 +6,13 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>SC Automation v4.1</title>
+  <title>SnapStreak Auto</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <meta name="theme-color" content="#fffc00" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%23fffc00'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23000'>⚡</text></svg>" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1236,6 +1242,11 @@
         data.lines.forEach(l => appendLog('', l));
       }
     } catch(e) {}
+  }
+
+  // ── Register PWA Service Worker (Android Installable APK) ──
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
   }
 
   // ── Initialise ──
