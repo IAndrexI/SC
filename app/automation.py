@@ -43,11 +43,21 @@ VIEWPORT = {"width": 1440, "height": 900}
 def _log(msg: str, emit: Callable[[str], None] | None = None):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line, flush=True)
-    with open(LOG_FILE, "a") as f:
-        f.write(line + "\n")
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
     if emit:
-        emit(line)
+        try:
+            emit(line)
+        except Exception:
+            pass
+
 
 
 WEBCAM_URL = os.environ.get(

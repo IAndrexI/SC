@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 run_desktop.py - Snapchat Streak Bot Desktop Runner for Windows
 Runs directly on your Windows PC using your local Chrome/Chromium.
@@ -29,8 +29,9 @@ async def main():
     print("=" * 60)
     
     cfg = config.load()
-    friends = cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
+    friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
     print(f"Target friends: {friends}")
+
     print(f"Webcam source:  {automation.WEBCAM_URL}")
     print("\nFetching latest SJSU meteorology webcam frame...")
     automation.fetch_webcam_image(force_refresh=True)
