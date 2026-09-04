@@ -326,15 +326,33 @@
         </div>
       </div>
 
-      <!-- Live screenshot with click indicator -->
-      <div style="position:relative;border:2px solid var(--accent);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px;background:#000"
-           id="browser-frame" onclick="browserClick(event)">
-        <img id="browser-shot" src="" style="width:100%;display:block;min-height:260px" />
-        <div id="click-dot" style="position:absolute;width:12px;height:12px;background:#ff0055;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);display:none;pointer-events:none;z-index:10;box-shadow:0 0 8px #ff0055"></div>
-        <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
-          ⏳ Launching browser and navigating to Snapchat…
+      <!-- Real Interactive Browser Desktop (noVNC) -->
+      <div id="novnc-container" style="border:2px solid var(--accent);border-radius:8px;overflow:hidden;margin-bottom:12px;background:#000">
+        <div style="display:flex;justify-content:space-between;align-items:center;background:#1b1d2a;padding:8px 12px">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px">
+            <span>🌐 Interactive Chrome Browser (Real Mouse, Keyboard &amp; Popups)</span>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="reloadVncFrame()">↺ Reconnect Display</button>
+            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600">↗ Open Fullscreen Tab</a>
+          </div>
         </div>
+        <iframe id="novnc-iframe" src="" style="width:100%;height:640px;border:none;display:block;background:#000"></iframe>
       </div>
+
+      <!-- Fallback / Secondary Live Screenshot Stream -->
+      <details style="margin-bottom:12px">
+        <summary style="font-size:11px;color:var(--text-dim);cursor:pointer;margin-bottom:6px">📷 Video Stream &amp; Low-Bandwidth Screenshot View</summary>
+        <div style="position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px;background:#000"
+             id="browser-frame" onclick="browserClick(event)">
+          <img id="browser-shot" src="" style="width:100%;display:block;min-height:260px" />
+          <div id="click-dot" style="position:absolute;width:12px;height:12px;background:#ff0055;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);display:none;pointer-events:none;z-index:10;box-shadow:0 0 8px #ff0055"></div>
+          <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
+            ⏳ Launching browser and navigating to Snapchat…
+          </div>
+        </div>
+      </details>
+
 
       <!-- Raw text / key input -->
       <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
@@ -507,11 +525,20 @@
         _startSendMonitor();
       }
 
-      if (s.login_active && !_shotLoop) {
+      if (s.login_active) {
         document.getElementById('login-idle').style.display = 'none';
         document.getElementById('login-active').style.display = '';
-        _startShotLoop();
+        if (s.novnc_url) {
+          const frame = document.getElementById('novnc-iframe');
+          if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
+            frame.src = s.novnc_url;
+          }
+          const link = document.getElementById('novnc-tab-link');
+          if (link) link.href = s.novnc_url;
+        }
+        if (!_shotLoop) _startShotLoop();
       }
+
 
       const res = s.last_run_results || {};
       const keys = Object.keys(res);
@@ -1035,8 +1062,19 @@
   }
 
 
+  function reloadVncFrame() {
+    const frame = document.getElementById('novnc-iframe');
+    if (frame && frame.src) {
+      const src = frame.src;
+      frame.src = 'about:blank';
+      setTimeout(() => { frame.src = src; }, 400);
+    }
+  }
+
   async function saveLogin() {
     _stopShotLoop();
+    const frame = document.getElementById('novnc-iframe');
+    if (frame) frame.src = 'about:blank';
     const statusEl = document.getElementById('login-status');
     statusEl.style.color = 'var(--text-dim)';
     statusEl.textContent = 'Saving session state…';
@@ -1051,11 +1089,14 @@
 
   async function cancelLogin() {
     _stopShotLoop();
+    const frame = document.getElementById('novnc-iframe');
+    if (frame) frame.src = 'about:blank';
     await fetch('/api/login/cancel', { method: 'POST' });
     document.getElementById('login-idle').style.display   = '';
     document.getElementById('login-active').style.display = 'none';
     document.getElementById('login-status').textContent   = '';
   }
+
 
   // ── Drag & drop for snap image ──
   const dz = document.getElementById('dropzone');

@@ -32,16 +32,15 @@ from automation import (
 
 
 
-NOVNC_PORT = 6080  # kept for API compat
+import os
+import sys
+import shutil
+import subprocess
 
-_state: dict = {
-    "active":     False,
-    "playwright": None,
-    "context":    None,
-    "page":       None,
-    "last_shot":  b"",   # last JPEG screenshot bytes
-    "url":        "",
-}
+DISPLAY    = ":99"
+VNC_PORT   = 5900
+NOVNC_PORT = 6080
+NOVNC_WEB  = "/usr/share/novnc"
 
 _macro: dict = {
     "recording": False,
@@ -76,7 +75,6 @@ def get_macro_info() -> dict:
     return {"has_macro": has_macro, "count": count, "recording": _macro["recording"]}
 
 
-
 _state: dict = {
     "active":        False,
     "playwright":    None,
@@ -85,10 +83,33 @@ _state: dict = {
     "cdp":           None,
     "last_shot_b64": "",
     "url":           "",
+    "xvfb":          None,
+    "x11vnc":        None,
+    "websockify":    None,
 }
 
 
+def _kill(proc):
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _cleanup_processes():
+    _kill(_state.get("websockify"))
+    _kill(_state.get("x11vnc"))
+    _kill(_state.get("xvfb"))
+    _state["xvfb"] = _state["x11vnc"] = _state["websockify"] = None
+
+
 async def _cleanup():
+    _cleanup_processes()
     try:
         if _state["cdp"]:
             await _state["cdp"].detach()
@@ -106,7 +127,8 @@ async def _cleanup():
         pass
     _state.update(
         active=False, playwright=None,
-        context=None, page=None, cdp=None, last_shot_b64="", url=""
+        context=None, page=None, cdp=None, last_shot_b64="", url="",
+        xvfb=None, x11vnc=None, websockify=None
     )
 
 
@@ -137,6 +159,22 @@ async def _fast_frame_loop():
         await asyncio.sleep(0.5)
 
 
+def _find_chrome_executable() -> str | None:
+    for path in [
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/opt/google/chrome/google-chrome",
+        "/usr/bin/chromium",
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    ]:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+
 
 async def start(emit: Callable | None = None) -> str:
     if _state["active"] and _state["page"]:
@@ -150,38 +188,84 @@ async def start(emit: Callable | None = None) -> str:
     pw = await async_playwright().start()
     _state["playwright"] = pw
 
-    args = [
+    is_linux = sys.platform.startswith("linux")
+    has_xvfb = shutil.which("Xvfb") is not None
+
+    env = dict(os.environ)
+    if is_linux and has_xvfb:
+        _log("Starting virtual X11 desktop (Xvfb)...", emit)
+        _cleanup_processes()
+        _state["xvfb"] = subprocess.Popen(
+            ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        await asyncio.sleep(1.5)
+
+        _log("Starting VNC server (x11vnc)...", emit)
+        _state["x11vnc"] = subprocess.Popen(
+            ["x11vnc", "-display", DISPLAY, "-nopw", "-forever", "-port", str(VNC_PORT), "-shared", "-quiet"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        await asyncio.sleep(0.8)
+
+        novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
+        websock_cmd = ["websockify", "--web", novnc_web, str(NOVNC_PORT), f"localhost:{VNC_PORT}"] if novnc_web else ["websockify", str(NOVNC_PORT), f"localhost:{VNC_PORT}"]
+        _log(f"Starting web desktop proxy (noVNC port {NOVNC_PORT})...", emit)
+        _state["websockify"] = subprocess.Popen(
+            websock_cmd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        await asyncio.sleep(0.8)
+        env["DISPLAY"] = DISPLAY
+        headless = False
+        _log(f"✓ Real browser desktop ready on port {NOVNC_PORT}.", emit)
+    else:
+        headless = True
+
+    chrome_exe = _find_chrome_executable()
+    if chrome_exe:
+        _log(f"  ✓ Using official browser: {chrome_exe}", emit)
+    else:
+        _log("  ℹ Using Playwright Chromium.", emit)
+
+    launch_args = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-setuid-sandbox",
         f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
         "--disable-blink-features=AutomationControlled",
+        "--no-default-browser-check",
         "--enable-webgl",
         "--enable-webgl2",
         "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",
     ]
     if Y4M_FILE.exists():
-        args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+        launch_args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
 
-
-    context = await pw.chromium.launch_persistent_context(
-        user_data_dir=str(USER_DATA_DIR),
-        headless=True,
-        viewport=VIEWPORT,
-        user_agent=USER_AGENT,
-        locale="en-US",
-        timezone_id="America/Los_Angeles",
-        permissions=["camera", "microphone", "notifications"],
-        args=args,
-        extra_http_headers={
+    kwargs = {
+        "user_data_dir": str(USER_DATA_DIR),
+        "headless": headless,
+        "viewport": VIEWPORT,
+        "user_agent": USER_AGENT,
+        "locale": "en-US",
+        "timezone_id": "America/Los_Angeles",
+        "permissions": ["camera", "microphone", "notifications"],
+        "args": launch_args,
+        "env": env,
+        "extra_http_headers": {
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Upgrade-Insecure-Requests": "1",
         },
-    )
+    }
+    if chrome_exe:
+        kwargs["executable_path"] = chrome_exe
+
+    context = await pw.chromium.launch_persistent_context(**kwargs)
+
 
     await context.add_init_script(STEALTH_INIT_SCRIPT)
 

@@ -32,6 +32,14 @@ apt-get install -y -qq \
   fonts-liberation fonts-unifont \
   xdg-utils
 
+if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
+  step "Installing official Google Chrome..."
+  curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb
+  apt-get install -y -qq /tmp/chrome.deb 2>/dev/null || apt-get install -f -y -qq
+  rm -f /tmp/chrome.deb
+fi
+
+
 # clone or update
 if [[ -d "$APP_DIR/.git" ]]; then
   step "Updating repo..."

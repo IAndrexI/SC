@@ -191,23 +191,20 @@ async def update_config(body: ConfigUpdate):
 
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(request: Request):
     cfg = config.load()
     next_run = None
     job = _scheduler.get_job("daily_streak")
     if job:
         next_run = str(job.next_run_time)
 
-    # Detect server IP for noVNC link
-    try:
-        server_ip = socket.gethostbyname(socket.gethostname())
-    except Exception:
-        server_ip = "YOUR_SERVER_IP"
+    host_ip = request.url.hostname or "localhost"
+    novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale"
 
     return {
         "logged_in":       automation.SESSION_FILE.exists(),
         "login_active":    login_session.is_active(),
-        "novnc_url":       f"http://{server_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale",
+        "novnc_url":       novnc_url,
         "running":         _state["running"],
         "last_run_time":   _state["last_run_time"],
         "last_run_results": _state["last_run_results"],
@@ -215,6 +212,7 @@ async def get_status():
         "enabled":         cfg["enabled"],
         "friend_count":    len(cfg["friends"]),
     }
+
 
 
 @app.post("/api/login/start")
