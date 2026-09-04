@@ -540,6 +540,23 @@ async def bliss_launch():
     ok = await bliss_client.launch_snapchat(_emit)
     return {"ok": ok}
 
+@app.post("/api/bliss/install-apk")
+async def bliss_install_apk(file: UploadFile):
+    """Upload and install an APK file directly onto Bliss OS."""
+    if not file.filename.endswith(".apk"):
+        raise HTTPException(status_code=400, detail="Only .apk files can be installed.")
+    content = await file.read()
+    temp_apk = DATA_DIR / file.filename
+    temp_apk.write_bytes(content)
+    try:
+        ok = await bliss_client.install_apk(str(temp_apk), emit=_emit)
+        return {"ok": ok, "filename": file.filename}
+    finally:
+        try:
+            temp_apk.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 @app.post("/api/bliss/push-cam")
 async def bliss_push_cam():
     ok = await bliss_client.push_webcam_to_gallery(_emit)

@@ -236,6 +236,23 @@ async def key_event(code: int | str):
 # ---------------------------------------------------------------------------
 # App Lifecycle & Push Media
 # ---------------------------------------------------------------------------
+async def is_app_installed(package_name: str = "com.snapchat.android") -> bool:
+    """Check if Snapchat or another app package is installed on Bliss OS."""
+    ret, out, _ = await run_adb("shell", "pm", "list", "packages", package_name)
+    return ret == 0 and package_name in out
+
+
+async def install_apk(apk_path: str, emit: Callable[[str], None] | None = None) -> bool:
+    """Install an APK file onto Bliss OS via ADB."""
+    _log(f"Installing APK ({apk_path}) onto Bliss OS...", emit)
+    ret, out, err = await run_adb("install", "-r", "-d", "-g", apk_path, timeout=120.0)
+    if ret == 0 and ("success" in out.lower() or "success" in err.lower()):
+        _log(f"✓ APK installed successfully on Bliss OS!", emit)
+        return True
+    _log(f"⚠ APK install output: {out or err}", emit)
+    return False
+
+
 async def launch_snapchat(emit: Callable[[str], None] | None = None) -> bool:
     """Launch the Snapchat Android application."""
     _log("Launching Snapchat on Bliss OS...", emit)

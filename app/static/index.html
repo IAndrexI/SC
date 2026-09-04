@@ -258,6 +258,8 @@
         <div class="btn-row" style="margin-top:0;gap:6px;flex-wrap:wrap">
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="launchBlissSnapchat()">🚀 Launch Snapchat App</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="pushWebcamBliss()">📷 Push SJSU Webcam Frame</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="document.getElementById('apk-file-input').click()">📦 Install APK / App</button>
+          <input type="file" id="apk-file-input" accept=".apk" style="display:none" onchange="uploadAndInstallApk(this.files[0])" />
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(4)">◀ Back</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(3)">⭕ Home</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(187)">▢ Recents</button>
@@ -1036,6 +1038,26 @@
       appendLog('info', '✓ Webcam image pushed to Bliss OS gallery.');
     } else {
       appendLog('err', '⚠ Failed to push webcam frame.');
+    }
+  }
+
+  async function uploadAndInstallApk(file) {
+    if (!file) return;
+    appendLog('info', `Uploading & installing ${file.name} onto Bliss OS...`);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/bliss/install-apk', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (d.ok) {
+        appendLog('info', `✓ Successfully installed ${file.name} on Bliss OS!`);
+        alert(`Success! ${file.name} installed on Bliss OS.`);
+      } else {
+        appendLog('err', `⚠ Failed installing APK: ${d.detail || 'Install error'}`);
+        alert('Install error: ' + (d.detail || 'Failed'));
+      }
+    } catch(e) {
+      appendLog('err', 'Error: ' + e.message);
     }
   }
 
