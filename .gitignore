@@ -6,7 +6,6 @@ __pycache__/
 # Data (sessions, cookies, config — never commit these)
 /data/
 /desktop_data/
-*.json
 snap.png
 
 
