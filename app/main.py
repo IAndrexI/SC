@@ -349,8 +349,24 @@ async def session_import(body: SessionImportInput):
     # Save to session.json
     automation.SESSION_FILE.write_text(json.dumps(storage_state, indent=2))
     _state["logged_in"] = True
+
+    # If live browser session is active, inject cookies immediately and navigate
+    if login_session.is_active():
+        try:
+            ctx = login_session._state.get("context")
+            pg = login_session._state.get("page")
+            if ctx and storage_state.get("cookies"):
+                await ctx.add_cookies(storage_state["cookies"])
+                _emit("✓ Cookies injected into active browser session!")
+                if pg:
+                    await pg.goto("https://web.snapchat.com/", timeout=15000)
+                    _emit("✓ Navigated to web.snapchat.com with imported cookies.")
+        except Exception as ex:
+            _emit(f"⚠ Live injection notice: {ex}")
+
     _emit(f"✓ Successfully imported {len(storage_state.get('cookies', []))} session cookies! Server is now authenticated.")
     return {"ok": True, "cookies_count": len(storage_state.get("cookies", []))}
+
 
 
 

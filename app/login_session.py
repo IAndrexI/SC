@@ -184,7 +184,20 @@ async def start(emit: Callable | None = None) -> str:
     )
 
     await context.add_init_script(STEALTH_INIT_SCRIPT)
+
+
+    if SESSION_FILE.exists():
+        try:
+            data = json.loads(SESSION_FILE.read_text())
+            cookies = data.get("cookies", [])
+            if cookies:
+                await context.add_cookies(cookies)
+                _log(f"  ✓ Injected {len(cookies)} cookies from session.json into browser context.", emit)
+        except Exception as ex:
+            _log(f"  ⚠ Failed to inject session cookies: {ex}", emit)
+
     _state["context"] = context
+
 
 
 

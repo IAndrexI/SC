@@ -325,8 +325,19 @@ async def _build_context(playwright, headless: bool = True):
         },
     )
 
+    if SESSION_FILE.exists():
+        try:
+            data = json.loads(SESSION_FILE.read_text())
+            cookies = data.get("cookies", [])
+            if cookies:
+                await context.add_cookies(cookies)
+                _log(f"  ✓ Injected {len(cookies)} cookies from session.json into browser context.")
+        except Exception as ex:
+            _log(f"  ⚠ Failed to inject session cookies: {ex}")
+
     await context.add_init_script(STEALTH_INIT_SCRIPT)
     return context
+
 
 
 
