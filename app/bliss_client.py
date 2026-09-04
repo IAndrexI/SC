@@ -233,6 +233,11 @@ async def key_event(code: int | str):
     await run_adb("shell", "input", "keyevent", str(code))
 
 
+async def exec_shell(cmd_str: str) -> tuple[int, str, str]:
+    """Execute a raw Linux shell command inside Bliss OS (built-in Termux / root shell)."""
+    return await run_adb("shell", cmd_str, timeout=30.0)
+
+
 # ---------------------------------------------------------------------------
 # App Lifecycle & Push Media
 # ---------------------------------------------------------------------------

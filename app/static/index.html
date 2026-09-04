@@ -271,6 +271,20 @@
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(187)">▢ Recents</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(27)">📸 Shutter (Camera)</button>
           <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(24)">🔊 Vol+ (Snap)</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px;background:#2a1f4d;border-color:#5c3bb5" onclick="toggleTermuxDrawer()">💻 Built-in Termux Shell</button>
+        </div>
+
+        <!-- Built-in Termux / Root Shell Drawer -->
+        <div id="termux-drawer" style="display:none;margin-top:12px;background:#050508;border:1px solid #332d56;border-radius:8px;padding:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:#9d7dfa">💻 Bliss OS Termux / Linux Shell</span>
+            <span style="font-size:11px;color:var(--text-dim)">root@bliss_x86_64</span>
+          </div>
+          <div id="termux-output" style="background:#000;color:#3ddc84;font-family:monospace;font-size:12px;padding:8px;border-radius:6px;min-height:100px;max-height:180px;overflow-y:auto;white-space:pre-wrap;margin-bottom:8px">Welcome to built-in Bliss OS Shell. Type any command (e.g. 'pm list packages', 'getprop', 'top', 'df -h')...</div>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="termux-input" placeholder="sh command (e.g. pm list packages | grep snap)..." style="font-family:monospace;font-size:12px;flex:1;padding:6px 10px" onkeydown="if(event.key==='Enter')runTermuxCmd()" />
+            <button class="btn btn-primary" style="font-size:11px;padding:6px 14px" onclick="runTermuxCmd()">Run ↵</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1064,6 +1078,40 @@
       }
     } catch(e) {
       appendLog('err', 'Error: ' + e.message);
+    }
+  }
+
+  function toggleTermuxDrawer() {
+    const d = document.getElementById('termux-drawer');
+    d.style.display = d.style.display === 'none' ? 'block' : 'none';
+    if (d.style.display === 'block') {
+      document.getElementById('termux-input').focus();
+    }
+  }
+
+  async function runTermuxCmd() {
+    const input = document.getElementById('termux-input');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    input.value = '';
+
+    const outBox = document.getElementById('termux-output');
+    outBox.textContent += `\n$ ${cmd}\n`;
+    outBox.scrollTop = outBox.scrollHeight;
+
+    try {
+      const r = await fetch('/api/bliss/shell', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ command: cmd })
+      });
+      const d = await r.json();
+      const resText = d.stdout || d.stderr || `(Process exited with code ${d.exit_code})`;
+      outBox.textContent += resText + '\n';
+      outBox.scrollTop = outBox.scrollHeight;
+    } catch(e) {
+      outBox.textContent += `Error: ${e.message}\n`;
+      outBox.scrollTop = outBox.scrollHeight;
     }
   }
 

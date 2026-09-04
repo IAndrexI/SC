@@ -557,6 +557,19 @@ async def bliss_install_apk(file: UploadFile):
         except Exception:
             pass
 
+class ShellInput(BaseModel):
+    command: str
+
+@app.post("/api/bliss/shell")
+async def bliss_shell(body: ShellInput):
+    """Execute raw Linux/Termux commands inside Bliss OS."""
+    ret, stdout, stderr = await bliss_client.exec_shell(body.command)
+    return {
+        "exit_code": ret,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
 @app.post("/api/bliss/push-cam")
 async def bliss_push_cam():
     ok = await bliss_client.push_webcam_to_gallery(_emit)
