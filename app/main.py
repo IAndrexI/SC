@@ -250,6 +250,13 @@ async def login_cancel():
     return {"message": "Login session cancelled."}
 
 
+@app.post("/api/login/google")
+async def login_google():
+    """Click Continue with Google in the active browser session."""
+    return await login_session.click_google_login()
+
+
+
 @app.post("/api/login/clear-browser-data")
 async def clear_browser_data():
     """Use CDP to clear the live browser's cache, cookies, and site storage."""

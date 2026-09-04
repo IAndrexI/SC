@@ -237,14 +237,41 @@ async def start(emit: Callable | None = None) -> str:
         _log(f"CDP Screencast fallback: {ex}", emit)
         asyncio.create_task(_fast_frame_loop())
 
-    _log("Navigating to Snapchat Web...", emit)
+    _log("Navigating to Snapchat Login...", emit)
     try:
-        await page.goto("https://web.snapchat.com/", timeout=25_000, wait_until="domcontentloaded")
+        await page.goto("https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F", timeout=25_000, wait_until="domcontentloaded")
     except Exception as ex:
         _log(f"Navigation notice: {ex}", emit)
 
     _log("✓ Browser ready — live stream active.", emit)
     return "ok"
+
+
+async def click_google_login() -> dict:
+    """Click Continue with Google / Sign in with Google button."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No active browser session"}
+
+    google_selectors = [
+        'button:has-text("Google")',
+        '[aria-label*="Google" i]',
+        'button:has([data-testid*="google" i])',
+        'a:has-text("Google")',
+        'div[role="button"]:has-text("Google")',
+    ]
+    for sel in google_selectors:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=1500):
+                await btn.scroll_into_view_if_needed()
+                await btn.click(delay=80)
+                _log("  ✓ Clicked Continue with Google button.")
+                return {"ok": True, "selector": sel}
+        except Exception:
+            continue
+    return {"ok": False, "error": "Google button not found on this page"}
+
 
 
 
