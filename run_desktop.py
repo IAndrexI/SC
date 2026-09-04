@@ -1,5 +1,6 @@
+﻿# -*- coding: utf-8 -*-
 """
-run_desktop.py � Snapchat Streak Bot Desktop Runner for Windows
+run_desktop.py - Snapchat Streak Bot Desktop Runner for Windows
 Runs directly on your Windows PC using your local Chrome/Chromium.
 Zero datacenter IP blocks, zero server captcha issues.
 """
@@ -57,11 +58,11 @@ async def main():
                 if ans == "y":
                     logged_in = await automation.check_logged_in(page)
                     if logged_in:
-                        print("? Login verified! Saving profile session...")
+                        print("✓ Login verified! Saving profile session...")
                         await automation._save_session(context)
                         break
                     else:
-                        print("? Not detected on web.snapchat.com yet. Please finish logging in.")
+                        print("✗ Not detected on web.snapchat.com yet. Please finish logging in.")
         
         print("\nStarting automated 6-step streak send flow...")
         results = await automation.send_streaks_shortcut_flow(page, emit=print)
