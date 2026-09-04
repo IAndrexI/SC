@@ -30,6 +30,7 @@ from pydantic import BaseModel
 import config
 import automation
 import login_session
+import bliss_client
 import socket
 
 
@@ -67,19 +68,25 @@ async def _do_send():
         return
     _state["running"] = True
     cfg = config.load()
+    mode = cfg.get("mode", "bliss")
     try:
         # Always fetch fresh webcam frame before sending
         automation.fetch_webcam_image(force_refresh=True)
 
-        if login_session.is_active():
+        if mode == "bliss":
+            _emit("Using Bliss OS Android Automation to send streaks...")
+            results = await bliss_client.send_streaks(cfg["friends"], emit=_emit)
+        elif login_session.is_active():
             _emit("Using currently active live browser session to send streaks...")
             results = await login_session.run_streak_in_active_session(cfg["friends"], emit=_emit)
         else:
+            _emit("Using desktop browser emulation to send streaks...")
             results = await automation.send_streaks(cfg["friends"], emit=_emit)
+
         _state["last_run_results"] = results
         import time
         _state["last_run_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        _state["logged_in"] = (automation.USER_DATA_DIR.exists() or automation.SESSION_FILE.exists())
+        _state["logged_in"] = (bliss_client.is_connected() or automation.USER_DATA_DIR.exists() or automation.SESSION_FILE.exists())
     finally:
         _state["running"] = False
 
@@ -163,6 +170,9 @@ class ConfigUpdate(BaseModel):
     friends: list[str] | None = None
     schedule_time: str | None = None
     enabled: bool | None = None
+    mode: str | None = None
+    bliss_host: str | None = None
+    bliss_port: int | None = None
 
 
 @app.get("/api/config")
@@ -186,6 +196,12 @@ async def update_config(body: ConfigUpdate):
             _reschedule(cfg["schedule_time"])
         else:
             _scheduler.remove_all_jobs()
+    if body.mode is not None:
+        cfg["mode"] = body.mode
+    if body.bliss_host is not None:
+        cfg["bliss_host"] = body.bliss_host.strip()
+    if body.bliss_port is not None:
+        cfg["bliss_port"] = int(body.bliss_port)
     config.save(cfg)
     return cfg
 
@@ -202,7 +218,7 @@ async def get_status(request: Request):
     novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale"
 
     return {
-        "logged_in":       automation.SESSION_FILE.exists(),
+        "logged_in":       (bliss_client.is_connected() if cfg.get("mode") == "bliss" else automation.SESSION_FILE.exists()),
         "login_active":    login_session.is_active(),
         "novnc_url":       novnc_url,
         "running":         _state["running"],
@@ -211,6 +227,9 @@ async def get_status(request: Request):
         "next_run":        next_run,
         "enabled":         cfg["enabled"],
         "friend_count":    len(cfg["friends"]),
+        "mode":            cfg.get("mode", "bliss"),
+        "bliss_connected": bliss_client.is_connected(),
+        "bliss_target":    bliss_client.get_target_device(),
     }
 
 
@@ -477,36 +496,91 @@ async def macro_info():
 
 
 # ---------------------------------------------------------------------------
-# Android ADB Routes
+# Bliss OS Android ADB Routes
 # ---------------------------------------------------------------------------
-import android_client
+class BlissConnectInput(BaseModel):
+    host: str | None = None
+    port: int | None = None
 
+@app.post("/api/bliss/connect")
+async def bliss_connect(body: BlissConnectInput | None = None):
+    host = body.host if body else None
+    port = body.port if body else None
+    ok = await bliss_client.connect(host=host, port=port, emit=_emit)
+    if ok:
+        asyncio.create_task(bliss_client.start_screen_stream(_emit))
+    return {
+        "ok": ok,
+        "connected": bliss_client.is_connected(),
+        "target": bliss_client.get_target_device(),
+    }
+
+@app.post("/api/bliss/disconnect")
+async def bliss_disconnect():
+    bliss_client.stop_screen_stream()
+    return {"ok": True}
+
+@app.post("/api/bliss/tap")
+async def bliss_tap(body: ClickInput):
+    await bliss_client.tap(body.x, body.y)
+    return {"ok": True}
+
+@app.post("/api/bliss/type")
+async def bliss_type(body: TypeInput):
+    await bliss_client.type_text(body.text)
+    return {"ok": True}
+
+@app.post("/api/bliss/key")
+async def bliss_key(body: KeyInput):
+    await bliss_client.key_event(body.key)
+    return {"ok": True}
+
+@app.post("/api/bliss/launch")
+async def bliss_launch():
+    ok = await bliss_client.launch_snapchat(_emit)
+    return {"ok": ok}
+
+@app.post("/api/bliss/push-cam")
+async def bliss_push_cam():
+    ok = await bliss_client.push_webcam_to_gallery(_emit)
+    return {"ok": ok}
+
+@app.post("/api/bliss/macro/record/start")
+async def bliss_macro_record_start():
+    res = bliss_client.start_macro_recording()
+    _emit("🔴 Bliss OS macro recording started! Tap on the live screen to record...")
+    return res
+
+@app.post("/api/bliss/macro/record/stop")
+async def bliss_macro_record_stop():
+    res = bliss_client.stop_macro_recording()
+    _emit(f"⏹️ Bliss OS macro recording saved ({res['count']} steps recorded)!")
+    return res
+
+@app.get("/api/bliss/macro/info")
+async def bliss_macro_info():
+    return bliss_client.get_macro_info()
+
+# Backwards compatibility with generic android endpoints
 @app.post("/api/android/connect")
 async def android_connect():
-    ok = await android_client.connect_adb(_emit)
-    if ok:
-        asyncio.create_task(android_client.start_screen_stream(_emit))
-    return {"ok": ok, "connected": android_client.is_connected()}
+    return await bliss_connect(None)
 
 @app.post("/api/android/tap")
 async def android_tap(body: ClickInput):
-    await android_client.tap(body.x, body.y)
-    return {"ok": True}
+    return await bliss_tap(body)
 
 @app.post("/api/android/type")
 async def android_type(body: TypeInput):
-    await android_client.type_text(body.text)
-    return {"ok": True}
+    return await bliss_type(body)
 
 @app.post("/api/android/key")
 async def android_key(body: KeyInput):
-    await android_client.key_event(body.key)
-    return {"ok": True}
+    return await bliss_key(body)
 
 @app.post("/api/android/launch")
 async def android_launch():
-    await android_client.launch_snapchat()
-    return {"ok": True}
+    return await bliss_launch()
 
 
 @app.post("/api/send")

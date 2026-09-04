@@ -14,6 +14,9 @@ _DEFAULTS = {
     "schedule_time": "09:00", # HH:MM daily send time (24h)
     "enabled": True,          # whether auto-send is active
     "snap_image_custom": False, # whether a custom image has been uploaded
+    "mode": "bliss",          # "bliss" (Android VM) or "web" (Browser)
+    "bliss_host": "127.0.0.1",# IP of Bliss OS VM
+    "bliss_port": 5555,       # ADB TCP port (default 5555)
 }
 
 

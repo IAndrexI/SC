@@ -234,24 +234,35 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h2 style="margin:0">Snapchat Automation & Live Control</h2>
       <div style="display:flex;gap:6px">
-        <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('web')">🖥️ Browser Mode</button>
-        <button class="btn btn-secondary" id="btn-mode-android" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('android')">📱 Android App Mode</button>
+        <button class="btn btn-secondary" id="btn-mode-bliss" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('bliss')">🤖 Bliss OS (Android VM)</button>
+        <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('web')">🖥️ Web Browser Mode</button>
         <button class="btn btn-success" id="btn-send" style="padding:6px 16px;font-size:12px" onclick="doSend()">🔥 Send Streaks Now</button>
       </div>
     </div>
 
-    <!-- Android App Mode View -->
-    <div id="android-view" style="display:none">
+    <!-- Bliss OS Android Mode View -->
+    <div id="bliss-view" style="display:block">
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-size:13px;font-weight:700;color:var(--green)">📱 Android Container (ReDroid / ADB)</span>
-          <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="launchAndroidSnapchat()">🚀 Launch Snapchat App</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:13px;font-weight:700;color:var(--green)">🤖 Bliss OS ADB Bridge</span>
+            <span id="bliss-conn-badge" class="badge" style="background:#08080c;color:var(--red)">Disconnected</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="bliss-host" placeholder="Bliss VM IP (e.g. 192.168.1.150)" style="width:180px;padding:5px 8px;font-size:12px" />
+            <input type="text" id="bliss-port" value="5555" style="width:60px;padding:5px 8px;font-size:12px" />
+            <button class="btn btn-primary" style="font-size:11px;padding:6px 12px" onclick="connectBliss()">⚡ Connect ADB</button>
+          </div>
         </div>
+
         <div class="btn-row" style="margin-top:0;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="androidKey(4)">◀ Back</button>
-          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="androidKey(3)">⭕ Home</button>
-          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="androidKey(187)">▢ Recents</button>
-          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="connectAndroid()">⚡ Reconnect ADB</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="launchBlissSnapchat()">🚀 Launch Snapchat App</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="pushWebcamBliss()">📷 Push SJSU Webcam Frame</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(4)">◀ Back</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(3)">⭕ Home</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(187)">▢ Recents</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(27)">📸 Shutter (Camera)</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(24)">🔊 Vol+ (Snap)</button>
         </div>
       </div>
     </div>
@@ -540,6 +551,14 @@
       }
 
 
+      if (s.bliss_connected) {
+        const badge = document.getElementById('bliss-conn-badge');
+        if (badge) {
+          badge.style.color = 'var(--green)';
+          badge.textContent = `Connected (${s.bliss_target || 'online'})`;
+        }
+      }
+
       const res = s.last_run_results || {};
       const keys = Object.keys(res);
       if (keys.length) {
@@ -564,6 +583,9 @@
       document.getElementById('friends-input').value = (cfg.friends || []).join('\n');
       document.getElementById('schedule-time').value = cfg.schedule_time || '09:00';
       document.getElementById('toggle-enabled').checked = Boolean(cfg.enabled);
+      if (cfg.bliss_host) document.getElementById('bliss-host').value = cfg.bliss_host;
+      if (cfg.bliss_port) document.getElementById('bliss-port').value = cfg.bliss_port;
+      if (cfg.mode) switchPlatform(cfg.mode);
     } catch(e) {
       console.error('Config fetch failed:', e);
     }
@@ -913,15 +935,17 @@
   }
 
   async function startMacroRec() {
-    await fetch('/api/macro/record/start', { method: 'POST' });
+    const url = currentPlatform === 'bliss' ? '/api/bliss/macro/record/start' : '/api/macro/record/start';
+    await fetch(url, { method: 'POST' });
     document.getElementById('btn-macro-start').style.display = 'none';
     document.getElementById('btn-macro-stop').style.display = 'inline-flex';
     document.getElementById('macro-rec-banner').style.display = 'block';
-    appendLog('info', '🔴 MACRO RECORDING STARTED: Click on the live screen to record your exact actions.');
+    appendLog('info', `🔴 ${currentPlatform === 'bliss' ? 'BLISS OS' : 'BROWSER'} MACRO RECORDING STARTED: Tap/click on the live screen to record your exact actions.`);
   }
 
   async function stopMacroRec() {
-    const r = await fetch('/api/macro/record/stop', { method: 'POST' });
+    const url = currentPlatform === 'bliss' ? '/api/bliss/macro/record/stop' : '/api/macro/record/stop';
+    const r = await fetch(url, { method: 'POST' });
     const res = await r.json();
     document.getElementById('btn-macro-start').style.display = 'inline-flex';
     document.getElementById('btn-macro-stop').style.display = 'none';
@@ -932,7 +956,8 @@
 
   async function refreshMacroInfo() {
     try {
-      const info = await fetch('/api/macro/info').then(r => r.json());
+      const url = currentPlatform === 'bliss' ? '/api/bliss/macro/info' : '/api/macro/info';
+      const info = await fetch(url).then(r => r.json());
       const badge = document.getElementById('macro-status-badge');
       if (info.has_macro) {
         badge.style.color = 'var(--green)';
@@ -946,50 +971,122 @@
 
 
 
-  let currentPlatform = 'web';
+  let currentPlatform = 'bliss';
 
   function switchPlatform(plat) {
     currentPlatform = plat;
+    document.getElementById('btn-mode-bliss').style.background = plat === 'bliss' ? 'var(--accent)' : 'var(--surface2)';
     document.getElementById('btn-mode-web').style.background = plat === 'web' ? 'var(--accent)' : 'var(--surface2)';
-    document.getElementById('btn-mode-android').style.background = plat === 'android' ? 'var(--accent)' : 'var(--surface2)';
-    document.getElementById('android-view').style.display = plat === 'android' ? 'block' : 'none';
-    if (plat === 'android') {
+    document.getElementById('bliss-view').style.display = plat === 'bliss' ? 'block' : 'none';
+
+    // Persist mode to backend
+    fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ mode: plat })
+    });
+
+    if (plat === 'bliss') {
       document.getElementById('login-idle').style.display = 'none';
       document.getElementById('login-active').style.display = 'block';
-      connectAndroid();
+      connectBliss();
+    } else {
+      document.getElementById('login-idle').style.display = '';
+      document.getElementById('login-active').style.display = 'none';
     }
   }
 
-  async function connectAndroid() {
-    appendLog('info', 'Connecting to Android container via ADB…');
-    const r = await fetch('/api/android/connect', { method: 'POST' });
+  async function connectBliss() {
+    const host = document.getElementById('bliss-host').value.trim();
+    const port = parseInt(document.getElementById('bliss-port').value.trim()) || 5555;
+    appendLog('info', `Connecting to Bliss OS VM at ${host || 'default'}:${port}...`);
+    try {
+      const r = await fetch('/api/bliss/connect', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ host, port })
+      });
+      const d = await r.json();
+      const badge = document.getElementById('bliss-conn-badge');
+      if (d.ok) {
+        badge.style.color = 'var(--green)';
+        badge.textContent = `Connected (${d.target})`;
+        appendLog('info', `✓ Connected to Bliss OS (${d.target})! Live screen stream started.`);
+      } else {
+        badge.style.color = 'var(--red)';
+        badge.textContent = 'Disconnected';
+        appendLog('err', `⚠ Could not connect to Bliss OS. Verify VM IP and that network ADB (port 5555) is enabled.`);
+      }
+      refreshStatus();
+    } catch(e) {
+      appendLog('err', 'ADB connection error: ' + e.message);
+    }
+  }
+
+  async function launchBlissSnapchat() {
+    appendLog('info', 'Launching Snapchat APK on Bliss OS…');
+    await fetch('/api/bliss/launch', { method: 'POST' });
+  }
+
+  async function pushWebcamBliss() {
+    appendLog('info', 'Pushing SJSU webcam frame to Bliss OS storage / gallery…');
+    const r = await fetch('/api/bliss/push-cam', { method: 'POST' });
     const d = await r.json();
     if (d.ok) {
-      appendLog('info', '✓ Connected to Android container! Live screen active.');
+      appendLog('info', '✓ Webcam image pushed to Bliss OS gallery.');
     } else {
-      appendLog('err', '⚠ Failed to connect to Android. Run ./setup_android_lxc.sh if not yet started.');
+      appendLog('err', '⚠ Failed to push webcam frame.');
     }
   }
 
-  async function launchAndroidSnapchat() {
-    appendLog('info', 'Launching Snapchat APK on Android…');
-    await fetch('/api/android/launch', { method: 'POST' });
-  }
-
-  async function androidKey(code) {
-    await fetch('/api/android/key', {
+  async function blissKey(code) {
+    await fetch('/api/bliss/key', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ key: String(code) })
     });
   }
 
+  async function connectAndroid() {
+    return connectBliss();
+  }
+
+  async function launchAndroidSnapchat() {
+    return launchBlissSnapchat();
+  }
+
+  async function androidKey(code) {
+    return blissKey(code);
+  }
+
   async function browserClick(evt) {
     const img = document.getElementById('browser-shot');
     const rect = img.getBoundingClientRect();
+
+    if (currentPlatform === 'bliss') {
+      const scaleX = (img.naturalWidth || 1280) / rect.width;
+      const scaleY = (img.naturalHeight || 720) / rect.height;
+      const clickX = evt.clientX - rect.left;
+      const clickY = evt.clientY - rect.top;
+      const x = Math.round(clickX * scaleX);
+      const y = Math.round(clickY * scaleY);
+
+      const dot = document.getElementById('click-dot');
+      dot.style.left = clickX + 'px';
+      dot.style.top = clickY + 'px';
+      dot.style.display = 'block';
+      setTimeout(() => { dot.style.display = 'none'; }, 400);
+
+      await fetch('/api/bliss/tap', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ x, y }),
+      });
+      return;
+    }
+
     const targetW = 1440;
     const targetH = 900;
-
     const scaleX = targetW / rect.width;
     const scaleY = targetH / rect.height;
     const clickX = evt.clientX - rect.left;
@@ -1019,8 +1116,8 @@
     const text = input.value;
     if (!text) return;
     input.value = '';
-    if (currentPlatform === 'android') {
-      await fetch('/api/android/type', {
+    if (currentPlatform === 'bliss' || currentPlatform === 'android') {
+      await fetch('/api/bliss/type', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ text }),
@@ -1036,16 +1133,15 @@
   }
 
   async function browserKey(key) {
-    if (currentPlatform === 'android') {
-      if (key === 'Enter') androidKey(66);
-      else if (key === 'Backspace') androidKey(67);
-      else if (key === 'Tab') androidKey(61);
-      else if (key === 'Escape') androidKey(4);
+    if (currentPlatform === 'bliss' || currentPlatform === 'android') {
+      if (key === 'Enter') blissKey(66);
+      else if (key === 'Backspace') blissKey(67);
+      else if (key === 'Tab') blissKey(61);
+      else if (key === 'Escape') blissKey(4);
       return;
     }
     await fetch('/api/login/key', {
       method: 'POST',
-
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ key }),
     });
