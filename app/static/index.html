@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>SnapStreak Auto</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <meta name="theme-color" content="#fffc00" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%23fffc00'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23000'>⚡</text></svg>" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0e15;
+      --surface: #171822;
+      --surface2: #212232;
+      --border: #2c2d42;
+      --accent: #fffc00;
+      --accent2: #ff6b35;
+      --text: #e8e8f0;
+      --text-dim: #8c8da3;
+      --green: #3ddc84;
+      --red: #ff5555;
+      --radius: 12px;
+      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 48px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    header .logo {
+      width: 42px; height: 42px;
+      background: var(--accent);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    header .badge {
+      font-size: 11px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 8px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      width: 100%;
+      max-width: 880px;
+    }
+    @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .card.wide { grid-column: 1 / -1; }
+    .card h2 {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      margin-bottom: 14px;
+    }
+
+    /* Status pills */
+    .status-row { display: flex; flex-wrap: wrap; gap: 10px; }
+    .pill {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-dim);
+    }
+    .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot.red   { background: var(--red); }
+    .dot.yellow { background: var(--accent); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+
+    /* Inputs */
+    label { font-size: 13px; color: var(--text-dim); display: block; margin-bottom: 6px; }
+    input[type="text"], input[type="time"], textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: var(--font);
+      padding: 10px 12px;
+      outline: none;
+      transition: border .2s;
+    }
+    input:focus, textarea:focus { border-color: var(--accent); }
+    textarea { min-height: 100px; resize: vertical; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 18px;
+      border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; font-family: var(--font);
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger  { background: var(--red); color: #fff; }
+    .btn-success { background: var(--green); color: #000; }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+    /* Log terminal */
+    #log-box {
+      background: #08080c;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      font-family: 'Consolas', 'Fira Mono', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      height: 200px;
+      overflow-y: auto;
+      color: #79f79e;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #log-box .err { color: var(--red); }
+    #log-box .info { color: var(--accent); }
+
+    /* Results table */
+    .results { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    .results th { text-align: left; color: var(--text-dim); padding: 4px 8px; border-bottom: 1px solid var(--border); }
+    .results td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+    .ok   { color: var(--green); }
+    .fail { color: var(--red); }
+
+    /* Toggle */
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+    .toggle {
+      position: relative; width: 44px; height: 24px;
+      cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: var(--surface2); border-radius: 24px;
+      border: 1px solid var(--border);
+      transition: .2s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute;
+      left: 3px; top: 3px;
+      width: 16px; height: 16px;
+      background: var(--text-dim); border-radius: 50%;
+      transition: .2s;
+    }
+    .toggle input:checked + .toggle-slider { background: var(--accent); border-color: var(--accent); }
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(20px); background: #000;
+    }
+
+    /* File drop zone */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-dim);
+      transition: border-color .2s;
+    }
+    .dropzone:hover, .dropzone.drag { border-color: var(--accent); color: var(--accent); }
+    .dropzone input { display: none; }
+
+    .sep { height: 1px; background: var(--border); margin: 14px 0; }
+    small { font-size: 11px; color: var(--text-dim); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡</div>
+  <h1>SC Service Control</h1>
+  <span class="badge">v4.1</span>
+</header>
+
+<div class="grid">
+
+  <!-- ── STATUS ── -->
+  <div class="card wide">
+    <h2>System Status</h2>
+    <div class="status-row">
+      <div class="pill"><div class="dot" id="dot-login"></div><span id="txt-login">Checking status…</span></div>
+      <div class="pill"><div class="dot" id="dot-running"></div><span id="txt-running">Idle</span></div>
+      <div class="pill">⏰ <span id="txt-next">—</span></div>
+      <div class="pill">👥 <span id="txt-friends">— friends</span></div>
+    </div>
+    <div id="last-results" style="margin-top: 10px;"></div>
+  </div>
+
+  <!-- ── SINGLE UNIFIED CONTROL CARD ── -->
+  <div class="card wide">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">Snapchat Automation & Live Control</h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-secondary" id="btn-mode-bliss" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('bliss')">🤖 Bliss OS (Android VM)</button>
+        <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('web')">🖥️ Web Browser Mode</button>
+        <button class="btn btn-success" id="btn-send" style="padding:6px 16px;font-size:12px" onclick="doSend()">🔥 Send Streaks Now</button>
+      </div>
+    </div>
+
+    <!-- Bliss OS Android Mode View -->
+    <div id="bliss-view" style="display:block">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:13px;font-weight:700;color:var(--green)">🤖 Bliss OS ADB Bridge</span>
+            <span id="bliss-conn-badge" class="badge" style="background:#08080c;color:var(--red)">Disconnected</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="bliss-host" placeholder="Bliss VM IP (e.g. 192.168.1.150)" style="width:180px;padding:5px 8px;font-size:12px" />
+            <input type="text" id="bliss-port" value="5555" style="width:60px;padding:5px 8px;font-size:12px" />
+            <button class="btn btn-primary" style="font-size:11px;padding:6px 12px" onclick="connectBliss()">⚡ Connect ADB</button>
+          </div>
+        </div>
+
+        <div class="btn-row" style="margin-top:0;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="launchBlissSnapchat()">🚀 Launch Snapchat App</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="pushWebcamBliss()">📷 Push SJSU Webcam Frame</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="document.getElementById('apk-file-input').click()">📦 Install APK / App</button>
+          <input type="file" id="apk-file-input" accept=".apk" style="display:none" onchange="uploadAndInstallApk(this.files[0])" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(4)">◀ Back</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(3)">⭕ Home</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(187)">▢ Recents</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(27)">📸 Shutter (Camera)</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="blissKey(24)">🔊 Vol+ (Snap)</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px;background:#2a1f4d;border-color:#5c3bb5" onclick="toggleTermuxDrawer()">💻 Built-in Termux Shell</button>
+        </div>
+
+        <!-- Built-in Termux / Root Shell Drawer -->
+        <div id="termux-drawer" style="display:none;margin-top:12px;background:#050508;border:1px solid #332d56;border-radius:8px;padding:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:#9d7dfa">💻 Bliss OS Termux / Linux Shell</span>
+            <span style="font-size:11px;color:var(--text-dim)">root@bliss_x86_64</span>
+          </div>
+          <div id="termux-output" style="background:#000;color:#3ddc84;font-family:monospace;font-size:12px;padding:8px;border-radius:6px;min-height:100px;max-height:180px;overflow-y:auto;white-space:pre-wrap;margin-bottom:8px">Welcome to built-in Bliss OS Shell. Type any command (e.g. 'pm list packages', 'getprop', 'top', 'df -h')...</div>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="termux-input" placeholder="sh command (e.g. pm list packages | grep snap)..." style="font-family:monospace;font-size:12px;flex:1;padding:6px 10px" onkeydown="if(event.key==='Enter')runTermuxCmd()" />
+            <button class="btn btn-primary" style="font-size:11px;padding:6px 14px" onclick="runTermuxCmd()">Run ↵</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Idle state -->
+    <div id="login-idle">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
+        Start a browser session on the server to interact with Snapchat, record macros, or test automated streak sending.
+      </p>
+      <div class="btn-row" style="margin-bottom:16px">
+        <button class="btn btn-primary" onclick="startLogin()">🖥️ Open Live Browser Session</button>
+      </div>
+
+
+      <!-- 1-Click Session / Cookie Importer -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:10px">
+        <div style="font-size:13px;font-weight:700;color:var(--yellow);margin-bottom:6px">🍪 1-Click Cookie / Session Import (Bypass Login & Captchas)</div>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
+          If Snapchat Web blocks login on server IPs, export cookies from <code>web.snapchat.com</code> on your PC (e.g. using the <b>Cookie-Editor</b> Chrome extension → <i>Export JSON</i>) and paste below:
+        </p>
+        <textarea id="session-import-text" rows="3" placeholder='Paste Cookie-Editor JSON or cookies string here ([{"name":"sc-a-nonce", ...}])' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:8px;resize:vertical"></textarea>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-success" style="font-size:12px;padding:6px 16px" onclick="importSession()">📥 Import Session &amp; Save Login</button>
+          <button class="btn btn-danger" style="font-size:12px;padding:6px 16px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active remote browser view -->
+    <div id="login-active" style="display:none">
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+        <span style="font-size:12px;color:var(--text-dim);white-space:nowrap">URL:</span>
+        <code id="browser-url" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)">loading…</code>
+      </div>
+
+      <!-- 1-Click Session / Cookie Importer inside active view -->
+      <details style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px">
+        <summary style="font-size:12px;font-weight:700;color:var(--yellow);cursor:pointer">🍪 Bypass Login: Import Cookies / Session JSON</summary>
+        <p style="font-size:11px;color:var(--text-dim);margin:6px 0">Paste Cookie-Editor JSON from your desktop browser to log in instantly:</p>
+        <textarea id="session-import-text-active" rows="2" placeholder='Paste Cookie-Editor JSON here...' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:6px;resize:vertical"></textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-success" style="font-size:11px;padding:4px 12px" onclick="importSessionActive()">📥 Inject Cookies &amp; Reload</button>
+          <button class="btn btn-danger" style="font-size:11px;padding:4px 12px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
+        </div>
+      </details>
+
+      <!-- Quick Auto-Fill Helper Form -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:700;color:var(--accent)">⚡ Quick Fill &amp; Login Options</div>
+          <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px;background:#4285F4;color:#fff;border-color:#4285F4;display:inline-flex;align-items:center;gap:5px" onclick="loginWithGoogle()">
+            <svg width="12" height="12" viewBox="0 0 24 24"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
+            Continue with Google
+          </button>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px">
+          <input id="quick-user" type="text" placeholder="Snapchat Username / Email" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('username')">Fill Username ↵</button>
+        </div>
+
+
+        <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px">
+          <input id="quick-pass" type="password" placeholder="Password" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('password')">Fill Password ↵</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:6px">
+          <input id="quick-code" type="text" placeholder="2FA / SMS Code" />
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('code')">Fill Code ↵</button>
+          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="submitQuick()">👉 Click Next / Log In</button>
+        </div>
+      </div>
+
+      <!-- Real Interactive Browser Desktop (noVNC) -->
+      <div id="novnc-container" style="border:2px solid var(--accent);border-radius:8px;overflow:hidden;margin-bottom:12px;background:#000">
+        <div style="display:flex;justify-content:space-between;align-items:center;background:#1b1d2a;padding:8px 12px">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px">
+            <span>🌐 Interactive Chrome Browser (Real Mouse, Keyboard &amp; Popups)</span>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="reloadVncFrame()">↺ Reconnect Display</button>
+            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600">↗ Open Fullscreen Tab</a>
+          </div>
+        </div>
+        <iframe id="novnc-iframe" src="" style="width:100%;height:640px;border:none;display:block;background:#000"></iframe>
+      </div>
+
+      <!-- Fallback / Secondary Live Screenshot Stream -->
+      <details style="margin-bottom:12px">
+        <summary style="font-size:11px;color:var(--text-dim);cursor:pointer;margin-bottom:6px">📷 Video Stream &amp; Low-Bandwidth Screenshot View</summary>
+        <div style="position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px;background:#000"
+             id="browser-frame" onclick="browserClick(event)">
+          <img id="browser-shot" src="" style="width:100%;display:block;min-height:260px" />
+          <div id="click-dot" style="position:absolute;width:12px;height:12px;background:#ff0055;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);display:none;pointer-events:none;z-index:10;box-shadow:0 0 8px #ff0055"></div>
+          <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
+            ⏳ Launching browser and navigating to Snapchat…
+          </div>
+        </div>
+      </details>
+
+
+      <!-- Raw text / key input -->
+      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
+        <input id="browser-text" type="text" placeholder="Raw typing into focused field…"
+               onkeydown="if(event.key==='Enter'){browserKey('Enter');this.value='';event.preventDefault()}" />
+        <button class="btn btn-secondary" onclick="browserSendText()">Send ↵</button>
+      </div>
+
+      <div class="btn-row" style="margin-bottom:14px;flex-wrap:wrap;gap:6px">
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Tab')">Tab</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Enter')">Enter</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Backspace')">⌫ Backspace</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Escape')">Esc</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
+        <button class="btn btn-danger" style="font-size:11px;padding:5px 12px" onclick="clearBrowserData()">🧹 Clear Cache &amp; Cookies</button>
+      </div>
+
+      <!-- Live Action Macro Recorder Toolbar -->
+      <div style="background:#13141f;border:2px dashed var(--accent2);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:12px;font-weight:700;color:var(--accent2)">🎬 Action Macro Recorder (Record Your Exact Clicks)</span>
+          <span id="macro-status-badge" style="font-size:11px;color:var(--text-dim)">No custom macro recorded</span>
+        </div>
+        <div id="macro-rec-banner" style="display:none;background:#ff2b55;color:#fff;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:700;margin-bottom:8px;animation:pulse 1s infinite">
+          🔴 RECORDING ACTIVE: Click your exact steps on the live screen below (Ghost icon, camera, ✨, Select, Send). When done, click Stop & Save!
+        </div>
+        <div class="btn-row" style="margin-top:0;gap:6px">
+          <button class="btn btn-danger" id="btn-macro-start" style="font-size:12px;padding:6px 14px" onclick="startMacroRec()">🔴 Start Recording Clicks</button>
+          <button class="btn btn-secondary" id="btn-macro-stop" style="font-size:12px;padding:6px 14px;display:none" onclick="stopMacroRec()">⏹️ Stop & Save Macro</button>
+          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="sendStreaksInOpenBrowser()">🚀 Run Streaks (Replay Macro)</button>
+        </div>
+      </div>
+
+      <!-- Live Chat & Streak Tools inside the open browser -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px">📸 Live Controls</div>
+        <div class="btn-row" style="margin-top:0;gap:6px">
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="uploadSnapToOpenChat()">📷 Attach Snap to Active Chat</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="browserKey('Enter')">↵ Send (Enter)</button>
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="saveLogin()">✓ Save & Close Browser</button>
+        <button class="btn btn-secondary" onclick="cancelLogin()">✗ Close Browser</button>
+      </div>
+    </div>
+
+    <p id="login-status" style="font-size:13px;margin-top:10px;font-weight:600"></p>
+  </div>
+
+
+
+  <!-- ── SCHEDULE ── -->
+  <div class="card">
+    <h2>Schedule</h2>
+    <div class="toggle-row" style="margin-bottom:14px">
+      <label style="margin:0">Daily Auto-Send</label>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-enabled" onchange="saveSchedule()">
+        <div class="toggle-slider"></div>
+      </label>
+    </div>
+    <label>Send Time (Local Time)</label>
+    <input type="time" id="schedule-time" value="09:00" onchange="saveSchedule()" />
+    <div class="sep"></div>
+    <small>APScheduler triggers streak sending automatically every day.</small>
+  </div>
+
+  <!-- ── AUTOMATION & SELECTION METHOD ── -->
+  <div class="card">
+    <h2>Automation & Selection Method</h2>
+    <label>Recipient Selection Mode</label>
+    <select id="selection-method" onchange="saveAutomationSettings()" style="width:100%;padding:8px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:13px;margin-bottom:12px">
+      <option value="auto">⚡ Auto: Shortcut + Direct Fallback (Recommended)</option>
+      <option value="direct">🔍 Alternative: Direct Friend Search (No Shortcuts)</option>
+      <option value="shortcut">✨ Shortcuts Tab Only</option>
+    </select>
+    <label>Step Verification Delay (seconds)</label>
+    <input type="number" id="step-delay" min="1" max="30" value="4" onchange="saveAutomationSettings()" style="width:100%;padding:8px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:13px" />
+    <div class="sep"></div>
+    <small style="color:var(--text-dim)">Alternative method searches and clicks each friend individually in Send-To, bypassing shortcuts.</small>
+  </div>
+
+  <!-- ── FRIENDS ── -->
+  <div class="card">
+    <h2>Recipient List</h2>
+    <label>Usernames (one per line, no @)</label>
+    <textarea id="friends-input" placeholder="user_one&#10;user_two"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveFriends()">💾 Save Recipients</button>
+    </div>
+  </div>
+
+  <!-- ── SNAP IMAGE ── -->
+  <div class="card">
+    <h2>Streak Image</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Custom media file for snap uploads.</p>
+    <div class="dropzone" id="dropzone" onclick="document.getElementById('snap-file').click()">
+      <input type="file" id="snap-file" accept="image/png,image/jpeg,image/webp" onchange="uploadSnap(this.files[0])">
+      📷 Click or drop PNG / JPEG / WEBP
+    </div>
+    <p id="snap-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></p>
+  </div>
+
+  <!-- ── LIVE LOG ── -->
+  <div class="card wide">
+    <h2>Activity & Live Logs</h2>
+    <div id="log-box">Connecting to log stream…</div>
+  </div>
+
+</div>
+
+<script>
+  let ws = null;
+  let _shotLoop = null;
+
+  // ── WebSocket live log ──
+  function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+    ws.onopen = () => {
+      const box = document.getElementById('log-box');
+      if (box.textContent === 'Connecting to log stream…') box.textContent = '';
+    };
+    ws.onmessage = e => {
+      if (e.data && e.data.startsWith('{')) {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.type === 'screencast' && d.image) {
+            const img = document.getElementById('browser-shot');
+            if (img) {
+              img.src = 'data:image/jpeg;base64,' + d.image;
+              const loader = document.getElementById('browser-loading');
+              if (loader) loader.style.display = 'none';
+            }
+            if (d.url) document.getElementById('browser-url').textContent = d.url;
+            return;
+          }
+        } catch(err) {}
+      }
+      appendLog('', e.data);
+    };
+    ws.onclose = () => {
+      appendLog('err', '⚠ Stream disconnected. Reconnecting in 3s…');
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => {
+      try { ws.close(); } catch(e) {}
+    };
+
+  }
+
+  function appendLog(cls, text) {
+    const box = document.getElementById('log-box');
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = text;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+    while (box.children.length > 300) box.removeChild(box.firstChild);
+  }
+
+  // ── Poll status ──
+  async function refreshStatus() {
+    try {
+      const s = await fetch('/api/status').then(r => r.json());
+
+      const dotLogin = document.getElementById('dot-login');
+      const txtLogin = document.getElementById('txt-login');
+      dotLogin.className = 'dot ' + (s.logged_in ? 'green' : (s.login_active ? 'yellow' : 'red'));
+      txtLogin.textContent = s.logged_in ? 'Logged In' : (s.login_active ? 'Login In Progress' : 'Not Logged In');
+
+      const dotRun = document.getElementById('dot-running');
+      const txtRun = document.getElementById('txt-running');
+      dotRun.className = 'dot ' + (s.running ? 'yellow' : 'green');
+      txtRun.textContent = s.running ? 'Sending…' : 'Idle';
+
+      document.getElementById('txt-next').textContent = s.next_run ? s.next_run.slice(0, 16) : 'Disabled';
+      document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
+      document.getElementById('btn-send').disabled = s.running;
+
+      if (s.running && !_sendMonitorLoop) {
+        _startSendMonitor();
+      }
+
+      if (s.login_active) {
+        document.getElementById('login-idle').style.display = 'none';
+        document.getElementById('login-active').style.display = '';
+        if (s.novnc_url) {
+          const frame = document.getElementById('novnc-iframe');
+          if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
+            frame.src = s.novnc_url;
+          }
+          const link = document.getElementById('novnc-tab-link');
+          if (link) link.href = s.novnc_url;
+        }
+        if (!_shotLoop) _startShotLoop();
+      }
+
+
+      if (s.bliss_connected) {
+        const badge = document.getElementById('bliss-conn-badge');
+        if (badge) {
+          badge.style.color = 'var(--green)';
+          badge.textContent = `Connected (${s.bliss_target || 'online'})`;
+        }
+      }
+
+      const res = s.last_run_results || {};
+      const keys = Object.keys(res);
+      if (keys.length) {
+        let html = `<p style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Last run: ${s.last_run_time || ''}</p>`;
+        html += '<table class="results"><thead><tr><th>User</th><th>Status</th></tr></thead><tbody>';
+        keys.forEach(u => {
+          const ok = res[u] === 'ok';
+          html += `<tr><td>@${u}</td><td class="${ok ? 'ok' : 'fail'}">${ok ? '✓ Sent' : res[u]}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        document.getElementById('last-results').innerHTML = html;
+      }
+    } catch(e) {
+      console.error('Status fetch failed:', e);
+    }
+  }
+
+  // ── Load config ──
+  async function loadConfig() {
+    try {
+      const cfg = await fetch('/api/config').then(r => r.json());
+      document.getElementById('friends-input').value = (cfg.friends || []).join('\n');
+      document.getElementById('schedule-time').value = cfg.schedule_time || '09:00';
+      document.getElementById('toggle-enabled').checked = Boolean(cfg.enabled);
+      if (cfg.selection_method) document.getElementById('selection-method').value = cfg.selection_method;
+      if (cfg.step_delay) document.getElementById('step-delay').value = cfg.step_delay;
+      if (cfg.bliss_host) document.getElementById('bliss-host').value = cfg.bliss_host;
+      if (cfg.bliss_port) document.getElementById('bliss-port').value = cfg.bliss_port;
+      if (cfg.mode) switchPlatform(cfg.mode);
+    } catch(e) {
+      console.error('Config fetch failed:', e);
+    }
+  }
+
+  // ── Save friends ──
+  async function saveFriends() {
+    const raw = document.getElementById('friends-input').value;
+    const friends = raw.split('\n').map(s => s.trim().replace(/^@/, '')).filter(Boolean);
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ friends })
+    });
+    appendLog('info', `✓ Saved ${friends.length} recipients.`);
+    refreshStatus();
+  }
+
+  // ── Save schedule ──
+  async function saveSchedule() {
+    const time = document.getElementById('schedule-time').value;
+    const enabled = document.getElementById('toggle-enabled').checked;
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ schedule_time: time, enabled })
+    });
+    appendLog('info', `✓ Schedule updated: ${enabled ? time : 'disabled'}.`);
+    refreshStatus();
+  }
+
+  // ── Save automation & selection settings ──
+  async function saveAutomationSettings() {
+    const selection_method = document.getElementById('selection-method').value;
+    const step_delay = parseInt(document.getElementById('step-delay').value, 10) || 4;
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ selection_method, step_delay })
+    });
+    appendLog('info', `✓ Automation settings updated: ${selection_method.toUpperCase()} (${step_delay}s delay).`);
+    refreshStatus();
+  }
+
+  let _sendMonitorLoop = null;
+
+  function _startSendMonitor() {
+    const box = document.getElementById('live-send-monitor');
+    box.style.display = 'block';
+    if (_sendMonitorLoop) return;
+
+    _sendMonitorLoop = setInterval(async () => {
+      try {
+        const url = '/api/screenshot?t=' + Date.now();
+        const img = document.getElementById('live-send-img');
+        
+        // Preload image before switching to avoid flicker
+        const testImg = new Image();
+        testImg.onload = () => {
+          img.src = url;
+          document.getElementById('live-send-loading').style.display = 'none';
+          document.getElementById('live-monitor-ts').textContent = 'Live • ' + new Date().toLocaleTimeString();
+        };
+        testImg.src = url;
+      } catch(e) {}
+    }, 800);
+  }
+
+  function _stopSendMonitor() {
+    if (_sendMonitorLoop) {
+      clearInterval(_sendMonitorLoop);
+      _sendMonitorLoop = null;
+    }
+  }
+
+  function toggleLiveMonitor() {
+    const box = document.getElementById('live-send-monitor');
+    if (box.style.display === 'none') {
+      _startSendMonitor();
+    } else {
+      box.style.display = 'none';
+      _stopSendMonitor();
+    }
+  }
+
+  // ── Trigger send ──
+  async function doSend() {
+    _startSendMonitor();
+    const r = await fetch('/api/send', { method: 'POST' });
+    const d = await r.json();
+    appendLog('info', d.message || d.detail);
+    refreshStatus();
+  }
+
+  // ── Upload snap image ──
+  async function uploadSnap(file) {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-snap', { method: 'POST', body: fd });
+    const d = await r.json();
+    document.getElementById('snap-status').textContent = d.message || d.detail;
+  }
+
+
+  // ── Remote browser login ──
+  async function startLogin() {
+    const statusEl = document.getElementById('login-status');
+    statusEl.style.color = 'var(--text-dim)';
+    statusEl.textContent = 'Starting browser session on server…';
+    const r = await fetch('/api/login/start', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) {
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = '✗ ' + (d.detail || d.message);
+      return;
+    }
+    document.getElementById('login-idle').style.display   = 'none';
+    document.getElementById('login-active').style.display = '';
+    document.getElementById('browser-loading').style.display = 'flex';
+    statusEl.textContent = '';
+    _startShotLoop();
+  }
+
+  function _startShotLoop() {
+    if (_shotLoop) clearInterval(_shotLoop);
+    _shotLoop = setInterval(async () => {
+      try {
+        const d = await fetch('/api/login/screenshot').then(r => r.json());
+        if (!d.active) { _stopShotLoop(); return; }
+        if (d.image) {
+          const img = document.getElementById('browser-shot');
+          img.src = 'data:image/jpeg;base64,' + d.image;
+          document.getElementById('browser-loading').style.display = 'none';
+        }
+        if (d.url) document.getElementById('browser-url').textContent = d.url;
+      } catch(e) {}
+    }, 1000);
+  }
+
+  function _stopShotLoop() {
+    if (_shotLoop) { clearInterval(_shotLoop); _shotLoop = null; }
+  }
+
+  async function importSession() {
+    const text = document.getElementById('session-import-text').value.trim();
+    if (!text) { alert('Please paste your Cookie-Editor JSON or cookie string first.'); return; }
+    appendLog('info', 'Importing session cookies into server profile…');
+    const r = await fetch('/api/session/import', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ data: text })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', `✓ Imported ${d.cookies_count} cookies! Session authenticated.`);
+      alert(`Success! Imported ${d.cookies_count} cookies. You are now logged in.`);
+      refreshStatus();
+    } else {
+      appendLog('err', `✗ Failed to import cookies: ${d.detail || 'Invalid format'}`);
+      alert('Error: ' + (d.detail || 'Invalid format'));
+    }
+  }
+
+  async function importSessionActive() {
+    const text = document.getElementById('session-import-text-active').value.trim();
+    if (!text) { alert('Please paste your Cookie-Editor JSON first.'); return; }
+    appendLog('info', 'Injecting session cookies into active browser…');
+    const r = await fetch('/api/session/import', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ data: text })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', `✓ Injected ${d.cookies_count} cookies! Reloading page…`);
+      await fetch('/api/login/navigate', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ url: 'https://web.snapchat.com/' })
+      });
+      setTimeout(triggerRefreshNow, 1000);
+      setTimeout(triggerRefreshNow, 2500);
+    }
+  }
+
+  // ── Waydroid Android Control ──────────────────────────────────────────────
+  let _waydroidLoop = null;
+
+  async function waydroidConnect() {
+    appendLog('info', 'Connecting ADB to Waydroid Android...');
+    try {
+      const r = await fetch('/api/waydroid/connect', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        appendLog('info', '✓ Waydroid connected! Starting live view...');
+        document.getElementById('waydroid-panel').style.display = '';
+        document.getElementById('waydroid-status-line').textContent = `Connected: ${d.adb_host}`;
+        waydroidRefreshScreen();
+        _waydroidLoop = setInterval(waydroidRefreshScreen, 2000);
+      } else {
+        appendLog('err', '✗ ' + (d.detail || 'Connect failed'));
+      }
+    } catch(e) { appendLog('err', '✗ ' + e.message); }
+  }
+
+  async function waydroidRefreshScreen() {
+    try {
+      const r = await fetch('/api/waydroid/screenshot');
+      const d = await r.json();
+      if (d.image) {
+        const img = document.getElementById('waydroid-screen');
+        img.src = 'data:image/jpeg;base64,' + d.image;
+        img.style.display = '';
+        document.getElementById('waydroid-screen-placeholder').style.display = 'none';
+      }
+    } catch(e) {}
+  }
+
+  async function waydroidTapFromClick(event) {
+    const wrap = document.getElementById('waydroid-screen-wrap');
+    const img  = document.getElementById('waydroid-screen');
+    if (!img.naturalWidth) return;
+    const rect = img.getBoundingClientRect();
+    const scaleX = img.naturalWidth  / rect.width;
+    const scaleY = img.naturalHeight / rect.height;
+    const x = Math.round((event.clientX - rect.left) * scaleX);
+    const y = Math.round((event.clientY - rect.top)  * scaleY);
+    appendLog('info', `Tapping Android at (${x}, ${y})`);
+    await fetch('/api/waydroid/tap', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({x, y})
+    });
+    setTimeout(waydroidRefreshScreen, 600);
+  }
+
+  async function waydroidKey(key) {
+    await fetch('/api/waydroid/key', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({key})
+    });
+    setTimeout(waydroidRefreshScreen, 400);
+  }
+
+  async function waydroidSendStreaks() {
+    appendLog('info', '🚀 Sending streaks via Snapchat Android (Waydroid)...');
+    const r = await fetch('/api/waydroid/send-streaks', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', '✓ Streaks sent! Results: ' + JSON.stringify(d.results));
+    } else {
+      appendLog('err', '✗ ' + (d.detail || 'Send failed'));
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async function clearBrowserData() {
+
+    appendLog('info', 'Clearing browser cache, cookies, and site data…');
+    try {
+      const r = await fetch('/api/login/clear-browser-data', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        appendLog('info', '✓ Browser cache and cookies cleared. Reloading…');
+        setTimeout(() => browserNav('https://web.snapchat.com/'), 800);
+      } else {
+        appendLog('err', '✗ ' + (d.detail || 'Clear failed'));
+      }
+    } catch(e) {
+      appendLog('err', '✗ ' + e.message);
+    }
+  }
+
+  async function clearSession() {
+
+    if (!confirm('Clear all cookies, session data, and browser cache? You will need to log in again.')) return;
+    appendLog('info', 'Clearing cookies and browser cache…');
+    const r = await fetch('/api/session/clear', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      const cleared = d.cleared.length ? d.cleared.join(', ') : 'nothing to clear';
+      appendLog('info', `✓ Cleared: ${cleared}. Logged out.`);
+      alert('Done! All cookies and cache cleared. Import new cookies to log back in.');
+      refreshStatus();
+    } else {
+      appendLog('err', 'Failed to clear session.');
+    }
+  }
+
+  async function triggerRefreshNow() {
+
+
+    try {
+      const d = await fetch('/api/login/screenshot').then(r => r.json());
+      if (d.image) {
+        const img = document.getElementById('browser-shot');
+        img.src = 'data:image/jpeg;base64,' + d.image;
+        document.getElementById('browser-loading').style.display = 'none';
+      }
+      if (d.url) document.getElementById('browser-url').textContent = d.url;
+    } catch(e) {}
+  }
+
+  async function fillQuick(fieldName) {
+    let val = '';
+    if (fieldName === 'username') val = document.getElementById('quick-user').value.trim();
+    if (fieldName === 'password') val = document.getElementById('quick-pass').value;
+    if (fieldName === 'code') val = document.getElementById('quick-code').value.trim();
+    if (!val) { appendLog('err', `Please enter a ${fieldName} first.`); return; }
+
+    appendLog('info', `Filling ${fieldName}…`);
+    const r = await fetch('/api/login/fill', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ field: fieldName, value: val }),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      appendLog('info', `✓ ${fieldName} filled.`);
+    } else {
+      appendLog('err', `Could not find field automatically: ${res.error || 'unknown'}`);
+    }
+    setTimeout(triggerRefreshNow, 600);
+    setTimeout(triggerRefreshNow, 1400);
+  }
+
+  async function submitQuick() {
+    appendLog('info', 'Clicking Next / Submit…');
+    await fetch('/api/login/submit', { method: 'POST' });
+    setTimeout(triggerRefreshNow, 800);
+    setTimeout(triggerRefreshNow, 1800);
+  }
+
+  async function loginWithGoogle() {
+    appendLog('info', 'Clicking Continue with Google in browser…');
+    const r = await fetch('/api/login/google', { method: 'POST' });
+    const res = await r.json();
+    if (res.ok) {
+      appendLog('info', '✓ Clicked Continue with Google! Follow Google sign-in prompts on the live screen.');
+    } else {
+      appendLog('err', '✗ ' + (res.error || 'Could not find Google button automatically. Try clicking it on the live screen.'));
+    }
+    setTimeout(triggerRefreshNow, 800);
+    setTimeout(triggerRefreshNow, 2000);
+  }
+
+
+  async function uploadSnapToOpenChat() {
+    appendLog('info', 'Attaching streak snap to active chat…');
+    const r = await fetch('/api/login/upload-snap-here', { method: 'POST' });
+    const res = await r.json();
+    if (res.ok) {
+      appendLog('info', '✓ ' + res.message);
+    } else {
+      appendLog('err', '✗ ' + (res.error || 'Upload failed.'));
+    }
+    setTimeout(triggerRefreshNow, 800);
+  }
+
+  async function startMacroRec() {
+    const url = currentPlatform === 'bliss' ? '/api/bliss/macro/record/start' : '/api/macro/record/start';
+    await fetch(url, { method: 'POST' });
+    document.getElementById('btn-macro-start').style.display = 'none';
+    document.getElementById('btn-macro-stop').style.display = 'inline-flex';
+    document.getElementById('macro-rec-banner').style.display = 'block';
+    appendLog('info', `🔴 ${currentPlatform === 'bliss' ? 'BLISS OS' : 'BROWSER'} MACRO RECORDING STARTED: Tap/click on the live screen to record your exact actions.`);
+  }
+
+  async function stopMacroRec() {
+    const url = currentPlatform === 'bliss' ? '/api/bliss/macro/record/stop' : '/api/macro/record/stop';
+    const r = await fetch(url, { method: 'POST' });
+    const res = await r.json();
+    document.getElementById('btn-macro-start').style.display = 'inline-flex';
+    document.getElementById('btn-macro-stop').style.display = 'none';
+    document.getElementById('macro-rec-banner').style.display = 'none';
+    appendLog('info', `⏹️ MACRO SAVED: ${res.count} steps recorded! Future runs will replay this exact sequence.`);
+    refreshMacroInfo();
+  }
+
+  async function refreshMacroInfo() {
+    try {
+      const url = currentPlatform === 'bliss' ? '/api/bliss/macro/info' : '/api/macro/info';
+      const info = await fetch(url).then(r => r.json());
+      const badge = document.getElementById('macro-status-badge');
+      if (info.has_macro) {
+        badge.style.color = 'var(--green)';
+        badge.textContent = `✓ Custom Macro Active (${info.count} steps)`;
+      } else {
+        badge.style.color = 'var(--text-dim)';
+        badge.textContent = 'No custom macro recorded (using default flow)';
+      }
+    } catch(e) {}
+  }
+
+
+
+  let currentPlatform = 'bliss';
+
+  function switchPlatform(plat) {
+    currentPlatform = plat;
+    document.getElementById('btn-mode-bliss').style.background = plat === 'bliss' ? 'var(--accent)' : 'var(--surface2)';
+    document.getElementById('btn-mode-web').style.background = plat === 'web' ? 'var(--accent)' : 'var(--surface2)';
+    document.getElementById('bliss-view').style.display = plat === 'bliss' ? 'block' : 'none';
+
+    // Persist mode to backend
+    fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ mode: plat })
+    });
+
+    if (plat === 'bliss') {
+      document.getElementById('login-idle').style.display = 'none';
+      document.getElementById('login-active').style.display = 'block';
+      connectBliss();
+    } else {
+      document.getElementById('login-idle').style.display = '';
+      document.getElementById('login-active').style.display = 'none';
+    }
+  }
+
+  async function connectBliss() {
+    const host = document.getElementById('bliss-host').value.trim();
+    const port = parseInt(document.getElementById('bliss-port').value.trim()) || 5555;
+    appendLog('info', `Connecting to Bliss OS VM at ${host || 'default'}:${port}...`);
+    try {
+      const r = await fetch('/api/bliss/connect', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ host, port })
+      });
+      const d = await r.json();
+      const badge = document.getElementById('bliss-conn-badge');
+      if (d.ok) {
+        badge.style.color = 'var(--green)';
+        badge.textContent = `Connected (${d.target})`;
+        appendLog('info', `✓ Connected to Bliss OS (${d.target})! Live screen stream started.`);
+      } else {
+        badge.style.color = 'var(--red)';
+        badge.textContent = 'Disconnected';
+        appendLog('err', `⚠ Could not connect to Bliss OS. Verify VM IP and that network ADB (port 5555) is enabled.`);
+      }
+      refreshStatus();
+    } catch(e) {
+      appendLog('err', 'ADB connection error: ' + e.message);
+    }
+  }
+
+  async function launchBlissSnapchat() {
+    appendLog('info', 'Launching Snapchat APK on Bliss OS…');
+    await fetch('/api/bliss/launch', { method: 'POST' });
+  }
+
+  async function pushWebcamBliss() {
+    appendLog('info', 'Pushing SJSU webcam frame to Bliss OS storage / gallery…');
+    const r = await fetch('/api/bliss/push-cam', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', '✓ Webcam image pushed to Bliss OS gallery.');
+    } else {
+      appendLog('err', '⚠ Failed to push webcam frame.');
+    }
+  }
+
+  async function uploadAndInstallApk(file) {
+    if (!file) return;
+    appendLog('info', `Uploading & installing ${file.name} onto Bliss OS...`);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/bliss/install-apk', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (d.ok) {
+        appendLog('info', `✓ Successfully installed ${file.name} on Bliss OS!`);
+        alert(`Success! ${file.name} installed on Bliss OS.`);
+      } else {
+        appendLog('err', `⚠ Failed installing APK: ${d.detail || 'Install error'}`);
+        alert('Install error: ' + (d.detail || 'Failed'));
+      }
+    } catch(e) {
+      appendLog('err', 'Error: ' + e.message);
+    }
+  }
+
+  function toggleTermuxDrawer() {
+    const d = document.getElementById('termux-drawer');
+    d.style.display = d.style.display === 'none' ? 'block' : 'none';
+    if (d.style.display === 'block') {
+      document.getElementById('termux-input').focus();
+    }
+  }
+
+  async function runTermuxCmd() {
+    const input = document.getElementById('termux-input');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    input.value = '';
+
+    const outBox = document.getElementById('termux-output');
+    outBox.textContent += `\n$ ${cmd}\n`;
+    outBox.scrollTop = outBox.scrollHeight;
+
+    try {
+      const r = await fetch('/api/bliss/shell', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ command: cmd })
+      });
+      const d = await r.json();
+      const resText = d.stdout || d.stderr || `(Process exited with code ${d.exit_code})`;
+      outBox.textContent += resText + '\n';
+      outBox.scrollTop = outBox.scrollHeight;
+    } catch(e) {
+      outBox.textContent += `Error: ${e.message}\n`;
+      outBox.scrollTop = outBox.scrollHeight;
+    }
+  }
+
+  async function blissKey(code) {
+    await fetch('/api/bliss/key', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: String(code) })
+    });
+  }
+
+  async function connectAndroid() {
+    return connectBliss();
+  }
+
+  async function launchAndroidSnapchat() {
+    return launchBlissSnapchat();
+  }
+
+  async function androidKey(code) {
+    return blissKey(code);
+  }
+
+  async function browserClick(evt) {
+    const img = document.getElementById('browser-shot');
+    const rect = img.getBoundingClientRect();
+
+    if (currentPlatform === 'bliss') {
+      const scaleX = (img.naturalWidth || 1280) / rect.width;
+      const scaleY = (img.naturalHeight || 720) / rect.height;
+      const clickX = evt.clientX - rect.left;
+      const clickY = evt.clientY - rect.top;
+      const x = Math.round(clickX * scaleX);
+      const y = Math.round(clickY * scaleY);
+
+      const dot = document.getElementById('click-dot');
+      dot.style.left = clickX + 'px';
+      dot.style.top = clickY + 'px';
+      dot.style.display = 'block';
+      setTimeout(() => { dot.style.display = 'none'; }, 400);
+
+      await fetch('/api/bliss/tap', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ x, y }),
+      });
+      return;
+    }
+
+    const targetW = 1440;
+    const targetH = 900;
+    const scaleX = targetW / rect.width;
+    const scaleY = targetH / rect.height;
+    const clickX = evt.clientX - rect.left;
+    const clickY = evt.clientY - rect.top;
+    const x = Math.round(clickX * scaleX);
+    const y = Math.round(clickY * scaleY);
+
+    // Show visual click dot
+    const dot = document.getElementById('click-dot');
+    dot.style.left = clickX + 'px';
+    dot.style.top = clickY + 'px';
+    dot.style.display = 'block';
+    setTimeout(() => { dot.style.display = 'none'; }, 400);
+
+    await fetch('/api/login/click', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ x, y }),
+    });
+    setTimeout(triggerRefreshNow, 400);
+    setTimeout(triggerRefreshNow, 1200);
+  }
+
+
+  async function browserSendText() {
+    const input = document.getElementById('browser-text');
+    const text = input.value;
+    if (!text) return;
+    input.value = '';
+    if (currentPlatform === 'bliss' || currentPlatform === 'android') {
+      await fetch('/api/bliss/type', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text }),
+      });
+    } else {
+      await fetch('/api/login/type', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text }),
+      });
+      setTimeout(triggerRefreshNow, 600);
+    }
+  }
+
+  async function browserKey(key) {
+    if (currentPlatform === 'bliss' || currentPlatform === 'android') {
+      if (key === 'Enter') blissKey(66);
+      else if (key === 'Backspace') blissKey(67);
+      else if (key === 'Tab') blissKey(61);
+      else if (key === 'Escape') blissKey(4);
+      return;
+    }
+    await fetch('/api/login/key', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key }),
+    });
+    setTimeout(triggerRefreshNow, 600);
+  }
+
+  async function browserNav(url) {
+    await fetch('/api/login/navigate', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ url }),
+    });
+    setTimeout(triggerRefreshNow, 1200);
+  }
+
+
+  function reloadVncFrame() {
+    const frame = document.getElementById('novnc-iframe');
+    if (frame && frame.src) {
+      const src = frame.src;
+      frame.src = 'about:blank';
+      setTimeout(() => { frame.src = src; }, 400);
+    }
+  }
+
+  async function saveLogin() {
+    _stopShotLoop();
+    const frame = document.getElementById('novnc-iframe');
+    if (frame) frame.src = 'about:blank';
+    const statusEl = document.getElementById('login-status');
+    statusEl.style.color = 'var(--text-dim)';
+    statusEl.textContent = 'Saving session state…';
+    const r = await fetch('/api/login/save', { method: 'POST' });
+    const d = await r.json();
+    statusEl.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+    statusEl.textContent = (r.ok ? '✓ ' : '✗ ') + (d.message || d.detail);
+    document.getElementById('login-idle').style.display   = '';
+    document.getElementById('login-active').style.display = 'none';
+    refreshStatus();
+  }
+
+  async function cancelLogin() {
+    _stopShotLoop();
+    const frame = document.getElementById('novnc-iframe');
+    if (frame) frame.src = 'about:blank';
+    await fetch('/api/login/cancel', { method: 'POST' });
+    document.getElementById('login-idle').style.display   = '';
+    document.getElementById('login-active').style.display = 'none';
+    document.getElementById('login-status').textContent   = '';
+  }
+
+
+  // ── Drag & drop for snap image ──
+  const dz = document.getElementById('dropzone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadSnap(f);
+  });
+
+  // ── Load historical logs ──
+  async function loadLogs() {
+    try {
+      const data = await fetch('/api/logs').then(r => r.json());
+      if (data.lines && data.lines.length) {
+        const box = document.getElementById('log-box');
+        box.textContent = '';
+        data.lines.forEach(l => appendLog('', l));
+      }
+    } catch(e) {}
+  }
+
+  // ── Register PWA Service Worker (Android Installable APK) ──
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  }
+
+  // ── Initialise ──
+  connectWS();
+  loadConfig();
+  loadLogs();
+  refreshStatus();
+  refreshMacroInfo();
+  setInterval(refreshStatus, 5000);
+</script>
+
+
+</body>
+</html>

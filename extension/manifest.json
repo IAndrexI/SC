@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "SnapStreak - Automation & Macro Controller",
+  "version": "1.0.0",
+  "description": "Interactive in-page overlay to automate Snapchat streaks, record custom click macros, and manage daily schedules.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.snapchat.com/*",
+    "*://localhost:8080/*",
+    "*://127.0.0.1:8080/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.snapchat.com/*",
+        "https://web.snapchat.com/*"
+      ],
+      "js": [
+        "camera_hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://*.snapchat.com/*",
+        "https://web.snapchat.com/*"
+      ],
+      "js": [
+        "automation.js",
+        "macro.js",
+        "overlay.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*",
+        "overlay.css",
+        "camera_hook.js"
+      ],
+      "matches": [
+        "*://*.snapchat.com/*"
+      ]
+    }
+  ]
+}

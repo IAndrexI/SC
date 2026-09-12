@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+.venv/
+
+# Data (sessions, cookies, config — never commit these)
+/data/
+/desktop_data/
+snap.png
+
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
