@@ -25,7 +25,7 @@ if %errorlevel% neq 0 (
     echo Opening your browser to authenticate with GitHub...
     echo (If a one-time code appears, copy and paste it into GitHub).
     echo.
-    "%GH_EXE%" auth login --web -h github.com -p https -s repo
+    "%GH_EXE%" auth login --web --clipboard -h github.com -p https -s repo
 ) else (
     echo [1/2] Already logged in to GitHub via GitHub CLI.
 )
