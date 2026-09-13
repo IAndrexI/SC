@@ -18,6 +18,17 @@ window.SnapStreakAutomation = (function() {
     }
   }
 
+  function isVisible(el) {
+    if (!el) return false;
+    if (typeof el.checkVisibility === 'function') {
+      return el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
+    }
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
   // ── Human-Like Pointer & Interaction Simulation ─────────────────────────
   let virtualPointerPos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
@@ -190,7 +201,7 @@ window.SnapStreakAutomation = (function() {
           // Check CSS selector
           try {
             const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null) {
+            if (el && isVisible(el)) {
               return el;
             }
           } catch (e) {}
@@ -205,7 +216,7 @@ window.SnapStreakAutomation = (function() {
               null
             );
             const node = xpathResult.singleNodeValue;
-            if (node && node.offsetParent !== null) {
+            if (node && isVisible(node)) {
               return node;
             }
           } catch (e) {}
@@ -290,7 +301,7 @@ window.SnapStreakAutomation = (function() {
     for (const sel of selectors) {
       try {
         const el = document.querySelector(sel);
-        if (el && el.offsetParent !== null && isInsideMainCameraArea(el)) {
+        if (el && isVisible(el) && isInsideMainCameraArea(el)) {
           return el;
         }
       } catch (e) {}
@@ -298,7 +309,7 @@ window.SnapStreakAutomation = (function() {
 
     const headers = document.querySelectorAll('h1, h2, h3, h4, div, span');
     for (const h of headers) {
-      if (h.offsetParent !== null) {
+      if (isVisible(h)) {
         const text = (h.textContent || '').trim().toLowerCase();
         if ((text === 'send to' || text === 'send to...' || text.startsWith('send to')) && isInsideMainCameraArea(h)) {
           let p = h.parentElement;
@@ -314,7 +325,7 @@ window.SnapStreakAutomation = (function() {
     }
 
     const media = document.querySelector('video, canvas');
-    if (media && media.offsetParent !== null && isInsideMainCameraArea(media)) {
+    if (media && isVisible(media) && isInsideMainCameraArea(media)) {
       let p = media.parentElement;
       while (p && p !== document.body) {
         const pr = p.getBoundingClientRect();
@@ -335,7 +346,7 @@ window.SnapStreakAutomation = (function() {
     // Dismiss any popups, cookie alerts, or active overlays
     const dismissButtons = document.querySelectorAll('button, div[role="button"]');
     for (const btn of dismissButtons) {
-      if (btn.offsetParent !== null) {
+      if (isVisible(btn)) {
         const txt = (btn.textContent || '').trim();
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
         if (txt === '✕' || txt === 'Not now' || txt === 'Dismiss' || aria.includes('close') || aria.includes('dismiss')) {
@@ -358,7 +369,7 @@ window.SnapStreakAutomation = (function() {
     for (const sel of chatBackSelectors) {
       try {
         const btn = document.querySelector(sel);
-        if (btn && btn.offsetParent !== null) {
+        if (btn && isVisible(btn)) {
           const r = btn.getBoundingClientRect();
           if (r.top < 100 && r.left > 150 && r.left < 500) {
             await humanDwellAndClick(btn, true);
@@ -386,7 +397,7 @@ window.SnapStreakAutomation = (function() {
     for (const sel of logoSelectors) {
       try {
         const el = document.querySelector(sel);
-        if (el && el.offsetParent !== null) {
+        if (el && isVisible(el)) {
           const rect = el.getBoundingClientRect();
           if (rect.left < 200 && rect.top < 100) {
             logo = el;
@@ -416,8 +427,8 @@ window.SnapStreakAutomation = (function() {
     const isAlreadyOpen = () => {
       const shutter = document.querySelector('button[aria-label*="Take Snap" i], button.camera-capture-button, [aria-label*="capture" i]');
       const video = document.querySelector('video');
-      return (shutter && shutter.offsetParent !== null && isInsideMainCameraArea(shutter)) ||
-             (video && video.offsetParent !== null && isInsideMainCameraArea(video) && video.readyState >= 2);
+      return (shutter && isVisible(shutter) && isInsideMainCameraArea(shutter)) ||
+             (video && isVisible(video) && isInsideMainCameraArea(video) && video.readyState >= 2);
     };
 
     if (isAlreadyOpen()) {
@@ -430,7 +441,7 @@ window.SnapStreakAutomation = (function() {
     let camBtn = null;
     const allClickables = document.querySelectorAll('button, div[role="button"], a');
     for (const el of allClickables) {
-      if (el.offsetParent !== null && isInsideMainCameraArea(el)) {
+      if (isVisible(el) && isInsideMainCameraArea(el)) {
         const txt = (el.textContent || '').trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
         const testid = (el.getAttribute('data-testid') || '').toLowerCase();
@@ -489,7 +500,7 @@ window.SnapStreakAutomation = (function() {
       try {
         const matches = scope.querySelectorAll(sel);
         for (const el of matches) {
-          if (el.offsetParent !== null && isInsideMainCameraArea(el)) {
+          if (isVisible(el) && isInsideMainCameraArea(el)) {
             const aria = (el.getAttribute('aria-label') || '').toLowerCase();
             if (!aria.includes('lens') && !aria.includes('filter')) {
               return el;
@@ -514,7 +525,7 @@ window.SnapStreakAutomation = (function() {
     let maxDiameter = -1;
 
     for (const btn of allButtons) {
-      if (btn.offsetParent === null || !isInsideMainCameraArea(btn)) continue;
+      if (!isVisible(btn) || !isInsideMainCameraArea(btn)) continue;
       const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
       // EXCLUDE LENSES, FILTERS, AND EFFECTS!
       if (aria.includes('lens') || aria.includes('filter') || aria.includes('effect')) continue;
@@ -542,7 +553,7 @@ window.SnapStreakAutomation = (function() {
 
     // Deselect/close any accidentally active filter lens
     const removeLensBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close Lens" i], button[aria-label*="Exit Lens" i]');
-    if (removeLensBtn && removeLensBtn.offsetParent !== null) {
+    if (removeLensBtn && isVisible(removeLensBtn)) {
       try {
         removeLensBtn.click();
         await sleep(300);
@@ -586,7 +597,7 @@ window.SnapStreakAutomation = (function() {
   function findSendToButton() {
     const candidates = document.querySelectorAll('button, div[role="button"], a, span');
     for (const el of candidates) {
-      if (el.offsetParent === null) continue;
+      if (!isVisible(el)) continue;
       if (!isInsideMainCameraArea(el)) continue;
 
       const text = (el.textContent || '').trim().toLowerCase();
@@ -604,7 +615,7 @@ window.SnapStreakAutomation = (function() {
     // Secondary scan: button in lower half of camera area with send keyword
     const allButtons = document.querySelectorAll('button, div[role="button"]');
     for (const b of allButtons) {
-      if (b.offsetParent === null || !isInsideMainCameraArea(b)) continue;
+      if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
       const r = b.getBoundingClientRect();
       if (r.top > window.innerHeight * 0.5) {
         const text = (b.textContent || '').trim().toLowerCase();
@@ -624,7 +635,7 @@ window.SnapStreakAutomation = (function() {
     let maxScore = -1;
 
     for (const b of buttons) {
-      if (b.offsetParent === null || !isInsideMainCameraArea(b)) continue;
+      if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
       const r = b.getBoundingClientRect();
       if (r.top > window.innerHeight * 0.5 && r.width >= 35 && r.height >= 35) {
         const score = r.top + r.left;
@@ -644,7 +655,7 @@ window.SnapStreakAutomation = (function() {
     const isListOpen = () => {
       const inputs = document.querySelectorAll('input');
       for (const inp of inputs) {
-        if (inp.offsetParent !== null && isInsideMainCameraArea(inp)) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp)) {
           const ph = (inp.placeholder || '').toLowerCase();
           if (ph.includes('to') || ph.includes('send') || ph.includes('search')) {
             return true;
@@ -653,7 +664,7 @@ window.SnapStreakAutomation = (function() {
       }
       const checkItems = document.querySelectorAll('div[role="checkbox"], input[type="checkbox"]');
       for (const item of checkItems) {
-        if (item.offsetParent !== null && isInsideMainCameraArea(item)) {
+        if (isVisible(item) && isInsideMainCameraArea(item)) {
           return true;
         }
       }
@@ -716,10 +727,17 @@ window.SnapStreakAutomation = (function() {
     const rawLower = rawName.toLowerCase();
     const coreLower = (coreName || '').toLowerCase();
 
-    const candidates = document.querySelectorAll('span, div, p, h4, h5, li, b');
+    // Query candidate elements in main camera area
+    const candidates = document.querySelectorAll('span, p, h4, h5, b, strong, div[role="row"], div[role="listitem"], li, div');
     for (const el of candidates) {
-      if (el.offsetParent === null) continue;
+      if (!isVisible(el)) continue;
       if (!isInsideMainCameraArea(el)) continue;
+
+      // Never match a container that houses multiple recipient rows or checkboxes
+      if (el.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length > 1) continue;
+      if (el.querySelector('[role="row"], [role="listitem"]')) continue;
+      const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+      if (testid.includes('drawer') || testid.includes('modal') || el.getAttribute('role') === 'dialog') continue;
 
       const txt = (el.textContent || '').trim().toLowerCase();
       if (txt.length === 0 || txt.length > 70) continue;
@@ -728,22 +746,36 @@ window.SnapStreakAutomation = (function() {
       const matchesCore = coreLower.length >= 3 && txt.includes(coreLower);
 
       if (matchesRaw || matchesCore) {
+        // If a child element also contains the match, let the child match instead (deepest element)
+        const hasDeeperMatch = Array.from(el.children).some(child => {
+          const cTxt = (child.textContent || '').toLowerCase();
+          return (rawLower.length >= 2 && cTxt.includes(rawLower)) ||
+                 (coreLower.length >= 3 && cTxt.includes(coreLower));
+        });
+        if (hasDeeperMatch) continue;
+
+        // Ascend from the matched text node to its recipient row wrapper
         let row = el;
         let depth = 0;
-        while (row && row !== document.body && depth < 5) {
+        while (row && row !== document.body && depth < 6) {
           const role = row.getAttribute('role');
-          if (role === 'button' || role === 'row' || role === 'checkbox' || row.tagName === 'LI') {
+          if (role === 'row' || role === 'listitem' || role === 'checkbox' || row.tagName === 'LI') {
             return row;
           }
-          const hasCheck = row.querySelector('input[type="checkbox"], [role="checkbox"], svg');
-          const r = row.getBoundingClientRect();
-          if (hasCheck && r.height > 25 && r.height < 90) {
-            return row;
+          const checks = row.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
+          if (checks.length === 1) {
+            const r = row.getBoundingClientRect();
+            if (r.height >= 20 && r.height <= 150) {
+              return row;
+            }
           }
           row = row.parentElement;
           depth++;
         }
-        return el.closest('button, div[role="button"]') || el.parentElement || el;
+
+        const clickable = el.closest('div[role="row"], div[role="listitem"], div[role="button"], button, li');
+        if (clickable && clickable !== document.body) return clickable;
+        return el;
       }
     }
     return null;
@@ -755,7 +787,7 @@ window.SnapStreakAutomation = (function() {
     const inputRect = searchInput.getBoundingClientRect();
     const items = document.querySelectorAll('div[role="row"], div[role="button"], div[role="checkbox"], li');
     for (const item of items) {
-      if (item.offsetParent === null || !isInsideMainCameraArea(item)) continue;
+      if (!isVisible(item) || !isInsideMainCameraArea(item)) continue;
       const r = item.getBoundingClientRect();
       if (r.top >= inputRect.bottom && r.height >= 25 && r.height <= 95) {
         return item.querySelector('input[type="checkbox"], [role="checkbox"], svg') || item;
@@ -775,7 +807,7 @@ window.SnapStreakAutomation = (function() {
       let shortcutBtn = null;
       const candidates = document.querySelectorAll('button, div[role="button"], span');
       for (const el of candidates) {
-        if (el.offsetParent === null || !isInsideMainCameraArea(el)) continue;
+        if (!isVisible(el) || !isInsideMainCameraArea(el)) continue;
         const text = (el.textContent || '').trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
         const testid = (el.getAttribute('data-testid') || '').toLowerCase();
@@ -793,7 +825,7 @@ window.SnapStreakAutomation = (function() {
         const allBtns = document.querySelectorAll('button, div[role="button"], span');
         let selectAllBtn = null;
         for (const b of allBtns) {
-          if (b.offsetParent === null || !isInsideMainCameraArea(b)) continue;
+          if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
           const txt = (b.textContent || '').trim().toLowerCase();
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
           if (txt === 'select' || txt === 'select all' || aria.includes('select all')) {
@@ -825,6 +857,9 @@ window.SnapStreakAutomation = (function() {
       if (matchRow) {
         const checkControl = matchRow.querySelector('input[type="checkbox"], [role="checkbox"], svg, div[class*="check" i]') || matchRow;
         await humanDwellAndClick(checkControl, true);
+        if (checkControl !== matchRow) {
+          try { matchRow.click(); } catch (e) {}
+        }
         log(`  ✓ Selected "${rawName}" from main camera area!`, 'success');
         found = true;
         selectedCount++;
@@ -836,7 +871,7 @@ window.SnapStreakAutomation = (function() {
       const searchInputs = document.querySelectorAll('input');
       let cameraSearch = null;
       for (const inp of searchInputs) {
-        if (inp.offsetParent !== null && isInsideMainCameraArea(inp)) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp)) {
           cameraSearch = inp;
           break;
         }
@@ -885,7 +920,7 @@ window.SnapStreakAutomation = (function() {
   function findFinalSendButton() {
     const candidates = document.querySelectorAll('button, div[role="button"], a');
     for (const b of candidates) {
-      if (b.offsetParent === null || !isInsideMainCameraArea(b)) continue;
+      if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
 
       const text = (b.textContent || '').trim().toLowerCase();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
@@ -902,7 +937,7 @@ window.SnapStreakAutomation = (function() {
 
     // Circular blue send button with SVG arrow in bottom-right
     for (const b of candidates) {
-      if (b.offsetParent === null || !isInsideMainCameraArea(b)) continue;
+      if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
       const r = b.getBoundingClientRect();
       if (r.top > window.innerHeight * 0.55 && r.left > window.innerWidth * 0.4) {
         if (b.querySelector('svg') && Math.abs(r.width - r.height) < 20 && r.width >= 35) {
@@ -939,7 +974,7 @@ window.SnapStreakAutomation = (function() {
     const isStillOpen = () => {
       const inputs = document.querySelectorAll('input');
       for (const inp of inputs) {
-        if (inp.offsetParent !== null && isInsideMainCameraArea(inp)) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp)) {
           const ph = (inp.placeholder || '').toLowerCase();
           if (ph.includes('to') || ph.includes('send')) return true;
         }
