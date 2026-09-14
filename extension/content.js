@@ -20,13 +20,22 @@
 
   ensureCameraHook();
 
+  function isVisible(el) {
+    if (!el) return false;
+    if (typeof el.checkVisibility === 'function') {
+      return el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
   // Startup Auto-Refresh & Multi-Tab Error Resolver
   function setupStartupMultiTabHandler() {
     // 1. Resolve "Use Here" / "Snapchat is open in another window" modals
     function checkAndResolveMultiTab() {
       const buttons = document.querySelectorAll('button, div[role="button"], a');
       for (const btn of buttons) {
-        if (btn.offsetParent === null) continue;
+        if (!isVisible(btn)) continue;
         const text = (btn.textContent || '').trim().toLowerCase();
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
         if (
@@ -85,6 +94,41 @@
     }
   }
 
+  // Auto-Boot Streak Trigger (when launched on startup/reboot)
+  function checkAutoBootRoutine() {
+    const isAutoBoot = window.location.search.includes('snapstreak_autoboot=1') ||
+                       localStorage.getItem('snapstreak_autoboot_enabled') === 'true';
+    if (!isAutoBoot) return;
+
+    if (sessionStorage.getItem('snapstreak_autoboot_done') === 'true') return;
+
+    console.log('[SnapStreak] Auto-boot sequence active! Scheduling streak delivery...');
+    window.SnapStreakOverlay?.log('🚀 Auto-boot streak routine scheduled on boot...', 'info');
+
+    // Wait 8.5 seconds for page load, camera feed, and initial refresh to settle
+    setTimeout(async () => {
+      sessionStorage.setItem('snapstreak_autoboot_done', 'true');
+      if (window.SnapStreakAutomation) {
+        window.SnapStreakOverlay?.log('🔥 Starting automated streak sequence...', 'info');
+        try {
+          const cfg = window.SnapStreakOverlay?.getConfig() || {};
+          const res = await window.SnapStreakAutomation.runSendStreaks({
+            friends: cfg.friends || ['*//Eric\\*', 'Dylan'],
+            selectionMethod: cfg.selectionMethod || 'auto',
+            stepDelay: cfg.stepDelay || 3,
+            humanMode: cfg.humanMode ?? true,
+            isTest: false
+          });
+          if (res && res.success) {
+            window.SnapStreakOverlay?.log('🎉 Auto-boot streaks sent successfully!', 'success');
+          }
+        } catch (err) {
+          window.SnapStreakOverlay?.log(`❌ Auto-boot streak send error: ${err.message}`, 'err');
+        }
+      }
+    }, 8500);
+  }
+
   function init() {
     if (window.location.hostname.includes('snapchat.com')) {
       // Ensure UI is initialized once DOM is ready
@@ -92,10 +136,12 @@
         document.addEventListener('DOMContentLoaded', () => {
           window.SnapStreakOverlay?.initUI();
           setupStartupMultiTabHandler();
+          checkAutoBootRoutine();
         });
       } else {
         window.SnapStreakOverlay?.initUI();
         setupStartupMultiTabHandler();
+        checkAutoBootRoutine();
       }
     }
   }
