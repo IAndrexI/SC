@@ -7,7 +7,8 @@ window.SnapStreakAutomation = (function() {
   'use strict';
 
   function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    const d = window.__snapstreak_fast_test ? Math.min(ms, 25) : ms;
+    return new Promise(resolve => setTimeout(resolve, d));
   }
 
   function log(msg, type = 'info') {
@@ -27,6 +28,58 @@ window.SnapStreakAutomation = (function() {
     if (r.width === 0 && r.height === 0) return false;
     const style = window.getComputedStyle(el);
     return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  // ── Helper: Identify and Strictly Ignore "My AI" Elements ───────────────
+  function isMyAI(el) {
+    if (!el) return false;
+    let cur = el;
+    let depth = 0;
+    while (cur && cur !== document.body && depth < 5) {
+      // If we've ascended to a container housing multiple items, drawer, or dialog, stop ascending
+      if (depth > 0) {
+        const testid = (cur.getAttribute('data-testid') || '').toLowerCase();
+        const role = cur.getAttribute('role') || '';
+        if (
+          testid.includes('drawer') || testid.includes('container') || testid.includes('list') ||
+          role === 'list' || role === 'dialog' || role === 'grid' ||
+          cur.tagName === 'BODY' || cur.tagName === 'MAIN'
+        ) {
+          break;
+        }
+      }
+
+      const aria = (cur.getAttribute('aria-label') || '').toLowerCase();
+      const testid = (cur.getAttribute('data-testid') || '').toLowerCase();
+      const title = (cur.getAttribute('title') || '').toLowerCase();
+      const alt = (cur.getAttribute('alt') || '').toLowerCase();
+
+      if (
+        aria.includes('my ai') || aria.includes('myai') ||
+        testid.includes('my-ai') || testid.includes('myai') ||
+        title.includes('my ai') || title.includes('myai') ||
+        alt.includes('my ai') || alt.includes('myai')
+      ) {
+        return true;
+      }
+
+      // Check text only on element itself or row/item with at most one checkbox/control
+      const checksCount = cur.querySelectorAll ? cur.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length : 0;
+      if (checksCount <= 1) {
+        const txt = (cur.innerText || cur.textContent || '').trim().toLowerCase();
+        if (
+          txt === 'my ai' || txt.startsWith('my ai\n') || txt.startsWith('my ai ') ||
+          (txt.includes('my ai') && txt.length < 35) ||
+          txt.replace(/[^a-z]/g, '') === 'myai'
+        ) {
+          return true;
+        }
+      }
+
+      cur = cur.parentElement;
+      depth++;
+    }
+    return false;
   }
 
   // ── Human-Like Pointer & Interaction Simulation ─────────────────────────
@@ -72,7 +125,22 @@ window.SnapStreakAutomation = (function() {
     const midY = (startY + targetY) / 2 + (Math.random() - 0.5) * 80;
 
     return new Promise(resolve => {
+      let resolved = false;
+      const done = () => {
+        if (!resolved) {
+          resolved = true;
+          pointer.style.left = `${targetX}px`;
+          pointer.style.top = `${targetY}px`;
+          virtualPointerPos = { x: targetX, y: targetY };
+          resolve();
+        }
+      };
+
+      // Safety timeout in case requestAnimationFrame is paused or throttled (e.g. background tab)
+      const maxTimer = setTimeout(done, duration + 100);
+
       function step(currentTime) {
+        if (resolved) return;
         const elapsed = currentTime - startTime;
         const progress = Math.min(elapsed / duration, 1);
 
@@ -92,7 +160,8 @@ window.SnapStreakAutomation = (function() {
         if (progress < 1) {
           requestAnimationFrame(step);
         } else {
-          resolve();
+          clearTimeout(maxTimer);
+          done();
         }
       }
       requestAnimationFrame(step);
@@ -339,14 +408,14 @@ window.SnapStreakAutomation = (function() {
     return null;
   }
 
-  // ── Step 1: Click Snapchat Icon Top Left to Set At Home ──────────────────
+  // ── Step 1: Click Snapchat Icon Top Left to Bring to Main Menu ───────────
   async function step0_clickSnapchatHome() {
-    log('Step 1: Setting Snapchat to home screen...', 'info');
+    log('Step 1: Bringing Snapchat to main menu (strictly ignoring My AI)...', 'info');
 
     // Dismiss any popups, cookie alerts, or active overlays
     const dismissButtons = document.querySelectorAll('button, div[role="button"]');
     for (const btn of dismissButtons) {
-      if (isVisible(btn)) {
+      if (isVisible(btn) && !isMyAI(btn)) {
         const txt = (btn.textContent || '').trim();
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
         if (txt === '✕' || txt === 'Not now' || txt === 'Dismiss' || aria.includes('close') || aria.includes('dismiss')) {
@@ -358,22 +427,21 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    // If a chat is open on the right half, interact with the chat back button '<' to return home
+    // If a chat is open (including chat with My AI), interact with chat back button '<' to return to main menu
     const chatBackSelectors = [
       'button[aria-label*="Back" i]',
       'div[role="button"][aria-label*="Back" i]',
       '[data-testid="chat-back-button"]',
-      'button:has(svg[data-icon="arrow-left"])',
-      'header button:first-child'
+      'button:has(svg[data-icon="arrow-left"])'
     ];
     for (const sel of chatBackSelectors) {
       try {
         const btn = document.querySelector(sel);
-        if (btn && isVisible(btn)) {
+        if (btn && isVisible(btn) && !isMyAI(btn)) {
           const r = btn.getBoundingClientRect();
-          if (r.top < 100 && r.left > 150 && r.left < 500) {
+          if (r.top < 120 && r.left > 120 && r.left < 550) {
             await humanDwellAndClick(btn, true);
-            log('  ✓ Clicked chat back button on right half to return home.', 'success');
+            log('  ✓ Clicked chat back button to return to main menu.', 'success');
             await sleep(800);
             break;
           }
@@ -381,73 +449,84 @@ window.SnapStreakAutomation = (function() {
       } catch (e) {}
     }
 
-    // Locate Snapchat top-left icon / ghost logo
+    // Locate Snapchat top-left icon / ghost logo to bring to main menu
     const logoSelectors = [
       'a[href*="/web"][aria-label*="Snapchat" i]',
       '[data-testid="snapchat-logo"]',
       'a[aria-label="Snapchat"]',
-      'a[href*="/web"]:has(svg)',
       'a[href="/web"]',
-      'header a:first-child',
-      'nav a:first-child',
+      'header a[href*="/web"]',
+      'nav a[href*="/web"]',
       '[aria-label*="Snapchat" i]'
     ];
 
     let logo = null;
     for (const sel of logoSelectors) {
       try {
-        const el = document.querySelector(sel);
-        if (el && isVisible(el)) {
-          const rect = el.getBoundingClientRect();
-          if (rect.left < 200 && rect.top < 100) {
-            logo = el;
-            break;
+        const matches = document.querySelectorAll(sel);
+        for (const el of matches) {
+          if (isVisible(el) && !isMyAI(el)) {
+            const rect = el.getBoundingClientRect();
+            if (rect.left < 220 && rect.top < 90) {
+              logo = el;
+              break;
+            }
           }
         }
+        if (logo) break;
       } catch (e) {}
     }
 
     if (logo) {
       await humanDwellAndClick(logo, true);
-      log('  ✓ Clicked Snapchat icon top-left.', 'success');
+      log('  ✓ Clicked Snapchat icon top-left to bring to main menu.', 'success');
     } else {
-      log('  Notice: Clicking top-left home coordinates (x: 40, y: 35)...', 'info');
-      const fallbackTarget = document.elementFromPoint(40, 35) || document.body;
-      simulateHumanClick(fallbackTarget);
+      log('  Snapchat logo verified or already on main menu.', 'info');
     }
 
-    await sleep(1500);
+    await sleep(1200);
     return true;
   }
 
-  // ── Step 2: Press Camera Icon to Open Webcam (if not opened already) ─────
+  // ── Step 2: Press Camera Option (if not in already) ──────────────────────
   async function step1_openCamera() {
-    log('Step 2: Checking webcam viewfinder in main camera area...', 'info');
+    log('Step 2: Checking camera option in main area...', 'info');
 
     const isAlreadyOpen = () => {
-      const shutter = document.querySelector('button[aria-label*="Take Snap" i], button.camera-capture-button, [aria-label*="capture" i]');
+      // If we are currently inside a 1-on-1 chat text box, camera viewfinder is not active
+      const inChat = document.querySelector('[data-testid="chat-input"], [data-testid="message-input"], textarea[placeholder*="chat" i]');
+      if (inChat && isVisible(inChat) && isInsideMainCameraArea(inChat)) return false;
+
+      const shutter = findShutterButton();
       const video = document.querySelector('video');
       return (shutter && isVisible(shutter) && isInsideMainCameraArea(shutter)) ||
              (video && isVisible(video) && isInsideMainCameraArea(video) && video.readyState >= 2);
     };
 
     if (isAlreadyOpen()) {
-      log('  ✓ Webcam viewfinder already open in main camera area.', 'success');
+      log('  ✓ Camera already open in main area.', 'success');
       return true;
     }
 
-    log('  Opening main camera (strictly ignoring side menu)...', 'info');
+    log('  Opening camera option (strictly ignoring My AI and chat sidebar)...', 'info');
 
     let camBtn = null;
     const allClickables = document.querySelectorAll('button, div[role="button"], a');
     for (const el of allClickables) {
-      if (isVisible(el) && isInsideMainCameraArea(el)) {
+      if (!isVisible(el) || isMyAI(el)) continue;
+      // Do not click camera buttons inside chat message areas
+      if (el.closest('[data-testid*="chat" i], [class*="message" i]')) continue;
+
+      if (isInsideMainCameraArea(el) || el.closest('header, nav')) {
         const txt = (el.textContent || '').trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').toLowerCase();
         const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-        if (txt.includes('click the camera') || txt.includes('camera') ||
+        const href = (el.getAttribute('href') || '').toLowerCase();
+
+        if (txt.includes('click the camera') || txt === 'camera' ||
             aria.includes('click the camera') || aria === 'camera' ||
-            testid.includes('camera-open') || el.getAttribute('href')?.includes('/camera')) {
+            testid.includes('camera-open') || testid.includes('navigation-camera') ||
+            href.includes('/camera')) {
           camBtn = el;
           break;
         }
@@ -456,13 +535,9 @@ window.SnapStreakAutomation = (function() {
 
     if (camBtn) {
       await humanDwellAndClick(camBtn, true);
-      log('  ✓ Clicked camera button in main camera area.', 'success');
+      log('  ✓ Clicked camera option in main menu.', 'success');
     } else {
-      log('  Clicking center of main camera area...', 'info');
-      const targetX = Math.round(window.innerWidth * 0.55);
-      const targetY = Math.round(window.innerHeight * 0.5);
-      const centerEl = document.elementFromPoint(targetX, targetY) || document.body;
-      simulateHumanClick(centerEl);
+      log('  Notice: Checking for camera capture button...', 'info');
     }
 
     // Wait for camera viewfinder and white circle shutter button in main area
@@ -471,15 +546,14 @@ window.SnapStreakAutomation = (function() {
       'button.camera-capture-button',
       '[aria-label*="capture" i]',
       'button:has(svg circle)'
-    ], 6000);
+    ], 5000);
 
-    if (shutter && isInsideMainCameraArea(shutter)) {
-      log('  ✓ Webcam viewfinder ready in main camera area.', 'success');
+    if (shutter && isInsideMainCameraArea(shutter) && !isMyAI(shutter)) {
+      log('  ✓ Camera viewfinder ready in main area.', 'success');
       return true;
     }
 
-    log('  Notice: Proceeding to shutter capture...', 'info');
-    return false;
+    return true;
   }
 
   // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
@@ -547,37 +621,33 @@ window.SnapStreakAutomation = (function() {
     return bestShutter;
   }
 
-  // ── Step 3: Press White Circle for Photo (Instant Tap + Spacebar) ────────
+  // ── Step 3: Press Take Picture Button (Quick Press, Zero Swipe + Spacebar) ───
   async function step2_pressWhiteCirclePhoto() {
-    log('Step 3: Capturing photo with white circle button in main camera area...', 'info');
+    log('Step 3: Pressing take picture button (quick press, zero swipe)...', 'info');
 
-    // Deselect/close any accidentally active filter lens
+    // Deselect/close any accidentally active filter lens first
     const removeLensBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close Lens" i], button[aria-label*="Exit Lens" i]');
     if (removeLensBtn && isVisible(removeLensBtn)) {
       try {
         removeLensBtn.click();
-        await sleep(300);
+        await sleep(250);
       } catch (e) {}
     }
 
     const shutter = findShutterButton();
 
-    if (shutter) {
+    if (shutter && !isMyAI(shutter)) {
       const rect = shutter.getBoundingClientRect();
       const centerX = Math.round(rect.left + rect.width / 2);
       const centerY = Math.round(rect.top + rect.height / 2);
 
-      // Smoothly move visual pointer to the exact center of the shutter circle
-      await smoothMovePointer(centerX, centerY, 300);
-      await sleep(100);
-
-      // Clean instant tap: DO NOT hold pointerdown (holding triggers carousel swipe / filter selection)
+      // Clean instant quick press: DO NOT hold or drag horizontally (swiping adds a filter lens)
       shutter.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
       shutter.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
       shutter.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
       shutter.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
       shutter.click();
-      log('  ✓ Tapped center white circle capture button!', 'success');
+      log('  ✓ Quick-pressed center white circle capture button (zero swipe)!', 'success');
     } else {
       log('  Notice: Shutter button not directly found by query, using Spacebar capture...', 'info');
     }
@@ -730,7 +800,7 @@ window.SnapStreakAutomation = (function() {
     // Query candidate elements in main camera area
     const candidates = document.querySelectorAll('span, p, h4, h5, b, strong, div[role="row"], div[role="listitem"], li, div');
     for (const el of candidates) {
-      if (!isVisible(el)) continue;
+      if (!isVisible(el) || isMyAI(el)) continue;
       if (!isInsideMainCameraArea(el)) continue;
 
       // Never match a container that houses multiple recipient rows or checkboxes
@@ -758,6 +828,7 @@ window.SnapStreakAutomation = (function() {
         let row = el;
         let depth = 0;
         while (row && row !== document.body && depth < 6) {
+          if (isMyAI(row)) return null;
           const role = row.getAttribute('role');
           if (role === 'row' || role === 'listitem' || role === 'checkbox' || row.tagName === 'LI') {
             return row;
@@ -774,104 +845,105 @@ window.SnapStreakAutomation = (function() {
         }
 
         const clickable = el.closest('div[role="row"], div[role="listitem"], div[role="button"], button, li');
-        if (clickable && clickable !== document.body) return clickable;
-        return el;
+        if (clickable && clickable !== document.body && !isMyAI(clickable)) return clickable;
+        return isMyAI(el) ? null : el;
       }
     }
     return null;
   }
 
-  // ── Helper: Find Top Search Result in Main Camera Area ───────────────────
+  // ── Helper: Find Top Search Result in Main Camera Area (Excluding My AI) ───
   function findFirstSearchResult(searchInput) {
     if (!searchInput) return null;
     const inputRect = searchInput.getBoundingClientRect();
     const items = document.querySelectorAll('div[role="row"], div[role="button"], div[role="checkbox"], li');
     for (const item of items) {
-      if (!isVisible(item) || !isInsideMainCameraArea(item)) continue;
+      if (!isVisible(item) || !isInsideMainCameraArea(item) || isMyAI(item)) continue;
       const r = item.getBoundingClientRect();
       if (r.top >= inputRect.bottom && r.height >= 25 && r.height <= 95) {
-        return item.querySelector('input[type="checkbox"], [role="checkbox"], svg') || item;
+        const control = item.querySelector('input[type="checkbox"], [role="checkbox"], svg') || item;
+        if (!isMyAI(control)) return control;
       }
     }
     return null;
   }
 
-  // ── Step 4b: Select Recipients (ONLY From Main Camera Area) ──────────────
+  // ── Step 4b: Select Recipients (Best Friends Tab &/or Chosen Friends, No My AI) ──
   async function step3b_selectRecipientsByVisualName(friends = ['*//Eric\\\\*', 'Dylan'], selectionMethod = 'auto', stepDelay = 2) {
-    log(`Step 4b: Selecting recipients ONLY from main camera area (Method: ${selectionMethod.toUpperCase()})...`, 'info');
+    log(`Step 4b: Selecting recipients in Best Friends tab &/or chosen list (STRICTLY ignoring My AI)...`, 'info');
     let selectedCount = 0;
 
-    // Option A: Try Shortcut if requested or in auto mode
-    if (selectionMethod === 'shortcut' || selectionMethod === 'auto') {
-      log('  Checking for Shortcut pill inside main camera box...', 'info');
-      let shortcutBtn = null;
-      const candidates = document.querySelectorAll('button, div[role="button"], span');
-      for (const el of candidates) {
-        if (!isVisible(el) || !isInsideMainCameraArea(el)) continue;
-        const text = (el.textContent || '').trim().toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-        if (text.includes('✨') || aria.includes('shortcut') || aria.includes('sparkle') || testid.includes('shortcut')) {
-          shortcutBtn = el.closest('button, div[role="button"]') || el;
-          break;
-        }
+    // 1. Check for and switch to "Best Friends" tab/pill if present in drawer
+    const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
+    let bestFriendsTab = null;
+    for (const t of tabCandidates) {
+      if (!isVisible(t) || !isInsideMainCameraArea(t) || isMyAI(t)) continue;
+      const text = (t.textContent || '').trim().toLowerCase();
+      const aria = (t.getAttribute('aria-label') || '').toLowerCase();
+      if (text === 'best friends' || aria === 'best friends' || text.startsWith('best friends') || aria.startsWith('best friends')) {
+        bestFriendsTab = t.closest('button, div[role="tab"], div[role="button"]') || t;
+        break;
       }
+    }
 
-      if (shortcutBtn) {
-        await humanDwellAndClick(shortcutBtn, true);
-        log('  ✓ Clicked Snapchat Shortcut in camera box.', 'success');
-        await sleep(1000);
+    if (bestFriendsTab) {
+      try {
+        await humanDwellAndClick(bestFriendsTab, true);
+        log('  ✓ Switched to "Best Friends" tab in camera drawer.', 'success');
+        await sleep(700);
+      } catch (e) {}
+    }
 
-        const allBtns = document.querySelectorAll('button, div[role="button"], span');
-        let selectAllBtn = null;
-        for (const b of allBtns) {
-          if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
-          const txt = (b.textContent || '').trim().toLowerCase();
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          if (txt === 'select' || txt === 'select all' || aria.includes('select all')) {
-            selectAllBtn = b.closest('button, div[role="button"]') || b;
-            break;
-          }
-        }
-        if (selectAllBtn) {
-          await humanDwellAndClick(selectAllBtn, true);
-          log('  ✓ Clicked Shortcut "Select All" in camera box!', 'success');
-          return true;
+    // 2. Select rows inside Best Friends tab/section (strictly excluding My AI)
+    const bestFriendsRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li');
+    for (const row of bestFriendsRows) {
+      if (!isVisible(row) || !isInsideMainCameraArea(row) || isMyAI(row)) continue;
+      const rowTxt = (row.textContent || '').trim();
+      const checkControl = row.querySelector('input[type="checkbox"], [role="checkbox"]');
+      if (checkControl && !checkControl.checked) {
+        const matchesFriend = friends.some(f => {
+          const raw = f.trim().replace(/^@/, '').toLowerCase();
+          const core = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          const rLower = rowTxt.toLowerCase();
+          return (raw.length >= 2 && rLower.includes(raw)) || (core.length >= 3 && rLower.includes(core));
+        });
+
+        if (matchesFriend || selectionMethod === 'best_friends') {
+          await humanDwellAndClick(checkControl, true);
+          log(`  ✓ Selected Best Friend: "${rowTxt.slice(0, 25)}" (My AI skipped).`, 'success');
+          selectedCount++;
+          await sleep(500);
         }
       }
     }
 
-    // Option B: Visual Name Matching (STRICTLY in Main Camera Area, EXCLUDING side menu)
-    log(`  Selecting ${friends.length} recipient(s) from people list in main camera area...`, 'info');
-
+    // 3. Ensure all explicitly chosen friends from friends list are selected (search fallback)
     for (const friend of friends) {
       const rawName = friend.trim().replace(/^@/, '');
       const coreName = rawName.replace(/[^a-zA-Z0-9]/g, '').trim();
       if (!rawName && !coreName) continue;
 
-      log(`  Looking for "${rawName}" (core: "${coreName}") inside main camera area...`, 'info');
-      let found = false;
-
-      // 1. Direct row match in visible items
-      const matchRow = findRecipientRow(rawName, coreName);
-      if (matchRow) {
-        const checkControl = matchRow.querySelector('input[type="checkbox"], [role="checkbox"], svg, div[class*="check" i]') || matchRow;
-        await humanDwellAndClick(checkControl, true);
-        if (checkControl !== matchRow) {
-          try { matchRow.click(); } catch (e) {}
+      const existingRow = findRecipientRow(rawName, coreName);
+      if (existingRow && !isMyAI(existingRow)) {
+        const check = existingRow.querySelector('input[type="checkbox"], [role="checkbox"]');
+        if (check && check.checked) {
+          log(`  ✓ "${rawName}" is already selected.`, 'info');
+          selectedCount++;
+          continue;
+        } else if (check) {
+          await humanDwellAndClick(check, true);
+          log(`  ✓ Selected "${rawName}" from drawer.`, 'success');
+          selectedCount++;
+          await sleep(500);
+          continue;
         }
-        log(`  ✓ Selected "${rawName}" from main camera area!`, 'success');
-        found = true;
-        selectedCount++;
-        await sleep(600);
-        continue;
       }
 
-      // 2. Search input in main camera area
+      // Search bar in drawer fallback
       const searchInputs = document.querySelectorAll('input');
       let cameraSearch = null;
       for (const inp of searchInputs) {
-        if (isVisible(inp) && isInsideMainCameraArea(inp)) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp) && !isMyAI(inp)) {
           cameraSearch = inp;
           break;
         }
@@ -884,35 +956,30 @@ window.SnapStreakAutomation = (function() {
         await sleep(1000);
 
         const resultRow = findRecipientRow(rawName, coreName);
-        if (resultRow) {
-          const clickable = resultRow.querySelector('input[type="checkbox"], [role="checkbox"], svg, div[class*="check" i]') || resultRow;
+        if (resultRow && !isMyAI(resultRow)) {
+          const clickable = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]') || resultRow;
           await humanDwellAndClick(clickable, true);
           log(`  ✓ Selected "${rawName}" from search results!`, 'success');
-          found = true;
           selectedCount++;
-          await sleep(600);
+          await sleep(500);
         } else {
+          // Top search result (STRICTLY SKIPPING MY AI)
           const firstResult = findFirstSearchResult(cameraSearch);
-          if (firstResult) {
+          if (firstResult && !isMyAI(firstResult)) {
             await humanDwellAndClick(firstResult, true);
-            log(`  ✓ Selected top search result for "${rawName}"!`, 'success');
-            found = true;
+            log(`  ✓ Selected top non-AI search result for "${rawName}"!`, 'success');
             selectedCount++;
-            await sleep(600);
+            await sleep(500);
           }
         }
 
         simulateTyping(cameraSearch, '');
-        await sleep(400);
-      }
-
-      if (!found) {
-        log(`  ⚠ Could not locate "${rawName}" in main camera area.`, 'err');
+        await sleep(300);
       }
     }
 
     const success = (selectedCount > 0);
-    log(`  Finished recipient selection (${selectedCount}/${friends.length} selected from main camera box).`, success ? 'success' : 'err');
+    log(`  Finished recipient selection (${selectedCount} selected, My AI completely ignored).`, success ? 'success' : 'err');
     return success;
   }
 
@@ -920,7 +987,7 @@ window.SnapStreakAutomation = (function() {
   function findFinalSendButton() {
     const candidates = document.querySelectorAll('button, div[role="button"], a');
     for (const b of candidates) {
-      if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
+      if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
 
       const text = (b.textContent || '').trim().toLowerCase();
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
@@ -937,7 +1004,7 @@ window.SnapStreakAutomation = (function() {
 
     // Circular blue send button with SVG arrow in bottom-right
     for (const b of candidates) {
-      if (!isVisible(b) || !isInsideMainCameraArea(b)) continue;
+      if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
       const r = b.getBoundingClientRect();
       if (r.top > window.innerHeight * 0.55 && r.left > window.innerWidth * 0.4) {
         if (b.querySelector('svg') && Math.abs(r.width - r.height) < 20 && r.width >= 35) {
@@ -1060,6 +1127,7 @@ window.SnapStreakAutomation = (function() {
   return {
     sleep,
     log,
+    isMyAI,
     simulateHumanClick,
     simulateTyping,
     smoothMovePointer,
