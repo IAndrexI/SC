@@ -359,8 +359,23 @@ window.SnapStreakOverlay = (function() {
               <button class="btn btn-primary btn-full" id="btn-save-schedule" style="margin-top: 6px;">
                 ⏰ Update Schedule
               </button>
-              <small style="font-size: 10px; color: var(--text-dim); margin-top: 6px;">
-                The background extension alarms will automatically trigger streaks daily at this time.
+
+              <!-- Live Schedule Status Banner -->
+              <div id="schedule-status-banner" style="margin-top: 10px; padding: 8px 10px; background: rgba(0,0,0,0.3); border-radius: 6px; border-left: 3px solid var(--accent); font-size: 11px;">
+                <div style="font-weight: 700; color: var(--accent); margin-bottom: 3px; display: flex; justify-content: space-between;">
+                  <span>Schedule Status</span>
+                  <span id="schedule-sync-pill" style="font-size: 10px; color: var(--green); font-weight: normal;">● Active</span>
+                </div>
+                <div id="schedule-next-run" style="color: var(--text-light);">Next Run: Calculating...</div>
+                <div id="schedule-last-run" style="color: var(--text-dim); margin-top: 2px;">Last Run: Not sent yet today</div>
+              </div>
+
+              <button class="btn btn-test btn-full" id="btn-test-schedule-now" style="margin-top: 8px; font-size: 11px; padding: 8px;" title="Trigger the background alarm sequence immediately to verify scheduling">
+                ⚡ Test Scheduled Trigger Now
+              </button>
+
+              <small style="font-size: 10px; color: var(--text-dim); margin-top: 6px; display: block;">
+                The background extension alarms automatically trigger streaks daily at this time, with automatic missed-schedule recovery if your PC was sleeping.
               </small>
             </div>
           </div>
@@ -611,13 +626,36 @@ window.SnapStreakOverlay = (function() {
       updateFriendsCount();
     });
 
-    // Schedule Tab
-    shadowRoot.getElementById('btn-save-schedule').addEventListener('click', () => {
-      config.scheduleEnabled = shadowRoot.getElementById('chk-schedule-enabled').checked;
-      config.scheduleTime = shadowRoot.getElementById('inp-schedule-time').value;
+    // Schedule Tab Handlers
+    const chkSchedule = shadowRoot.getElementById('chk-schedule-enabled');
+    const inpSchedule = shadowRoot.getElementById('inp-schedule-time');
+
+    const handleScheduleUpdate = () => {
+      config.scheduleEnabled = chkSchedule.checked;
+      config.scheduleTime = inpSchedule.value || '09:00';
       saveConfig();
+      updateScheduleUIStatus();
       log(`⏰ Schedule updated: ${config.scheduleEnabled ? config.scheduleTime : 'Disabled'}`, 'success');
-    });
+    };
+
+    chkSchedule.addEventListener('change', handleScheduleUpdate);
+    inpSchedule.addEventListener('change', handleScheduleUpdate);
+    shadowRoot.getElementById('btn-save-schedule').addEventListener('click', handleScheduleUpdate);
+
+    // Test Scheduled Trigger Now button
+    const testSchedBtn = shadowRoot.getElementById('btn-test-schedule-now');
+    if (testSchedBtn) {
+      testSchedBtn.addEventListener('click', () => {
+        log('⚡ Testing background scheduled trigger...', 'info');
+        chrome.runtime.sendMessage({ type: 'TRIGGER_TEST_SCHEDULE' }, (resp) => {
+          if (chrome.runtime.lastError) {
+            log(`❌ Background trigger error: ${chrome.runtime.lastError.message}`, 'err');
+          } else {
+            log('✓ Background service worker accepted schedule test trigger!', 'success');
+          }
+        });
+      });
+    }
 
     // Macro Recording Buttons
     const recBtn = shadowRoot.getElementById('btn-macro-record');
@@ -761,6 +799,40 @@ window.SnapStreakOverlay = (function() {
 
     updateFriendsCount();
     refreshMacroDropdowns();
+    updateScheduleUIStatus();
+  }
+
+  function updateScheduleUIStatus() {
+    if (!shadowRoot) return;
+    chrome.storage.local.get(['nextScheduledRunText', 'lastStreakSentDate', 'lastStreakSentTime', 'lastStreakStatus'], (res) => {
+      const nextRunEl = shadowRoot.getElementById('schedule-next-run');
+      const lastRunEl = shadowRoot.getElementById('schedule-last-run');
+      const syncPill = shadowRoot.getElementById('schedule-sync-pill');
+
+      if (syncPill) {
+        syncPill.textContent = config.scheduleEnabled ? '● Active' : '○ Disabled';
+        syncPill.style.color = config.scheduleEnabled ? 'var(--green)' : 'var(--text-dim)';
+      }
+
+      if (nextRunEl) {
+        if (!config.scheduleEnabled) {
+          nextRunEl.textContent = 'Next Run: Schedule Disabled';
+        } else if (res.nextScheduledRunText) {
+          nextRunEl.textContent = `Next Run: ${res.nextScheduledRunText}`;
+        } else {
+          nextRunEl.textContent = `Next Run: Daily at ${config.scheduleTime || '09:00'}`;
+        }
+      }
+
+      if (lastRunEl) {
+        if (res.lastStreakSentDate) {
+          const statusIcon = res.lastStreakStatus === 'success' ? '🔥' : '⚠️';
+          lastRunEl.textContent = `Last Run: ${res.lastStreakSentDate} at ${res.lastStreakSentTime || ''} (${statusIcon})`;
+        } else {
+          lastRunEl.textContent = 'Last Run: Not sent yet today';
+        }
+      }
+    });
   }
 
   return {
