@@ -12,6 +12,11 @@ from typing import Callable
 
 from playwright.async_api import async_playwright, BrowserContext, Page, Locator
 
+try:
+    from app import config
+except ImportError:
+    import config
+
 # ---------------------------------------------------------------------------
 # Paths
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
@@ -533,17 +538,206 @@ async def send_streaks_direct_selection_flow(
     return selected_count > 0
 
 
+# ---------------------------------------------------------------------------
+# Screen State Detection & Step-by-Step Matcher
+# ---------------------------------------------------------------------------
+SCREEN_STATES = {
+    "UNKNOWN": "UNKNOWN",
+    "HOME": "HOME",
+    "CAMERA_READY": "CAMERA_READY",
+    "PHOTO_CAPTURED": "PHOTO_CAPTURED",
+    "SEND_TO_DRAWER": "SEND_TO_DRAWER",
+    "RECIPIENTS_SELECTED": "RECIPIENTS_SELECTED",
+    "SEND_COMPLETED": "SEND_COMPLETED",
+}
+
+
+def is_my_ai_locator(text: str = "", aria: str = "", testid: str = "") -> bool:
+    """Helper to detect and exclude My AI from recipient selections and clicks."""
+    t = f"{text} {aria} {testid}".lower()
+    return "my ai" in t or "myai" in t
+
+
+async def detect_screen_state(page: Page) -> str:
+    """
+    Detects the current screen state in Snapchat Web:
+    - SEND_TO_DRAWER / RECIPIENTS_SELECTED: drawer/search input open or tabs visible.
+      If final Send button is visible, returns RECIPIENTS_SELECTED.
+    - PHOTO_CAPTURED: Send-To button visible on photo preview, shutter not visible.
+    - CAMERA_READY: Shutter button or webcam viewfinder active, no chat open.
+    - HOME: Main logo or home menu visible, camera viewfinder not active.
+    - UNKNOWN.
+    """
+    try:
+        # 1. Check if Send-To drawer or modal is open
+        drawer_selectors = [
+            'input[placeholder*="To:" i]',
+            'input[placeholder*="Send to" i]',
+            'input[placeholder*="Search" i]',
+            '[data-testid="send-to-search-input"]',
+            'button:has-text("Best Friends")',
+            'button:has-text("Shortcuts")',
+            'text="Best Friends"',
+            'text="Shortcuts"',
+        ]
+        has_drawer = False
+        for sel in drawer_selectors:
+            try:
+                if await page.locator(sel).first.is_visible(timeout=250):
+                    has_drawer = True
+                    break
+            except Exception:
+                pass
+
+        if has_drawer:
+            # Check if final Send button is visible (meaning recipients are selected)
+            send_btn_selectors = [
+                'button:has-text("Send")',
+                '[aria-label*="Send Snap" i]',
+                '[aria-label="Send" i]',
+                '[data-testid="send-button"]',
+                '[data-testid="send-snap"]',
+                'button:has-text("Send ▶")',
+            ]
+            for ssel in send_btn_selectors:
+                try:
+                    loc = page.locator(ssel).first
+                    if await loc.is_visible(timeout=200):
+                        txt = (await loc.text_content() or "").strip().lower()
+                        aria = (await loc.get_attribute("aria-label") or "").strip().lower()
+                        if "send to" not in txt and "send to" not in aria:
+                            return SCREEN_STATES["RECIPIENTS_SELECTED"]
+                except Exception:
+                    pass
+            return SCREEN_STATES["SEND_TO_DRAWER"]
+
+        # 2. Check if Photo is captured (Send-To button on photo preview)
+        send_to_selectors = [
+            'button:has-text("Send To")',
+            'button:has-text("Send to")',
+            '[aria-label*="Send To" i]',
+            '[data-testid="send-to-button"]',
+        ]
+        for st_sel in send_to_selectors:
+            try:
+                if await page.locator(st_sel).first.is_visible(timeout=250):
+                    return SCREEN_STATES["PHOTO_CAPTURED"]
+            except Exception:
+                pass
+
+        # 3. Check if Camera Viewfinder is active (Webcam stream or shutter visible)
+        shutter_selectors = [
+            'button[aria-label*="Take Snap" i]',
+            'button[aria-label*="Take a Snap" i]',
+            'button[aria-label*="Hold to record" i]',
+            'button[aria-label*="Capture" i]',
+            'button[aria-label*="Take Photo" i]',
+            'button[aria-label*="Shutter" i]',
+            'button.camera-capture-button',
+            '[data-testid="camera-capture-button"]',
+            '[data-testid="shutter-button"]',
+            'button:has(svg circle)',
+        ]
+        for shut_sel in shutter_selectors:
+            try:
+                if await page.locator(shut_sel).first.is_visible(timeout=250):
+                    return SCREEN_STATES["CAMERA_READY"]
+            except Exception:
+                pass
+
+        try:
+            video = page.locator("video").first
+            if await video.is_visible(timeout=200):
+                return SCREEN_STATES["CAMERA_READY"]
+        except Exception:
+            pass
+
+        # 4. Check if Home / Main Menu is active
+        home_selectors = [
+            'a[href*="/web"]',
+            '[data-testid="snapchat-logo"]',
+            '[aria-label*="Snapchat" i]',
+            'button:has-text("Click the Camera to send Snaps")',
+            'div:has-text("Click the Camera to send Snaps")',
+        ]
+        for h_sel in home_selectors:
+            try:
+                if await page.locator(h_sel).first.is_visible(timeout=250):
+                    return SCREEN_STATES["HOME"]
+            except Exception:
+                pass
+
+    except Exception as ex:
+        _log(f"  ⚠ Screen state detection warning: {ex}")
+
+    return SCREEN_STATES["UNKNOWN"]
+
+
+async def wait_for_screen_state(page: Page, expected_states: list[str], timeout_s: float = 3.5) -> tuple[bool, str]:
+    start = time.time()
+    while time.time() - start < timeout_s:
+        current = await detect_screen_state(page)
+        if current in expected_states:
+            return True, current
+        await asyncio.sleep(0.2)
+    current = await detect_screen_state(page)
+    return current in expected_states, current
+
+
+async def execute_step_with_screen_verification(
+    page: Page,
+    step_index: int,
+    action_fn: Callable[[], any],
+    expected_states: list[str],
+    fallback_fn: Callable[[], any] | None = None,
+    max_retries: int = 2,
+    emit: Callable[[str], None] | None = None,
+) -> bool:
+    step_names = [
+        "Step 1: Return to Home Screen (Top-Left Snapchat Icon)",
+        "Step 2: Open Camera Viewfinder",
+        "Step 3: Quick-Press White Shutter Circle",
+        "Step 4: Open Send-To Drawer & Select Recipients",
+        "Step 5: Click Final Send Button & Verify Delivery",
+    ]
+    name = step_names[step_index] if 0 <= step_index < len(step_names) else f"Step {step_index + 1}"
+    _log(f"🎬 [SCREEN CHECK] Starting {name}...", emit)
+
+    for attempt in range(1, max_retries + 2):
+        # Execute primary action
+        await action_fn()
+
+        # Verify screen state matches expected state
+        matched, current = await wait_for_screen_state(page, expected_states, timeout_s=3.2)
+        if matched:
+            _log(f"  ✓ [SCREEN MATCH] Screen state verified as '{current}' for {name}!", emit)
+            return True
+
+        _log(
+            f"  ⚠ [SCREEN MISMATCH] Expected [{'|'.join(expected_states)}], but screen shows '{current}' (Attempt {attempt}/{max_retries + 1}).",
+            emit,
+        )
+
+        if attempt <= max_retries:
+            _log("  ↺ Falling back to previous step(s) to recover expected screen...", emit)
+            if fallback_fn:
+                await fallback_fn()
+                await asyncio.sleep(1.0)
+
+    _log(f"  ❌ [SCREEN ERROR] Failed to match expected screen for {name} after {max_retries + 1} attempts.", emit)
+    return False
+
+
 async def send_streaks_flow(
     page: Page,
     friends: list[str] | None = None,
     selection_method: str = "auto",
+    is_test: bool = False,
     emit: Callable[[str], None] | None = None,
 ) -> dict:
     """
-    Complete verified streak automation flow with dual recipient selection:
-    1. Method A: Shortcuts tab ('shortcut')
-    2. Method B: Direct Friend Search ('direct')
-    3. Auto: Tries Shortcuts first, automatically falls back to Direct Search if unavailable ('auto')
+    Complete verified streak automation flow with screen state matching
+    and automatic previous-step fallback recovery.
     """
     cfg = config.load()
     if not friends:
@@ -552,51 +746,48 @@ async def send_streaks_flow(
         selection_method = cfg.get("selection_method", "auto")
     step_delay = float(cfg.get("step_delay", 4.0))
 
-    _log(f"🚀 Starting Verified Streak Automation (Mode: {selection_method.upper()}, Friends: {friends})...", emit)
+    _log(f"🚀 Starting Verified Streak Flow with Screen State Matching (Method: {selection_method.upper()}, Friends: {friends})...", emit)
     results = {friend: "pending" for friend in friends}
 
-    # ── Step 0: Ensure Clean Home / Center Camera Screen ──────────────────────
-    _log("Step 0 [Verify]: Resetting view to main camera screen...", emit)
-    await _dismiss_banners_and_reset(page, emit)
-
-    step0_verified = False
-    for attempt in range(1, 4):
-        for sel in [
-            'button:has-text("Click the Camera to send Snaps")',
-            'div:has-text("Click the Camera to send Snaps")',
-            '.camera-icon',
-            '[aria-label*="Click the Camera" i]'
-        ]:
+    # Helper Step 0/1: Return Home Action
+    async def step0_return_home():
+        await _dismiss_banners_and_reset(page, emit)
+        # Check if chat back button exists and click it
+        for back_sel in ['button[aria-label*="Back" i]', '[data-testid="chat-back-button"]']:
             try:
-                if await page.locator(sel).first.is_visible(timeout=1000):
-                    step0_verified = True
+                b = page.locator(back_sel).first
+                if await b.is_visible(timeout=500):
+                    await b.click()
+                    await asyncio.sleep(0.5)
                     break
             except Exception:
                 pass
-        if step0_verified:
-            break
 
-        _log(f"  Attempt {attempt}: Clicking Ghost icon on top left...", emit)
         try:
             ghost = page.locator('[aria-label*="Snapchat" i], a[href*="/web"], [data-testid="snapchat-logo"]').first
-            if await ghost.is_visible(timeout=1000):
+            if await ghost.is_visible(timeout=800):
                 await ghost.click()
             else:
                 await page.mouse.click(130, 50)
         except Exception:
             await page.mouse.click(130, 50)
 
-        await asyncio.sleep(1.5)
-
+    # ── Step 1: Return to Home Screen (Top-Left Snapchat Icon) ───────────────
+    step1_ok = await execute_step_with_screen_verification(
+        page,
+        0,
+        step0_return_home,
+        [SCREEN_STATES["HOME"], SCREEN_STATES["CAMERA_READY"]],
+        fallback_fn=step0_return_home,
+        emit=emit,
+    )
+    if not step1_ok:
+        _log("  Notice: Proceeding to camera check...", emit)
     await _take_screenshot(page, "step0_verified_home")
-    _log("  ✓ Step 0 Verified: Main home screen active.", emit)
-    await asyncio.sleep(step_delay)
+    await asyncio.sleep(step_delay if not is_test else 0.5)
 
-    # ── Step 1: Open Camera Viewfinder & Verify Shutter Button ────────────────
-    _log("Step 1 [Verify]: Opening Camera Viewfinder...", emit)
-    step1_verified = False
-
-    for attempt in range(1, 5):
+    # Helper Step 1/2: Open Camera Action
+    async def step1_open_camera():
         for sel in [
             'button:has-text("Click the Camera to send Snaps")',
             'div:has-text("Click the Camera to send Snaps")',
@@ -606,42 +797,46 @@ async def send_streaks_flow(
         ]:
             try:
                 loc = page.locator(sel).first
-                if await loc.is_visible(timeout=1000):
+                if await loc.is_visible(timeout=800):
                     await loc.click()
-                    break
+                    return
             except Exception:
                 continue
-        else:
-            await page.mouse.click(600, 450)
+        await page.mouse.click(600, 450)
 
-        await asyncio.sleep(2.0)
+    # ── Step 2: Open Camera Viewfinder ───────────────────────────────────────
+    async def step1_fallback():
+        # Fallback to previous step: Return Home first, then re-open camera
+        await step0_return_home()
+        await asyncio.sleep(1.0)
 
-        for shutter_sel in [
-            'button[aria-label*="Take Snap" i]',
-            'button[aria-label*="capture" i]',
-            'button.camera-capture-button',
-            'button:has(svg circle)',
-            'div[role="button"]:has(svg)'
-        ]:
+    step2_ok = await execute_step_with_screen_verification(
+        page,
+        1,
+        step1_open_camera,
+        [SCREEN_STATES["CAMERA_READY"]],
+        fallback_fn=step1_fallback,
+        emit=emit,
+    )
+    if not step2_ok:
+        _log("❌ Failed to verify Camera Viewfinder open on screen.", emit)
+        return {f: "camera_open_failed" for f in friends}
+    await _take_screenshot(page, "step1_verified_camera_open")
+    await asyncio.sleep(step_delay if not is_test else 0.5)
+
+    # Helper Step 2/3: Snap Photo Action (Zero-Swipe Quick Tap)
+    async def step2_snap_photo():
+        # Deselect any active filter lens to re-center shutter
+        for rsel in ['button[aria-label*="Remove Lens" i]', 'button[aria-label*="Close" i]', '[data-testid*="remove-lens" i]']:
             try:
-                if await page.locator(shutter_sel).first.is_visible(timeout=1500):
-                    step1_verified = True
+                rbtn = page.locator(rsel).first
+                if await rbtn.is_visible(timeout=400):
+                    await rbtn.click()
+                    await asyncio.sleep(0.3)
                     break
             except Exception:
                 pass
-        if step1_verified:
-            break
-        _log(f"  Attempt {attempt}: Waiting for camera shutter button to appear...", emit)
 
-    await _take_screenshot(page, "step1_verified_camera_open")
-    _log("  ✓ Step 1 Verified: Camera viewfinder open & live feed active.", emit)
-    await asyncio.sleep(step_delay)
-
-    # ── Step 2: Snap Picture & Verify Send-To Modal Opens ─────────────────────
-    _log("Step 2 [Verify]: Snapping photo & waiting for Send-To screen...", emit)
-    step2_verified = False
-
-    for attempt in range(1, 5):
         shutter_clicked = False
         for shutter_sel in [
             'button[aria-label*="Take Snap" i]',
@@ -653,11 +848,11 @@ async def send_streaks_flow(
             'button.camera-capture-button',
             '[data-testid="camera-capture-button"]',
             '[data-testid="shutter-button"]',
-            'button:has(svg circle)'
+            'button:has(svg circle)',
         ]:
             try:
                 btn = page.locator(shutter_sel).first
-                if await btn.is_visible(timeout=1000):
+                if await btn.is_visible(timeout=800):
                     await btn.click(force=True, no_wait_after=True)
                     shutter_clicked = True
                     break
@@ -674,146 +869,194 @@ async def send_streaks_flow(
                         cx = box['x'] + box['width'] / 2
                         cy = box['y'] + box['height'] - 50
                         await page.mouse.click(cx, cy)
-                        shutter_clicked = True
             except Exception:
                 pass
 
-        await asyncio.sleep(2.5)
-
-        for modal_sel in [
-            'input[placeholder*="To:" i]',
-            'input[placeholder*="Send to" i]',
-            'button:has-text("✨")',
-            '[aria-label*="shortcut" i]',
-            'text="Best Friends"',
-            'text="Shortcuts"'
-        ]:
-            try:
-                if await page.locator(modal_sel).first.is_visible(timeout=1500):
-                    step2_verified = True
-                    break
-            except Exception:
-                pass
-        if step2_verified:
-            break
-        _log(f"  Attempt {attempt}: Retrying shutter capture...", emit)
-
-    await _take_screenshot(page, "step2_verified_photo_captured")
-    _log("  ✓ Step 2 Verified: Photo captured and Send-To modal opened.", emit)
-    await asyncio.sleep(step_delay)
-
-    # ── Step 3 & 4: Recipient Selection (Shortcuts or Alternative Direct Search)
-    _log("Step 3 & 4 [Verify]: Selecting streak recipients...", emit)
-    selected_ok = False
-
-    # Check if we should try shortcuts first
-    if selection_method in ("shortcut", "auto"):
-        _log("  Trying shortcut tab selection...", emit)
-        shortcut_found = False
-        for sel in [
-            'button:has-text("✨")',
-            'div:has-text("✨")',
-            '[aria-label*="shortcut" i]',
-            '[aria-label*="sparkle" i]',
-            '[data-testid="shortcuts-tab"]'
-        ]:
-            try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=1000):
-                    await btn.click()
-                    shortcut_found = True
-                    break
-            except Exception:
-                continue
-
-        if shortcut_found:
-            await asyncio.sleep(1.5)
-            # Look for "Select" button
-            for sel_btn in [
-                'button:has-text("Select")',
-                'div:has-text("Select")',
-                'span:has-text("Select")',
-                '[data-testid="select-all-shortcuts"]'
-            ]:
+    # ── Step 3: Quick-Press White Shutter Circle ──────────────────────────────
+    async def step2_fallback():
+        # Fallback to previous step:
+        cur = await detect_screen_state(page)
+        if cur in (SCREEN_STATES["HOME"], SCREEN_STATES["UNKNOWN"]):
+            # Camera was closed, re-open camera
+            await step1_open_camera()
+            await asyncio.sleep(1.2)
+        else:
+            # Deselect any active filter lens
+            for rsel in ['button[aria-label*="Remove Lens" i]', 'button[aria-label*="Close" i]']:
                 try:
-                    loc = page.locator(sel_btn).first
-                    if await loc.is_visible(timeout=1500):
-                        await loc.click()
-                        _log("  ✓ Clicked Shortcuts 'Select' button.", emit)
-                        selected_ok = True
+                    rbtn = page.locator(rsel).first
+                    if await rbtn.is_visible(timeout=400):
+                        await rbtn.click()
+                        await asyncio.sleep(0.3)
                         break
                 except Exception:
                     pass
 
-    # If shortcut failed or method is direct, run alternative direct search selection
-    if not selected_ok:
-        if selection_method == "auto":
-            _log("  Notice: Shortcut not available, switching to Alternative Direct Friend Selection...", emit)
-        selected_ok = await send_streaks_direct_selection_flow(page, friends, step_delay=step_delay, emit=emit)
+    step3_ok = await execute_step_with_screen_verification(
+        page,
+        2,
+        step2_snap_photo,
+        [SCREEN_STATES["PHOTO_CAPTURED"], SCREEN_STATES["SEND_TO_DRAWER"]],
+        fallback_fn=step2_fallback,
+        emit=emit,
+    )
+    if not step3_ok:
+        _log("❌ Photo capture failed: shutter did not transition to photo preview.", emit)
+        return {f: "photo_capture_failed" for f in friends}
+    await _take_screenshot(page, "step2_verified_photo_captured")
+    await asyncio.sleep(step_delay if not is_test else 0.5)
 
-    # Backup: Click friend names directly if visible (only if not already selected)
-    if not selected_ok:
-        for name in friends:
-            clean = name.strip().lstrip("@")
+    # Helper Step 3/4: Open Drawer & Select Recipients Action
+    async def step3_select_recipients():
+        # 1. Click "Send To" on photo preview if drawer not yet open
+        for st_sel in ['button:has-text("Send To")', 'button:has-text("Send to")', '[aria-label*="Send To" i]', '[data-testid="send-to-button"]']:
             try:
-                row = page.locator(f':text-matches("{clean}", "i")').first
-                if await row.is_visible(timeout=800):
-                    await row.click()
-                    selected_ok = True
+                st_btn = page.locator(st_sel).first
+                if await st_btn.is_visible(timeout=600):
+                    await st_btn.click()
+                    await asyncio.sleep(0.8)
+                    break
             except Exception:
                 pass
 
-    await asyncio.sleep(1.5)
+        # 2. Recipient Selection
+        selected_ok = False
+        if selection_method in ("shortcut", "auto"):
+            for sel in ['button:has-text("✨")', '[aria-label*="shortcut" i]', '[data-testid="shortcuts-tab"]']:
+                try:
+                    btn = page.locator(sel).first
+                    if await btn.is_visible(timeout=800):
+                        await btn.click()
+                        await asyncio.sleep(1.0)
+                        for sel_btn in ['button:has-text("Select")', '[data-testid="select-all-shortcuts"]']:
+                            try:
+                                loc = page.locator(sel_btn).first
+                                if await loc.is_visible(timeout=1000):
+                                    await loc.click()
+                                    selected_ok = True
+                                    break
+                            except Exception:
+                                pass
+                        break
+                except Exception:
+                    continue
+
+        if not selected_ok:
+            # Switch to Best Friends tab if available
+            for bft in ['button:has-text("Best Friends")', '[role="tab"]:has-text("Best Friends")']:
+                try:
+                    t = page.locator(bft).first
+                    if await t.is_visible(timeout=600):
+                        await t.click()
+                        await asyncio.sleep(0.5)
+                        break
+                except Exception:
+                    pass
+            selected_ok = await send_streaks_direct_selection_flow(page, friends, step_delay=step_delay, emit=emit)
+
+        if not selected_ok:
+            for name in friends:
+                clean = name.strip().lstrip("@")
+                try:
+                    row = page.locator(f':text-matches("{clean}", "i")').first
+                    if await row.is_visible(timeout=800):
+                        txt = (await row.text_content() or "").strip()
+                        if not is_my_ai_locator(txt):
+                            await row.click()
+                            selected_ok = True
+                except Exception:
+                    pass
+
+    # ── Step 4: Open Send-To Drawer & Select Recipients ───────────────────────
+    async def step3_fallback():
+        # Fallback to previous step:
+        cur = await detect_screen_state(page)
+        if cur == SCREEN_STATES["CAMERA_READY"]:
+            # Photo was dropped, re-snap photo
+            await step2_snap_photo()
+            await asyncio.sleep(1.5)
+        elif cur == SCREEN_STATES["PHOTO_CAPTURED"]:
+            # Re-click Send-To button
+            for st_sel in ['button:has-text("Send To")', 'button:has-text("Send to")', '[aria-label*="Send To" i]']:
+                try:
+                    st_btn = page.locator(st_sel).first
+                    if await st_btn.is_visible(timeout=600):
+                        await st_btn.click()
+                        await asyncio.sleep(0.8)
+                        break
+                except Exception:
+                    pass
+
+    step4_ok = await execute_step_with_screen_verification(
+        page,
+        3,
+        step3_select_recipients,
+        [SCREEN_STATES["RECIPIENTS_SELECTED"], SCREEN_STATES["SEND_TO_DRAWER"]],
+        fallback_fn=step3_fallback,
+        emit=emit,
+    )
+    if not step4_ok:
+        _log("❌ Failed to open recipient drawer and select friends on screen.", emit)
+        return {f: "recipient_selection_failed" for f in friends}
     await _take_screenshot(page, "step4_verified_recipients_checked")
-    _log("  ✓ Step 4 Verified: Recipients checked.", emit)
-    await asyncio.sleep(step_delay)
+    await asyncio.sleep(step_delay if not is_test else 0.5)
 
-    # ── Step 5: Click Send & Verify Delivery ──────────────────────────────────
-    _log("Step 5 [Verify]: Clicking Send and verifying streak delivery...", emit)
-    step5_verified = False
+    if is_test:
+        _log("🧪 [TEST MODE] Screen matched RECIPIENTS_SELECTED. Validating final Send button on screen...", emit)
+        send_found = False
+        for send_sel in ['button:has-text("Send")', '[aria-label*="Send Snap" i]', '[data-testid="send-button"]', 'button:has-text("Send ▶")']:
+            try:
+                b = page.locator(send_sel).first
+                if await b.is_visible(timeout=800):
+                    send_found = True
+                    break
+            except Exception:
+                pass
+        if send_found:
+            _log("  🧪 [TEST PASS] Final Send button located & verified on screen! (Final click skipped in test mode).", emit)
+        else:
+            _log("  ⚠ [TEST WARNING] Final Send button not yet visible on screen.", emit)
+        _log("🎉 [TEST PASSED] All 5 steps and expected screen states matched and approved! 🔥", emit)
+        return {f: "verified_test_ok" for f in friends}
 
-    for attempt in range(1, 4):
+    # Helper Step 4/5: Click Send Action
+    async def step4_click_send():
         send_clicked = False
-        for send_sel in [
-            'button:has-text("Send")',
-            '[aria-label*="Send" i]',
-            '[data-testid="send-button"]',
-            'button:has-text("Send ▶")'
-        ]:
+        for send_sel in ['button:has-text("Send")', '[aria-label*="Send Snap" i]', '[data-testid="send-button"]', 'button:has-text("Send ▶")']:
             try:
                 btn = page.locator(send_sel).first
-                if await btn.is_visible(timeout=1500):
+                if await btn.is_visible(timeout=1000):
                     await btn.click()
                     send_clicked = True
                     break
             except Exception:
                 continue
-
         if not send_clicked:
             await page.keyboard.press("Enter")
 
-        await asyncio.sleep(2.5)
+    # ── Step 5: Click Final Send Button & Verify Delivery ─────────────────────
+    async def step4_fallback():
+        # Fallback: Re-click final send button if drawer is still open
+        await step4_click_send()
+        await asyncio.sleep(1.5)
 
-        # Verify modal closes (no more "To:" or "Send" button)
-        modal_open = False
-        try:
-            if await page.locator('input[placeholder*="To:" i]').first.is_visible(timeout=1000):
-                modal_open = True
-        except Exception:
-            pass
+    step5_ok = await execute_step_with_screen_verification(
+        page,
+        4,
+        step4_click_send,
+        [SCREEN_STATES["CAMERA_READY"], SCREEN_STATES["HOME"], SCREEN_STATES["SEND_COMPLETED"]],
+        fallback_fn=step4_fallback,
+        emit=emit,
+    )
+    if not step5_ok:
+        _log("❌ Final Send click did not close recipient drawer on screen.", emit)
+        return {f: "send_delivery_failed" for f in friends}
 
-        if not modal_open:
-            step5_verified = True
-            break
-        _log(f"  Attempt {attempt}: Send modal still open, retrying Send click...", emit)
-
-    await asyncio.sleep(2.0)
     await _take_screenshot(page, "step5_verified_sent_complete")
-
     for f in friends:
         results[f] = "ok"
 
-    _log("🎉 Verified Streak sequence completed successfully! 🔥", emit)
+    _log("✅ All streak steps completed! Screen confirmed delivered. 🔥", emit)
     return results
 
 

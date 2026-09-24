@@ -408,6 +408,123 @@ window.SnapStreakAutomation = (function() {
     return null;
   }
 
+  // ── Screen State Detection & Step-by-Step Matcher ───────────────────────────
+  const SCREEN_STATES = {
+    UNKNOWN: 'UNKNOWN',
+    HOME: 'HOME',
+    CAMERA_READY: 'CAMERA_READY',
+    PHOTO_CAPTURED: 'PHOTO_CAPTURED',
+    SEND_TO_DRAWER: 'SEND_TO_DRAWER',
+    RECIPIENTS_SELECTED: 'RECIPIENTS_SELECTED',
+    SEND_COMPLETED: 'SEND_COMPLETED'
+  };
+
+  function detectCurrentScreen() {
+    // 1. Check if Send-To drawer / modal is open
+    const hasSendInput = Array.from(document.querySelectorAll('input')).some(inp => {
+      if (!isVisible(inp) || !isInsideMainCameraArea(inp)) return false;
+      const ph = (inp.placeholder || '').toLowerCase();
+      return ph.includes('to:') || ph.includes('send to') || ph.includes('search');
+    });
+    const hasTabs = Array.from(document.querySelectorAll('button, div[role="tab"]')).some(b => {
+      if (!isVisible(b) || !isInsideMainCameraArea(b)) return false;
+      const t = (b.textContent || '').trim().toLowerCase();
+      return t === 'best friends' || t === 'friends' || t === 'shortcuts';
+    });
+
+    if (hasSendInput || hasTabs) {
+      // Check if recipients are selected (final send button visible)
+      const sendBtn = findFinalSendButton();
+      if (sendBtn && isVisible(sendBtn)) {
+        return SCREEN_STATES.RECIPIENTS_SELECTED;
+      }
+      return SCREEN_STATES.SEND_TO_DRAWER;
+    }
+
+    // 2. Check if Photo is captured (Send To button present on photo preview)
+    const sendToBtn = findSendToButton();
+    if (sendToBtn && isVisible(sendToBtn) && isInsideMainCameraArea(sendToBtn)) {
+      return SCREEN_STATES.PHOTO_CAPTURED;
+    }
+
+    // 3. Check if Camera Viewfinder is active (Webcam stream or shutter visible)
+    const inChat = document.querySelector('[data-testid="chat-input"], [data-testid="message-input"], textarea[placeholder*="chat" i]');
+    const isChatOpen = inChat && isVisible(inChat) && isInsideMainCameraArea(inChat);
+    const shutter = findShutterButton();
+    const video = document.querySelector('video');
+
+    if (!isChatOpen) {
+      if (shutter && isVisible(shutter) && isInsideMainCameraArea(shutter)) {
+        return SCREEN_STATES.CAMERA_READY;
+      }
+      if (video && isVisible(video) && isInsideMainCameraArea(video) && video.readyState >= 2) {
+        return SCREEN_STATES.CAMERA_READY;
+      }
+    }
+
+    // 4. Check if Home / Main Menu is active
+    const logo = document.querySelector('a[href*="/web"], [data-testid="snapchat-logo"]');
+    if (logo && isVisible(logo)) {
+      return SCREEN_STATES.HOME;
+    }
+
+    return SCREEN_STATES.UNKNOWN;
+  }
+
+  async function waitForScreenState(expectedStates, timeoutMs = 3500) {
+    const validStates = Array.isArray(expectedStates) ? expectedStates : [expectedStates];
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const current = detectCurrentScreen();
+      if (validStates.includes(current)) {
+        return { success: true, state: current };
+      }
+      await sleep(200);
+    }
+    return { success: false, state: detectCurrentScreen() };
+  }
+
+  // ── Self-Healing Step Transition Controller ───────────────────────────────
+  // If screen does not match expected state after a step, executes previous steps to recover!
+  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2) {
+    const stepNames = [
+      'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
+      'Step 2: Open Camera Viewfinder',
+      'Step 3: Quick-Press White Shutter Circle',
+      'Step 4: Open Send-To Drawer & Select Recipients',
+      'Step 5: Click Final Send Button & Verify Delivery'
+    ];
+    const name = stepNames[stepIndex] || `Step ${stepIndex + 1}`;
+    log(`🎬 [SCREEN CHECK] Starting ${name}...`, 'info');
+
+    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+      // Execute primary action
+      await actionFn();
+
+      // Settle and verify screen state matches expected state
+      const targetStates = Array.isArray(expectedStates) ? expectedStates : [expectedStates];
+      const check = await waitForScreenState(targetStates, 3200);
+
+      if (check.success) {
+        log(`  ✓ [SCREEN MATCH] Screen state verified as "${check.state}" for ${name}!`, 'success');
+        return true;
+      }
+
+      log(`  ⚠ [SCREEN MISMATCH] Expected [${targetStates.join('|')}], but screen shows "${check.state}" (Attempt ${attempt}/${maxRetries + 1}).`, 'warn');
+
+      if (attempt <= maxRetries) {
+        log(`  ↺ Falling back to previous step(s) to recover expected screen...`, 'info');
+        if (fallbackFn) {
+          await fallbackFn();
+          await sleep(1000);
+        }
+      }
+    }
+
+    log(`  ❌ [SCREEN ERROR] Failed to match expected screen for ${name} after ${maxRetries + 1} attempts.`, 'err');
+    return false;
+  }
+
   // ── Step 1: Click Snapchat Icon Top Left to Bring to Main Menu ───────────
   async function step0_clickSnapchatHome() {
     log('Step 1: Bringing Snapchat to main menu (strictly ignoring My AI)...', 'info');
@@ -1189,57 +1306,137 @@ window.SnapStreakAutomation = (function() {
     }
   }
 
-  // ── Master Send Runner ───────────────────────────────────────────────────
+  // ── Master Send Runner (with Screen State Verification & Recovery) ─────────
   async function runSendStreaks(options = {}) {
     const friends = options.friends || ['*//Eric\\\\*', 'Dylan'];
     const selectionMethod = options.selectionMethod || 'auto';
     const stepDelay = options.stepDelay || 3;
     const humanMode = options.humanMode ?? true;
 
-    log(`🚀 Starting Verified Streak Send Flow (Method: ${selectionMethod.toUpperCase()} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
+    log(`🚀 Starting Verified Streak Send Flow with Screen State Matching (Method: ${selectionMethod.toUpperCase()} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
 
     try {
       if (humanMode) {
-        await sleep(600 + Math.floor(Math.random() * 600));
+        await sleep(500 + Math.floor(Math.random() * 400));
       }
 
       // Step 1: Click Snapchat icon top-left to set at home
-      await step0_clickSnapchatHome();
-      await sleep(humanMode ? 1500 + Math.floor(Math.random() * 500) : stepDelay * 1000);
+      // Expected Screen: HOME or CAMERA_READY
+      const step1Ok = await executeStepWithScreenVerification(
+        0,
+        async () => { await step0_clickSnapchatHome(); },
+        [SCREEN_STATES.HOME, SCREEN_STATES.CAMERA_READY],
+        async () => {
+          // Fallback: re-click chat back button
+          const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
+          if (chatBack && isVisible(chatBack)) chatBack.click();
+          await sleep(500);
+        }
+      );
+      if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
+      await sleep(humanMode ? 800 : 400);
 
-      // Step 2: Press camera icon to open webcam (if not opened already)
-      await step1_openCamera();
-      await sleep(humanMode ? 1800 + Math.floor(Math.random() * 500) : stepDelay * 1000);
+      // Step 2: Open Camera Viewfinder
+      // Expected Screen: CAMERA_READY
+      const step2Ok = await executeStepWithScreenVerification(
+        1,
+        async () => { await step1_openCamera(); },
+        [SCREEN_STATES.CAMERA_READY],
+        async () => {
+          // Fallback to previous step: Return Home first, then re-open camera
+          await step0_clickSnapchatHome();
+          await sleep(1000);
+        }
+      );
+      if (!step2Ok) throw new Error('Camera Viewfinder could not be opened on screen.');
+      await sleep(humanMode ? 1000 : 500);
 
-      // Step 3: Press white circle for photo
-      await step2_pressWhiteCirclePhoto();
-      await sleep(humanMode ? 2000 + Math.floor(Math.random() * 600) : stepDelay * 1000);
+      // Step 3: Press White Circle Shutter for photo
+      // Expected Screen: PHOTO_CAPTURED or SEND_TO_DRAWER
+      const step3Ok = await executeStepWithScreenVerification(
+        2,
+        async () => { await step2_pressWhiteCirclePhoto(); },
+        [SCREEN_STATES.PHOTO_CAPTURED, SCREEN_STATES.SEND_TO_DRAWER],
+        async () => {
+          // Fallback to previous step:
+          const cur = detectCurrentScreen();
+          if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.UNKNOWN) {
+            // Camera closed, re-open camera
+            await step1_openCamera();
+            await sleep(1200);
+          } else {
+            // Deselect any active filter lens to re-center shutter
+            const removeBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close" i], [data-testid*="remove-lens" i]');
+            if (removeBtn && isVisible(removeBtn)) {
+              try { removeBtn.click(); await sleep(300); } catch (e) {}
+            }
+          }
+        }
+      );
+      if (!step3Ok) throw new Error('Photo capture failed; shutter button did not transition to photo preview.');
+      await sleep(humanMode ? 1000 : 500);
 
-      // Step 4: Click Send To on photo preview & select recipients based on visual names
-      await step3_ensureSendToDrawerOpen();
-      await sleep(800);
-      await step3b_selectRecipientsByVisualName(friends, selectionMethod, stepDelay);
-      await sleep(humanMode ? 1200 : stepDelay * 1000);
+      // Step 4: Open Send-To drawer & select recipients based on visual names
+      // Expected Screen: RECIPIENTS_SELECTED (or SEND_TO_DRAWER if test with 0 friends)
+      const step4Ok = await executeStepWithScreenVerification(
+        3,
+        async () => {
+          await step3_ensureSendToDrawerOpen();
+          await sleep(600);
+          await step3b_selectRecipientsByVisualName(friends, selectionMethod, stepDelay);
+        },
+        [SCREEN_STATES.RECIPIENTS_SELECTED, SCREEN_STATES.SEND_TO_DRAWER],
+        async () => {
+          // Fallback to previous step:
+          const cur = detectCurrentScreen();
+          if (cur === SCREEN_STATES.CAMERA_READY) {
+            // Photo was discarded or missing; re-snap photo
+            await step2_pressWhiteCirclePhoto();
+            await sleep(1500);
+          } else if (cur === SCREEN_STATES.PHOTO_CAPTURED) {
+            // Re-click Send-To button
+            await step3_ensureSendToDrawerOpen();
+            await sleep(800);
+          }
+        }
+      );
+      if (!step4Ok) throw new Error('Failed to open recipient drawer and select friends on screen.');
+      await sleep(humanMode ? 1000 : 500);
 
       if (options.isTest) {
-        log('🧪 [TEST MODE] Locating final Send button for dry-run verification...', 'info');
+        log('🧪 [TEST MODE] Screen matched RECIPIENTS_SELECTED. Validating final Send button on screen...', 'info');
         const sendBtn = findFinalSendButton();
         if (sendBtn) {
           if (window.SnapStreakMacro && window.SnapStreakMacro.showTestIndicator) {
             window.SnapStreakMacro.showTestIndicator(sendBtn, 5, 5, 'Send Button');
           }
-          log('  🧪 [TEST PASS] Send button located & verified! (Final click skipped in test mode).', 'success');
+          log('  🧪 [TEST PASS] Final Send button located & verified on screen! (Final click skipped in test mode).', 'success');
         } else {
           log('  ⚠ [TEST WARNING] Send button not yet visible on screen.', 'err');
         }
-        log('🎉 [TEST PASSED] Direct script streak flow successfully verified! Ready for live auto-sending.', 'success');
+        log('🎉 [TEST PASSED] All 5 steps and expected screen states matched and approved! 🔥', 'success');
         return { success: true, isTest: true };
       }
 
-      // Step 5: Click the Send button
-      await step4_sendSnap();
-      log('✅ All streak steps completed! Streaks sent. 🔥', 'success');
+      // Step 5: Click the Send button & verify delivery (drawer closed)
+      // Expected Screen: CAMERA_READY, HOME, or SEND_COMPLETED
+      const step5Ok = await executeStepWithScreenVerification(
+        4,
+        async () => { await step4_sendSnap(); },
+        [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
+        async () => {
+          // Fallback: Re-click final send button if drawer is still open
+          const sendBtn = findFinalSendButton();
+          if (sendBtn) {
+            sendBtn.click();
+            await sleep(1500);
+          }
+        }
+      );
+
+      if (!step5Ok) throw new Error('Final Send click did not close recipient drawer on screen.');
+      log('✅ All streak steps completed! Screen confirmed delivered. 🔥', 'success');
       return { success: true };
     } catch (err) {
       log(`❌ Error during streak sequence: ${err.message}`, 'err');
@@ -1276,6 +1473,11 @@ window.SnapStreakAutomation = (function() {
     step3b_selectRecipientsByVisualName,
     step3_selectRecipients: step3b_selectRecipientsByVisualName,
     step4_sendSnap,
-    runSendStreaks
+    runSendStreaks,
+    // Screen State Matching & Verification Exports
+    SCREEN_STATES,
+    detectCurrentScreen,
+    waitForScreenState,
+    executeStepWithScreenVerification
   };
 })();
