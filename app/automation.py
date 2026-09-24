@@ -645,20 +645,38 @@ async def send_streaks_flow(
         shutter_clicked = False
         for shutter_sel in [
             'button[aria-label*="Take Snap" i]',
-            'button[aria-label*="capture" i]',
+            'button[aria-label*="Take a Snap" i]',
+            'button[aria-label*="Hold to record" i]',
+            'button[aria-label*="Capture" i]',
+            'button[aria-label*="Take Photo" i]',
+            'button[aria-label*="Shutter" i]',
             'button.camera-capture-button',
+            '[data-testid="camera-capture-button"]',
+            '[data-testid="shutter-button"]',
             'button:has(svg circle)'
         ]:
             try:
                 btn = page.locator(shutter_sel).first
                 if await btn.is_visible(timeout=1000):
-                    await btn.click()
+                    await btn.click(force=True, no_wait_after=True)
                     shutter_clicked = True
                     break
             except Exception:
                 continue
+
         if not shutter_clicked:
-            await page.keyboard.press("Space")
+            # Fallback: exact center tap at camera center bottom (zero horizontal delta)
+            try:
+                video = page.locator('video').first
+                if await video.is_visible(timeout=500):
+                    box = await video.bounding_box()
+                    if box:
+                        cx = box['x'] + box['width'] / 2
+                        cy = box['y'] + box['height'] - 50
+                        await page.mouse.click(cx, cy)
+                        shutter_clicked = True
+            except Exception:
+                pass
 
         await asyncio.sleep(2.5)
 
@@ -1074,9 +1092,15 @@ async def _send_to_friend(page: Page, username: str, emit) -> str:
         # Camera mode: Click snap capture shutter button if camera is active
         for sel in [
             'button[aria-label*="Take Snap" i]',
-            'button[aria-label*="capture" i]',
+            'button[aria-label*="Take a Snap" i]',
+            'button[aria-label*="Hold to record" i]',
+            'button[aria-label*="Capture" i]',
+            'button[aria-label*="Take Photo" i]',
+            'button[aria-label*="Shutter" i]',
             '[data-testid="camera-capture-button"]',
+            '[data-testid="shutter-button"]',
             'button.camera-capture-button',
+            'button:has(svg circle)'
         ]:
             try:
                 cap_btn = await page.query_selector(sel)

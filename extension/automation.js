@@ -557,56 +557,12 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
+  // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
   function findShutterButton() {
     const cameraBox = getMainCameraBox();
     const scope = cameraBox || document;
 
-    // 1. Explicit aria-label for shutter capture (excluding lens/filter labels)
-    const exactSelectors = [
-      'button[aria-label*="Take Snap" i]',
-      'button[aria-label*="Take a Snap" i]',
-      'button[aria-label*="Capture" i]',
-      'button[aria-label*="Take Photo" i]',
-      'button[aria-label*="Record" i]',
-      'button[aria-label*="Shutter" i]',
-      'button.camera-capture-button',
-      '[data-testid="take-snap"]',
-      '[data-testid="camera-capture-button"]',
-      '[data-testid="shutter-button"]',
-      '[data-testid*="capture" i]'
-    ];
-    for (const sel of exactSelectors) {
-      try {
-        const matches = scope.querySelectorAll(sel);
-        for (const el of matches) {
-          if (isVisible(el) && isInsideMainCameraArea(el) && !isMyAI(el)) {
-            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-            if (!aria.includes('lens') && !aria.includes('filter') && !aria.includes('effect') && !aria.includes('by ')) {
-              if (!el.querySelector('img')) {
-                return el;
-              }
-            }
-          }
-        }
-      } catch (e) {}
-    }
-
-    // 2. Buttons with SVG circle (Snapchat's classic white circle shutter)
-    try {
-      const svgCircleButtons = scope.querySelectorAll('button:has(svg circle), button:has(circle), [role="button"]:has(svg circle)');
-      for (const btn of svgCircleButtons) {
-        if (!isVisible(btn) || !isInsideMainCameraArea(btn) || isMyAI(btn)) continue;
-        const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-        if (aria.includes('lens') || aria.includes('filter') || aria.includes('effect') || aria.includes('by ')) continue;
-        if (btn.querySelector('img')) continue;
-        const r = btn.getBoundingClientRect();
-        if (r.top > window.innerHeight * 0.35 && r.width >= 45 && r.width <= 140) {
-          return btn;
-        }
-      }
-    } catch (e) {}
-
-    // 3. Geometric scan: Align strictly with the webcam <video> element center
+    // Center reference: Align strictly with the webcam <video> element center
     const video = document.querySelector('video');
     let cameraCenterX;
     if (video && isVisible(video) && isInsideMainCameraArea(video)) {
@@ -620,6 +576,50 @@ window.SnapStreakAutomation = (function() {
       cameraCenterX = sideEdge + (window.innerWidth - sideEdge) / 2;
     }
 
+    // 1. Explicit aria-label for shutter capture (excluding lens/filter labels)
+    const exactSelectors = [
+      'button[aria-label*="Take Snap" i]',
+      'button[aria-label*="Take a Snap" i]',
+      'button[aria-label*="Capture" i]',
+      'button[aria-label*="Take Photo" i]',
+      'button[aria-label*="Take Picture" i]',
+      'button[aria-label*="Hold to record" i]',
+      'button[aria-label*="Record" i]',
+      'button[aria-label*="Shutter" i]',
+      'button.camera-capture-button',
+      '[data-testid="take-snap"]',
+      '[data-testid="camera-capture-button"]',
+      '[data-testid="shutter-button"]',
+      '[data-testid*="capture" i]'
+    ];
+
+    let candidateShutter = null;
+    let minCandidateDist = Infinity;
+
+    for (const sel of exactSelectors) {
+      try {
+        const matches = scope.querySelectorAll(sel);
+        for (const el of matches) {
+          if (isVisible(el) && isInsideMainCameraArea(el) && !isMyAI(el)) {
+            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+            if (!aria.includes('lens') && !aria.includes('filter') && !aria.includes('effect') && !aria.includes('by ')) {
+              if (!el.querySelector('img')) {
+                const r = el.getBoundingClientRect();
+                const dist = Math.abs((r.left + r.width / 2) - cameraCenterX);
+                if (dist <= 35 && dist < minCandidateDist) {
+                  minCandidateDist = dist;
+                  candidateShutter = el;
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (candidateShutter) return candidateShutter;
+
+    // 2. Geometric scan: Only buttons strictly centered within 30px of cameraCenterX
     const allButtons = scope.querySelectorAll('button, div[role="button"]');
     let bestShutter = null;
     let minDistanceToCenter = Infinity;
@@ -630,39 +630,56 @@ window.SnapStreakAutomation = (function() {
       if (btn.querySelector('img')) continue;
 
       const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-      // EXCLUDE LENSES, FILTERS, AND UNRELATED CONTROLS
+      // STRICTLY EXCLUDE LENSES, FILTERS, CAROUSEL CONTROLS
       if (aria.includes('lens') || aria.includes('filter') || aria.includes('effect') ||
           aria.includes('by ') || aria.includes('browse') || aria.includes('explore') ||
           aria.includes('sound') || aria.includes('music') || aria.includes('timer') ||
           aria.includes('grid') || aria.includes('flash') || aria.includes('flip')) continue;
 
       const r = btn.getBoundingClientRect();
-      // Shutter button is circular, in lower half of screen, diameter between 48px and 125px
+      // Shutter button is circular, in lower half of screen, diameter between 40px and 130px
       const isCircular = Math.abs(r.width - r.height) <= 18;
       const isLowerHalf = r.top > window.innerHeight * 0.40;
-      const isValidSize = r.width >= 48 && r.width <= 125;
+      const isValidSize = r.width >= 40 && r.width <= 130;
 
       if (isCircular && isLowerHalf && isValidSize) {
         const btnCenterX = r.left + r.width / 2;
         const distFromCenter = Math.abs(btnCenterX - cameraCenterX);
 
-        // Strictly minimize distance to center: the shutter is right at cameraCenterX
-        // (Lens carousel items are offset horizontally to the left and right)
-        if (distFromCenter < 90 && distFromCenter < minDistanceToCenter) {
+        // MUST be strictly within 30px of center! Lenses are 50px+ offset
+        if (distFromCenter <= 30 && distFromCenter < minDistanceToCenter) {
           minDistanceToCenter = distFromCenter;
           bestShutter = btn;
         }
       }
     }
 
-    return bestShutter;
+    if (bestShutter) return bestShutter;
+
+    // 3. Fallback: Buttons with SVG circle strictly centered in camera area
+    try {
+      const svgCircleButtons = scope.querySelectorAll('button:has(svg circle), button:has(circle), [role="button"]:has(svg circle)');
+      for (const btn of svgCircleButtons) {
+        if (!isVisible(btn) || !isInsideMainCameraArea(btn) || isMyAI(btn)) continue;
+        const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+        if (aria.includes('lens') || aria.includes('filter') || aria.includes('effect') || aria.includes('by ')) continue;
+        if (btn.querySelector('img')) continue;
+        const r = btn.getBoundingClientRect();
+        const btnCenterX = r.left + r.width / 2;
+        if (r.top > window.innerHeight * 0.35 && r.width >= 40 && r.width <= 140 && Math.abs(btnCenterX - cameraCenterX) <= 30) {
+          return btn;
+        }
+      }
+    } catch (e) {}
+
+    return null;
   }
 
   // ── Step 3: Press Take Picture Button (Quick Press, Zero Swipe) ─────────────
   async function step2_pressWhiteCirclePhoto() {
     log('Step 3: Pressing take picture button (quick press, zero swipe)...', 'info');
 
-    // Deselect/close any accidentally active filter lens first
+    // Deselect/close any accidentally active filter lens first to restore center shutter
     const removeLensSelectors = [
       'button[aria-label*="Remove Lens" i]',
       'button[aria-label*="Close Lens" i]',
@@ -678,7 +695,7 @@ window.SnapStreakAutomation = (function() {
       if (removeBtn && isVisible(removeBtn) && isInsideMainCameraArea(removeBtn) && !isMyAI(removeBtn)) {
         try {
           removeBtn.click();
-          await sleep(200);
+          await sleep(250);
           break;
         } catch (e) {}
       }
@@ -686,19 +703,20 @@ window.SnapStreakAutomation = (function() {
 
     let shutter = findShutterButton();
 
-    // Fallback: Check element at camera center bottom if not found by selector
+    // Determine camera center coordinates for fallback
+    const video = document.querySelector('video');
+    let targetX, targetY;
+    if (video && isVisible(video) && isInsideMainCameraArea(video)) {
+      const vr = video.getBoundingClientRect();
+      targetX = Math.round(vr.left + vr.width / 2);
+      targetY = Math.round(vr.bottom - 50);
+    } else {
+      const sideEdge = getSideMenuRightEdge();
+      targetX = Math.round(sideEdge + (window.innerWidth - sideEdge) / 2);
+      targetY = Math.round(window.innerHeight - 80);
+    }
+
     if (!shutter) {
-      const video = document.querySelector('video');
-      let targetX, targetY;
-      if (video && isVisible(video) && isInsideMainCameraArea(video)) {
-        const vr = video.getBoundingClientRect();
-        targetX = Math.round(vr.left + vr.width / 2);
-        targetY = Math.round(vr.bottom - 60);
-      } else {
-        const sideEdge = getSideMenuRightEdge();
-        targetX = Math.round(sideEdge + (window.innerWidth - sideEdge) / 2);
-        targetY = Math.round(window.innerHeight - 100);
-      }
       const pointEl = document.elementFromPoint(targetX, targetY);
       if (pointEl && isInsideMainCameraArea(pointEl) && !isMyAI(pointEl)) {
         shutter = pointEl.closest('button, div[role="button"]') || pointEl;
@@ -710,73 +728,61 @@ window.SnapStreakAutomation = (function() {
       const centerX = Math.round(rect.left + rect.width / 2);
       const centerY = Math.round(rect.top + rect.height / 2);
 
-      // Clean instant quick press: EXACT same coordinates for down & up, 0 movement (zero swipe!)
-      const pointerDown = new PointerEvent('pointerdown', {
+      // Focus the button cleanly
+      try { shutter.focus(); } catch (e) {}
+
+      // Clean instant quick press: 0 delay between down and up, 0 movement (zero swipe!)
+      // No dwell/hold to prevent gesture recognizer from starting a carousel slide or video record
+      const eventOpts = {
         bubbles: true,
         cancelable: true,
         view: window,
         clientX: centerX,
         clientY: centerY,
+        screenX: centerX,
+        screenY: centerY,
+        button: 0,
+        buttons: 1,
         pointerId: 1,
         pointerType: 'mouse',
-        isPrimary: true,
-        button: 0,
-        buttons: 1
-      });
-      const mouseDown = new MouseEvent('mousedown', {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 1
-      });
+        isPrimary: true
+      };
 
-      shutter.dispatchEvent(pointerDown);
-      shutter.dispatchEvent(mouseDown);
+      shutter.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
+      shutter.dispatchEvent(new MouseEvent('mousedown', eventOpts));
 
-      // Quick tap delay: 40ms only (prevents holding/video recording or swipe gestures)
-      await sleep(40);
-
-      const pointerUp = new PointerEvent('pointerup', {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: centerX,
-        clientY: centerY,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true,
-        button: 0,
-        buttons: 0
-      });
-      const mouseUp = new MouseEvent('mouseup', {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 0
-      });
-      const clickEvt = new MouseEvent('click', {
+      // Immediate release with identical coordinates (prevents carousel drag/swipe)
+      eventOpts.buttons = 0;
+      shutter.dispatchEvent(new PointerEvent('pointerup', eventOpts));
+      shutter.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+      shutter.dispatchEvent(new MouseEvent('click', {
         bubbles: true,
         cancelable: true,
         view: window,
         clientX: centerX,
         clientY: centerY,
         button: 0
-      });
+      }));
 
-      shutter.dispatchEvent(pointerUp);
-      shutter.dispatchEvent(mouseUp);
-      shutter.dispatchEvent(clickEvt);
+      // Native click dispatch
       shutter.click();
+
+      // Keyboard Enter trigger on focused shutter as secondary guarantee
+      try {
+        shutter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        shutter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      } catch (e) {}
 
       log('  ✓ Quick-pressed center white circle capture button (zero swipe)!', 'success');
     } else {
-      log('  Notice: Shutter button element not found at camera center.', 'err');
+      // Direct center element click fallback
+      const pointEl = document.elementFromPoint(targetX, targetY);
+      if (pointEl) {
+        pointEl.click();
+        log('  ✓ Clicked camera center capture point directly.', 'success');
+      } else {
+        log('  Notice: Shutter button element not found at camera center.', 'err');
+      }
     }
 
     // Wait for photo capture transition (shutter disappears, photo preview renders)

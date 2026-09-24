@@ -14,7 +14,7 @@ set "BRAVE_EXE=%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"
 REM Clear stale browser instances to prevent "Snapchat open in another tab" errors
 echo [1/3] Clearing stale background browser sessions...
 taskkill /F /IM brave.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 
 REM Refresh latest live SJSU meteorology frame into webcam.y4m
 if exist ".venv\Scripts\python.exe" (
