@@ -156,6 +156,18 @@
 
   // Listen for scheduled automation requests from background service worker
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.type === 'CANCEL_RUNNING_COMMAND') {
+      console.log('[SnapStreak Content] Received CANCEL_RUNNING_COMMAND.');
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) {
+        window.SnapStreakAutomation.cancel();
+      }
+      if (window.SnapStreakOverlay && window.SnapStreakOverlay.setRunning) {
+        window.SnapStreakOverlay.setRunning(false);
+      }
+      sendResponse({ status: 'cancelled' });
+      return true;
+    }
+
     if (request.type === 'TRIGGER_SCHEDULED_SEND') {
       console.log('[SnapStreak] Received scheduled send trigger from background alarm.');
       sendResponse({ status: 'started' }); // Acknowledge receipt immediately

@@ -307,6 +307,10 @@ window.SnapStreakMacro = (function() {
       log(`🚀 [MACRO SEND] Executing Primary Macro: "${macro.name}" (${macro.steps.length} steps)...`, 'info');
     }
 
+    if (window.SnapStreakAutomation && window.SnapStreakAutomation.resetCancellation) {
+      window.SnapStreakAutomation.resetCancellation();
+    }
+
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
 
     try {
@@ -365,6 +369,9 @@ window.SnapStreakMacro = (function() {
       } else {
         // Custom Recorded Macro Replay
         for (let i = 0; i < macro.steps.length; i++) {
+          if (window.SnapStreakAutomation && window.SnapStreakAutomation.checkCancelled) {
+            window.SnapStreakAutomation.checkCancelled();
+          }
           const step = macro.steps[i];
           const isLast = (i === macro.steps.length - 1);
           log(`  Step ${i + 1}/${macro.steps.length}: ${step.type} "${step.text || step.selector || step.key}"...`, 'info');
@@ -434,6 +441,10 @@ window.SnapStreakMacro = (function() {
         return true;
       }
     } catch (err) {
+      if (err.message && err.message.includes('COMMAND_CANCELLED')) {
+        log('⏹️ Macro replay cancelled by user.', 'warn');
+        return false;
+      }
       log(`❌ Error replaying macro: ${err.message}`, 'err');
       return false;
     } finally {

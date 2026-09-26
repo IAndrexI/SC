@@ -51,6 +51,10 @@ window.SnapStreakOverlay = (function() {
     if (!shadowRoot) return;
     const autoSendBtn = shadowRoot.getElementById('btn-auto-send-streaks') || shadowRoot.getElementById('btn-send-streaks');
     const testBtn = shadowRoot.getElementById('btn-test-streaks');
+    const cancelBtn = shadowRoot.getElementById('btn-cancel-running');
+    const quickCancelBtn = shadowRoot.getElementById('btn-quick-cancel');
+    const macroCancelBtn = shadowRoot.getElementById('btn-macro-cancel');
+    const macroReplayBtn = shadowRoot.getElementById('btn-macro-replay');
     const dot = shadowRoot.getElementById('status-dot');
     const label = shadowRoot.getElementById('status-text');
     const pillBadge = shadowRoot.getElementById('pill-badge');
@@ -64,6 +68,10 @@ window.SnapStreakOverlay = (function() {
         testBtn.disabled = true;
         testBtn.textContent = isTest ? '🧪 Testing Macro...' : '🧪 Test Streak';
       }
+      if (macroReplayBtn) macroReplayBtn.disabled = true;
+      if (cancelBtn) cancelBtn.style.display = 'block';
+      if (quickCancelBtn) quickCancelBtn.style.display = 'inline-flex';
+      if (macroCancelBtn) macroCancelBtn.style.display = 'block';
       if (dot) dot.className = 'status-dot busy';
       if (label) label.textContent = isTest ? 'Testing Macro (Dry-Run)...' : 'Executing Macro Send...';
       if (pillBadge) {
@@ -79,6 +87,10 @@ window.SnapStreakOverlay = (function() {
         testBtn.disabled = false;
         testBtn.textContent = '🧪 Test Streak';
       }
+      if (macroReplayBtn) macroReplayBtn.disabled = false;
+      if (cancelBtn) cancelBtn.style.display = 'none';
+      if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+      if (macroCancelBtn) macroCancelBtn.style.display = 'none';
       if (dot) dot.className = 'status-dot';
       if (label) label.textContent = 'Idle (Ready)';
       if (pillBadge) {
@@ -197,7 +209,12 @@ window.SnapStreakOverlay = (function() {
               <div class="status-dot" id="status-dot"></div>
               <span id="status-text">Idle (Ready)</span>
             </div>
-            <div style="font-size: 11px; color: var(--text-dim);" id="friends-count-badge">2 Friends</div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn btn-danger" id="btn-quick-cancel" style="display: none; padding: 3px 8px; font-size: 11px; font-weight: 700; border-radius: 4px;" title="Cancel running streak command">
+                ⏹️ Cancel
+              </button>
+              <div style="font-size: 11px; color: var(--text-dim);" id="friends-count-badge">2 Friends</div>
+            </div>
           </div>
 
           <!-- TAB 1: STREAKS -->
@@ -244,6 +261,9 @@ window.SnapStreakOverlay = (function() {
                   🧪 Test Streak
                 </button>
               </div>
+              <button class="btn btn-danger btn-full" id="btn-cancel-running" style="display: none; font-size: 13px; padding: 11px; font-weight: 700; margin-top: 6px;" title="Abort in-flight streak execution immediately">
+                ⏹️ Cancel Running Streak
+              </button>
             </div>
 
             <!-- SJSU Meteorology Live Webcam Card -->
@@ -327,6 +347,9 @@ window.SnapStreakOverlay = (function() {
                 <button class="btn btn-primary btn-full" id="btn-macro-replay">▶ Replay Macro</button>
                 <button class="btn btn-secondary" id="btn-macro-delete">🗑️ Delete</button>
               </div>
+              <button class="btn btn-danger btn-full" id="btn-macro-cancel" style="display: none; font-size: 12px; padding: 9px; font-weight: 700; margin-top: 6px;" title="Stop replaying macro">
+                ⏹️ Cancel Replay
+              </button>
             </div>
           </div>
 
@@ -577,6 +600,29 @@ window.SnapStreakOverlay = (function() {
         }
       });
     }
+
+    // ⏹️ Cancel running streak / macro command
+    const handleCancelRequest = () => {
+      log('⏹️ User requested cancellation of running command.', 'warn');
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) {
+        window.SnapStreakAutomation.cancel();
+      }
+      try {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ type: 'CANCEL_RUNNING_COMMAND' });
+        }
+      } catch (e) {}
+      setRunning(false);
+    };
+
+    const cancelBtn = shadowRoot.getElementById('btn-cancel-running');
+    if (cancelBtn) cancelBtn.addEventListener('click', handleCancelRequest);
+
+    const quickCancelBtn = shadowRoot.getElementById('btn-quick-cancel');
+    if (quickCancelBtn) quickCancelBtn.addEventListener('click', handleCancelRequest);
+
+    const macroCancelBtn = shadowRoot.getElementById('btn-macro-cancel');
+    if (macroCancelBtn) macroCancelBtn.addEventListener('click', handleCancelRequest);
 
     // Active Streak Macro Selection
     const activeMacroSel = shadowRoot.getElementById('sel-active-macro');

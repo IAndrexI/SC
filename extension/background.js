@@ -125,6 +125,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     showNotification('SnapStreak Alert ⚠️', `Scheduled streak send failed: ${message.error || 'Unknown error'}`);
     sendResponse({ ok: true });
+  } else if (message.type === 'CANCEL_RUNNING_COMMAND') {
+    console.log('[SnapStreak Background] Broadcast cancel running command.');
+    chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        tabs.forEach(t => {
+          try {
+            chrome.tabs.sendMessage(t.id, { type: 'CANCEL_RUNNING_COMMAND' }, () => {});
+          } catch (e) {}
+        });
+      }
+    });
+    sendResponse({ ok: true });
   }
 });
 

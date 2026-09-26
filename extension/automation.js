@@ -6,9 +6,42 @@
 window.SnapStreakAutomation = (function() {
   'use strict';
 
-  function sleep(ms) {
+  let isCancelled = false;
+
+  function cancel() {
+    isCancelled = true;
+    window.__snapstreak_cancel_requested = true;
+    log('⏹️ Cancellation requested — stopping current streak flow...', 'warn');
+    const pointer = document.getElementById('snapstreak-virtual-cursor');
+    if (pointer) pointer.style.display = 'none';
+  }
+
+  function resetCancellation() {
+    isCancelled = false;
+    window.__snapstreak_cancel_requested = false;
+  }
+
+  function isCancellationRequested() {
+    return isCancelled || !!window.__snapstreak_cancel_requested;
+  }
+
+  function checkCancelled() {
+    if (isCancellationRequested()) {
+      throw new Error('COMMAND_CANCELLED: Flow aborted by user.');
+    }
+  }
+
+  async function sleep(ms) {
     const d = window.__snapstreak_fast_test ? Math.min(ms, 25) : ms;
-    return new Promise(resolve => setTimeout(resolve, d));
+    const interval = 40;
+    let elapsed = 0;
+    while (elapsed < d) {
+      checkCancelled();
+      const chunk = Math.min(interval, d - elapsed);
+      await new Promise(resolve => setTimeout(resolve, chunk));
+      elapsed += chunk;
+    }
+    checkCancelled();
   }
 
   function log(msg, type = 'info') {
@@ -475,18 +508,21 @@ window.SnapStreakAutomation = (function() {
     const validStates = Array.isArray(expectedStates) ? expectedStates : [expectedStates];
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+      checkCancelled();
       const current = detectCurrentScreen();
       if (validStates.includes(current)) {
         return { success: true, state: current };
       }
-      await sleep(200);
+      await sleep(100);
     }
+    checkCancelled();
     return { success: false, state: detectCurrentScreen() };
   }
 
   // ── Self-Healing Step Transition Controller ───────────────────────────────
   // If screen does not match expected state after a step, executes previous steps to recover!
   async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2) {
+    checkCancelled();
     const stepNames = [
       'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
       'Step 2: Press Camera Option to Open Viewfinder',
@@ -498,12 +534,15 @@ window.SnapStreakAutomation = (function() {
     log(`🎬 [SCREEN CHECK] Starting ${name}...`, 'info');
 
     for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+      checkCancelled();
       // Execute primary action
       await actionFn();
+      checkCancelled();
 
       // Settle and verify screen state matches expected state
       const targetStates = Array.isArray(expectedStates) ? expectedStates : [expectedStates];
       const check = await waitForScreenState(targetStates, 3200);
+      checkCancelled();
 
       if (check.success) {
         log(`  ✓ [SCREEN MATCH] Screen state verified as "${check.state}" for ${name}!`, 'success');
@@ -515,7 +554,9 @@ window.SnapStreakAutomation = (function() {
       if (attempt <= maxRetries) {
         log(`  ↺ Falling back to previous step(s) to recover expected screen...`, 'info');
         if (fallbackFn) {
+          checkCancelled();
           await fallbackFn();
+          checkCancelled();
           await sleep(1000);
         }
       }
@@ -1307,6 +1348,7 @@ window.SnapStreakAutomation = (function() {
 
   // ── Master Send Runner (with Screen State Verification & Recovery) ─────────
   async function runSendStreaks(options = {}) {
+    resetCancellation();
     const friends = options.friends || ['*//Eric\\\\*', 'Dylan'];
     const selectionMethod = options.selectionMethod || 'auto';
     const stepDelay = options.stepDelay || 3;
@@ -1446,6 +1488,10 @@ window.SnapStreakAutomation = (function() {
       log('✅ All streak steps completed! Screen confirmed delivered. 🔥', 'success');
       return { success: true };
     } catch (err) {
+      if (err.message && err.message.includes('COMMAND_CANCELLED')) {
+        log('⏹️ Streak command cancelled successfully.', 'warn');
+        return { success: false, cancelled: true };
+      }
       log(`❌ Error during streak sequence: ${err.message}`, 'err');
       return { success: false, error: err.message };
     } finally {
@@ -1458,6 +1504,10 @@ window.SnapStreakAutomation = (function() {
   return {
     sleep,
     log,
+    cancel,
+    resetCancellation,
+    isCancellationRequested,
+    checkCancelled,
     isMyAI,
     simulateHumanClick,
     simulateTyping,
