@@ -695,7 +695,7 @@ async def execute_step_with_screen_verification(
 ) -> bool:
     step_names = [
         "Step 1: Return to Home Screen (Top-Left Snapchat Icon)",
-        "Step 2: Open Camera Viewfinder",
+        "Step 2: Press Camera Option to Open Viewfinder",
         "Step 3: Quick-Press White Shutter Circle",
         "Step 4: Open Send-To Drawer & Select Recipients",
         "Step 5: Click Final Send Button & Verify Delivery",
@@ -749,6 +749,16 @@ async def send_streaks_flow(
     _log(f"🚀 Starting Verified Streak Flow with Screen State Matching (Method: {selection_method.upper()}, Friends: {friends})...", emit)
     results = {friend: "pending" for friend in friends}
 
+    # Close all other tabs/pages so that only current active run is on
+    if page.context and len(page.context.pages) > 1:
+        for p in list(page.context.pages):
+            if p != page:
+                try:
+                    await p.close()
+                except Exception:
+                    pass
+        _log("  ✓ Closed all other browser pages — only active run page remains.", emit)
+
     # Helper Step 0/1: Return Home Action
     async def step0_return_home():
         await _dismiss_banners_and_reset(page, emit)
@@ -786,25 +796,33 @@ async def send_streaks_flow(
     await _take_screenshot(page, "step0_verified_home")
     await asyncio.sleep(step_delay if not is_test else 0.5)
 
-    # Helper Step 1/2: Open Camera Action
+    # Helper Step 1/2: Press Camera Option Action
     async def step1_open_camera():
+        _log("Step 2: Pressing camera option to open viewfinder...", emit)
         for sel in [
             'button:has-text("Click the Camera to send Snaps")',
             'div:has-text("Click the Camera to send Snaps")',
             '[aria-label*="Click the Camera" i]',
+            'button[aria-label*="Camera" i]',
+            'div[role="button"][aria-label*="Camera" i]',
+            'a[aria-label*="Camera" i]',
             '[data-testid="camera-open-button"]',
+            '[data-testid="navigation-camera"]',
+            '[data-testid*="camera" i]',
+            'a[href*="/camera" i]',
             '.camera-icon',
         ]:
             try:
                 loc = page.locator(sel).first
                 if await loc.is_visible(timeout=800):
                     await loc.click()
+                    _log("  ✓ Clicked camera option in main menu!", emit)
                     return
             except Exception:
                 continue
         await page.mouse.click(600, 450)
 
-    # ── Step 2: Open Camera Viewfinder ───────────────────────────────────────
+    # ── Step 2: Press Camera Option to Open Viewfinder ────────────────────────
     async def step1_fallback():
         # Fallback to previous step: Return Home first, then re-open camera
         await step0_return_home()

@@ -489,7 +489,7 @@ window.SnapStreakAutomation = (function() {
   async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2) {
     const stepNames = [
       'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
-      'Step 2: Open Camera Viewfinder',
+      'Step 2: Press Camera Option to Open Viewfinder',
       'Step 3: Quick-Press White Shutter Circle',
       'Step 4: Open Send-To Drawer & Select Recipients',
       'Step 5: Click Final Send Button & Verify Delivery'
@@ -607,26 +607,9 @@ window.SnapStreakAutomation = (function() {
 
   // ── Step 2: Press Camera Option (if not in already) ──────────────────────
   async function step1_openCamera() {
-    log('Step 2: Checking camera option in main area...', 'info');
+    log('Step 2: Locating and pressing camera option to open viewfinder...', 'info');
 
-    const isAlreadyOpen = () => {
-      // If we are currently inside a 1-on-1 chat text box, camera viewfinder is not active
-      const inChat = document.querySelector('[data-testid="chat-input"], [data-testid="message-input"], textarea[placeholder*="chat" i]');
-      if (inChat && isVisible(inChat) && isInsideMainCameraArea(inChat)) return false;
-
-      const shutter = findShutterButton();
-      const video = document.querySelector('video');
-      return (shutter && isVisible(shutter) && isInsideMainCameraArea(shutter)) ||
-             (video && isVisible(video) && isInsideMainCameraArea(video) && video.readyState >= 2);
-    };
-
-    if (isAlreadyOpen()) {
-      log('  ✓ Camera already open in main area.', 'success');
-      return true;
-    }
-
-    log('  Opening camera option (strictly ignoring My AI and chat sidebar)...', 'info');
-
+    // Find camera option button/card in main area or header/nav
     let camBtn = null;
     const allClickables = document.querySelectorAll('button, div[role="button"], a');
     for (const el of allClickables) {
@@ -652,8 +635,24 @@ window.SnapStreakAutomation = (function() {
 
     if (camBtn) {
       await humanDwellAndClick(camBtn, true);
-      log('  ✓ Clicked camera option in main menu.', 'success');
+      log('  ✓ Pressed camera option in main menu!', 'success');
+      await sleep(1000);
     } else {
+      const isAlreadyOpen = () => {
+        // If we are currently inside a 1-on-1 chat text box, camera viewfinder is not active
+        const inChat = document.querySelector('[data-testid="chat-input"], [data-testid="message-input"], textarea[placeholder*="chat" i]');
+        if (inChat && isVisible(inChat) && isInsideMainCameraArea(inChat)) return false;
+
+        const shutter = findShutterButton();
+        const video = document.querySelector('video');
+        return (shutter && isVisible(shutter) && isInsideMainCameraArea(shutter)) ||
+               (video && isVisible(video) && isInsideMainCameraArea(video) && video.readyState >= 2);
+      };
+
+      if (isAlreadyOpen()) {
+        log('  ✓ Camera viewfinder already active in main area.', 'success');
+        return true;
+      }
       log('  Notice: Checking for camera capture button...', 'info');
     }
 
@@ -1317,6 +1316,14 @@ window.SnapStreakAutomation = (function() {
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
 
     try {
+      // Isolate current active run tab: close all other tabs in browser
+      try {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ type: 'CLOSE_OTHER_TABS' }, () => {});
+          log('  ✓ Browser tab isolation requested — closing any other open tabs.', 'info');
+        }
+      } catch (e) {}
+
       if (humanMode) {
         await sleep(500 + Math.floor(Math.random() * 400));
       }

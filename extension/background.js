@@ -31,6 +31,22 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Close all other tabs so that only current active run is on
+async function closeAllOtherTabs(keepTabId) {
+  try {
+    const tabs = await chrome.tabs.query({});
+    if (tabs && tabs.length > 1) {
+      const toRemove = tabs.filter(t => t.id !== keepTabId).map(t => t.id);
+      if (toRemove.length > 0) {
+        console.log(`[SnapStreak Background] Closing ${toRemove.length} other tab(s) to isolate active run (tab ${keepTabId}).`);
+        await chrome.tabs.remove(toRemove);
+      }
+    }
+  } catch (e) {
+    console.log('[SnapStreak Background] Error closing other tabs:', e);
+  }
+}
+
 // Clean up duplicate Snapchat tabs on browser startup
 function closeDuplicateSnapchatTabs() {
   try {
@@ -83,6 +99,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     showNotification('SnapStreak Sent! 🔥', `Daily streaks were sent successfully at ${timeStr}!`);
     sendResponse({ ok: true });
+  } else if (message.type === 'CLOSE_OTHER_TABS') {
+    const activeTabId = sender?.tab?.id;
+    if (activeTabId) {
+      closeAllOtherTabs(activeTabId).then(() => {
+        sendResponse({ ok: true, activeTabId });
+      });
+      return true;
+    } else {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs && tabs[0]) {
+          closeAllOtherTabs(tabs[0].id).then(() => {
+            sendResponse({ ok: true, activeTabId: tabs[0].id });
+          });
+        } else {
+          sendResponse({ ok: false });
+        }
+      });
+      return true;
+    }
   } else if (message.type === 'STREAK_SEND_FAILURE') {
     chrome.storage.local.set({
       lastStreakStatus: 'error',
@@ -219,7 +254,8 @@ async function triggerStreakRun(force = false) {
       }
 
       if (targetTab) {
-        console.log(`[SnapStreak Background] Found active Snapchat tab (${targetTab.id}). Bringing to foreground...`);
+        console.log(`[SnapStreak Background] Found active Snapchat tab (${targetTab.id}). Closing other tabs & bringing to foreground...`);
+        await closeAllOtherTabs(targetTab.id);
         try {
           // Bring tab to front so webcam and DOM timers run at full performance
           await chrome.tabs.update(targetTab.id, { active: true });
@@ -266,6 +302,7 @@ async function triggerStreakRun(force = false) {
             url: 'https://web.snapchat.com/?snapstreak_scheduled=1',
             active: true
           });
+          await closeAllOtherTabs(newTab.id);
 
           // Wait for tab load completion
           const onTabLoaded = (tabId, changeInfo) => {
