@@ -23,7 +23,7 @@ if exist ".venv\Scripts\python.exe" (
 )
 
 set "CAM_FLAGS=--use-fake-ui-for-media-stream --use-fake-device-for-media-stream --use-file-for-fake-video-capture=%DATA_DIR%\webcam.y4m"
-set "BROWSER_FLAGS=--disable-session-crashed-bubble --no-first-run --no-default-browser-check --new-window --start-maximized"
+set "BROWSER_FLAGS=--disable-session-crashed-bubble --no-first-run --no-default-browser-check --new-window --start-maximized --disable-restore-session-state"
 set "TARGET_URL=https://web.snapchat.com/?snapstreak_autoboot=1"
 
 echo [3/3] Launching browser with live SJSU webcam and SnapStreak HUD...

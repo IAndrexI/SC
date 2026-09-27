@@ -20,6 +20,8 @@ window.SnapStreakOverlay = (function() {
     waitForUIChanges: true,
     scheduleEnabled: true,
     scheduleTime: '09:00',
+    endTaskOnComplete: true,
+    alwaysCloseOtherTabs: true,
     activeMacro: '⚡ Default Streak Macro'
   };
 
@@ -209,7 +211,10 @@ window.SnapStreakOverlay = (function() {
               <div class="status-dot" id="status-dot"></div>
               <span id="status-text">Idle (Ready)</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button class="btn btn-warning" id="btn-keep-open" style="display: none; padding: 3px 8px; font-size: 11px; font-weight: 700; border-radius: 4px;" title="Keep browser open and cancel auto-close">
+                🪟 Keep Open
+              </button>
               <button class="btn btn-danger" id="btn-quick-cancel" style="display: none; padding: 3px 8px; font-size: 11px; font-weight: 700; border-radius: 4px;" title="Cancel running streak command">
                 ⏹️ Cancel
               </button>
@@ -374,6 +379,26 @@ window.SnapStreakOverlay = (function() {
                 <label style="margin: 0;">Enable Daily Schedule</label>
                 <label class="toggle-switch">
                   <input type="checkbox" id="chk-schedule-enabled" checked />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="toggle-row" style="margin-top: 10px;">
+                <div>
+                  <div style="font-size: 11px; font-weight: 600; color: #fff;">🔚 End Task on Completion</div>
+                  <div style="font-size: 10px; color: var(--text-dim);">Close browser window when daily streaks finish</div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chk-end-task-on-complete" checked />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="toggle-row" style="margin-top: 10px;">
+                <div>
+                  <div style="font-size: 11px; font-weight: 600; color: #fff;">🛡️ Always Close Other Tabs</div>
+                  <div style="font-size: 10px; color: var(--text-dim);">Auto-close any other tabs to keep only active run</div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chk-always-close-other-tabs" checked />
                   <span class="toggle-slider"></span>
                 </label>
               </div>
@@ -688,6 +713,34 @@ window.SnapStreakOverlay = (function() {
     inpSchedule.addEventListener('change', handleScheduleUpdate);
     shadowRoot.getElementById('btn-save-schedule').addEventListener('click', handleScheduleUpdate);
 
+    // End Task On Complete Toggle
+    const chkEndTask = shadowRoot.getElementById('chk-end-task-on-complete');
+    if (chkEndTask) {
+      chkEndTask.addEventListener('change', (e) => {
+        config.endTaskOnComplete = e.target.checked;
+        saveConfig();
+        log(`End task on complete: ${config.endTaskOnComplete ? 'Enabled (Browser closes on finish) 🔚' : 'Disabled (Browser stays open) 🪟'}`, 'info');
+      });
+    }
+
+    // Always Close Other Tabs Toggle
+    const chkAlwaysClose = shadowRoot.getElementById('chk-always-close-other-tabs');
+    if (chkAlwaysClose) {
+      chkAlwaysClose.addEventListener('change', (e) => {
+        config.alwaysCloseOtherTabs = e.target.checked;
+        saveConfig();
+        log(`Always close other tabs: ${config.alwaysCloseOtherTabs ? 'Enabled (Single tab mode) 🛡️' : 'Disabled'}`, 'info');
+      });
+    }
+
+    // Keep Open Button (cancel auto-closing after daily automation completes)
+    const keepOpenBtn = shadowRoot.getElementById('btn-keep-open');
+    if (keepOpenBtn) {
+      keepOpenBtn.addEventListener('click', () => {
+        cancelEndTaskCountdown();
+      });
+    }
+
     // Test Scheduled Trigger Now button
     const testSchedBtn = shadowRoot.getElementById('btn-test-schedule-now');
     if (testSchedBtn) {
@@ -842,6 +895,10 @@ window.SnapStreakOverlay = (function() {
     shadowRoot.getElementById('chk-wait-ui').checked = config.waitForUIChanges ?? true;
     shadowRoot.getElementById('chk-schedule-enabled').checked = config.scheduleEnabled;
     shadowRoot.getElementById('inp-schedule-time').value = config.scheduleTime;
+    const chkEndTask = shadowRoot.getElementById('chk-end-task-on-complete');
+    if (chkEndTask) chkEndTask.checked = (config.endTaskOnComplete !== false);
+    const chkAlwaysClose = shadowRoot.getElementById('chk-always-close-other-tabs');
+    if (chkAlwaysClose) chkAlwaysClose.checked = (config.alwaysCloseOtherTabs !== false);
 
     updateFriendsCount();
     refreshMacroDropdowns();
@@ -881,6 +938,63 @@ window.SnapStreakOverlay = (function() {
     });
   }
 
+  let endTaskTimer = null;
+  let endTaskSecondsLeft = 0;
+
+  function triggerEndTaskCountdown(seconds = 5) {
+    cancelEndTaskCountdown();
+    endTaskSecondsLeft = seconds;
+
+    const keepOpenBtn = shadowRoot?.getElementById('btn-keep-open');
+    if (keepOpenBtn) keepOpenBtn.style.display = 'inline-block';
+
+    const quickCancelBtn = shadowRoot?.getElementById('btn-quick-cancel');
+    if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+
+    log(`🏁 Daily automation completed! Ending task & closing browser in ${seconds}s... (Click "Keep Open" to cancel)`, 'success');
+
+    const updateStatus = () => {
+      const statusText = shadowRoot?.getElementById('status-text');
+      const statusDot = shadowRoot?.getElementById('status-dot');
+      if (statusText) statusText.textContent = `Completed! Closing in ${endTaskSecondsLeft}s...`;
+      if (statusDot) {
+        statusDot.style.background = 'var(--green)';
+        statusDot.style.boxShadow = '0 0 8px rgba(0, 230, 118, 0.6)';
+      }
+    };
+
+    updateStatus();
+
+    endTaskTimer = setInterval(() => {
+      endTaskSecondsLeft--;
+      if (endTaskSecondsLeft <= 0) {
+        cancelEndTaskCountdown();
+        log('🔚 Daily automation task finished. Closing browser window now.', 'info');
+        try {
+          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'daily_automation_complete' });
+          }
+        } catch (e) {}
+      } else {
+        updateStatus();
+      }
+    }, 1000);
+  }
+
+  function cancelEndTaskCountdown() {
+    if (endTaskTimer) {
+      clearInterval(endTaskTimer);
+      endTaskTimer = null;
+      log('ℹ️ Auto-close cancelled by user. Browser will remain open.', 'info');
+    }
+    const keepOpenBtn = shadowRoot?.getElementById('btn-keep-open');
+    if (keepOpenBtn) keepOpenBtn.style.display = 'none';
+    const statusText = shadowRoot?.getElementById('status-text');
+    if (statusText && statusText.textContent.includes('Closing in')) {
+      statusText.textContent = 'Idle (Ready)';
+    }
+  }
+
   return {
     initUI,
     log,
@@ -888,6 +1002,8 @@ window.SnapStreakOverlay = (function() {
     updateMacroStepCount,
     toggleWindow,
     getConfig: () => config,
-    refreshSJSUFrame
+    refreshSJSUFrame,
+    triggerEndTaskCountdown,
+    cancelEndTaskCountdown
   };
 })();

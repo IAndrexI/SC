@@ -16,6 +16,8 @@ const DEFAULT_CONFIG = {
   waitForUIChanges: true,
   scheduleEnabled: true,
   scheduleTime: '09:00',
+  endTaskOnComplete: true,
+  alwaysCloseOtherTabs: true,
   activeMacro: '⚡ Default Streak Macro'
 };
 
@@ -30,6 +32,9 @@ function getTodayDateString() {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// Track primary Snapchat tab ID
+let primarySnapchatTabId = null;
 
 // Close all other tabs so that only current active run is on
 async function closeAllOtherTabs(keepTabId) {
@@ -47,30 +52,64 @@ async function closeAllOtherTabs(keepTabId) {
   }
 }
 
-// Clean up duplicate Snapchat tabs on browser startup
-function closeDuplicateSnapchatTabs() {
+// Continuous single-tab enforcement: Brave ALWAYS closes other tabs if opened
+async function enforceAlwaysCloseOtherTabs() {
   try {
-    chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
-      if (tabs && tabs.length > 1) {
-        console.log(`[SnapStreak Background] Found ${tabs.length} Snapchat tabs. Keeping primary tab ${tabs[0].id} and closing ${tabs.length - 1} duplicate(s).`);
-        for (let i = 1; i < tabs.length; i++) {
-          chrome.tabs.remove(tabs[i].id);
-        }
+    const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
+    const config = { ...DEFAULT_CONFIG, ...(res?.snapstreak_config || {}) };
+    if (config.alwaysCloseOtherTabs === false) return;
+
+    const allTabs = await chrome.tabs.query({});
+    if (!allTabs || allTabs.length <= 1) {
+      if (allTabs && allTabs.length === 1 && (allTabs[0].url || '').includes('snapchat.com')) {
+        primarySnapchatTabId = allTabs[0].id;
       }
-    });
-  } catch (e) {}
+      return;
+    }
+
+    // Find the primary Snapchat tab
+    let snapTab = allTabs.find(t => t.id === primarySnapchatTabId);
+    if (!snapTab || !(snapTab.url || '').includes('snapchat.com')) {
+      snapTab = allTabs.find(t => (t.url || '').includes('snapchat.com')) || allTabs[0];
+      primarySnapchatTabId = snapTab.id;
+    }
+
+    // Close EVERY other tab in the browser
+    const tabsToClose = allTabs.filter(t => t.id !== snapTab.id).map(t => t.id);
+    if (tabsToClose.length > 0) {
+      console.log(`[SnapStreak Background] 🛡️ Always-close-other-tabs active: closing ${tabsToClose.length} non-primary tab(s):`, tabsToClose);
+      await chrome.tabs.remove(tabsToClose);
+    }
+  } catch (e) {
+    console.log('[SnapStreak Background] Error enforcing single tab policy:', e);
+  }
 }
 
-// Initialize alarms on extension install or browser startup
+// Listen for tab creation: immediately close any other tab that opens in Brave
+chrome.tabs.onCreated.addListener((newTab) => {
+  console.log(`[SnapStreak Background] New tab opened (ID: ${newTab.id}, URL: ${newTab.url || newTab.pendingUrl || 'new'}). Closing other tabs...`);
+  setTimeout(enforceAlwaysCloseOtherTabs, 150);
+});
+
+// Listen for tab updates/navigations: ensure tabs that navigate also get closed if non-primary
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === 'loading') {
+    setTimeout(enforceAlwaysCloseOtherTabs, 200);
+  }
+});
+
+// Initialize alarms & initial tab cleanup on extension install or browser startup
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[SnapStreak Background] Extension installed/updated.');
   setupAlarms();
+  enforceAlwaysCloseOtherTabs();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   console.log('[SnapStreak Background] Browser startup.');
-  closeDuplicateSnapchatTabs();
-  setTimeout(closeDuplicateSnapchatTabs, 3000);
+  enforceAlwaysCloseOtherTabs();
+  setTimeout(enforceAlwaysCloseOtherTabs, 1500);
+  setTimeout(enforceAlwaysCloseOtherTabs, 3500);
   setupAlarms();
   // Check if today's scheduled send was missed while browser was closed
   setTimeout(() => checkMissedSchedule(), 6000);
@@ -137,6 +176,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     });
     sendResponse({ ok: true });
+  } else if (message.type === 'END_TASK_AND_CLOSE') {
+    console.log('[SnapStreak Background] 🏁 Daily automation complete. Ending task and closing browser window...');
+    const senderTabId = sender?.tab?.id;
+    const senderWindowId = sender?.tab?.windowId;
+
+    if (senderWindowId) {
+      chrome.tabs.query({ windowId: senderWindowId }, async (tabs) => {
+        // If window only has snapchat tabs (or <= 2 tabs from automation)
+        const nonSnapTabs = (tabs || []).filter(t => !t.url.includes('snapchat.com'));
+        if (nonSnapTabs.length === 0) {
+          console.log(`[SnapStreak Background] Closing window ${senderWindowId} as daily automation task is complete.`);
+          try {
+            await chrome.windows.remove(senderWindowId);
+          } catch (e) {
+            if (senderTabId) chrome.tabs.remove(senderTabId);
+          }
+        } else {
+          console.log(`[SnapStreak Background] Window contains other user tabs. Closing Snapchat tab ${senderTabId}.`);
+          if (senderTabId) chrome.tabs.remove(senderTabId);
+        }
+      });
+    } else if (senderTabId) {
+      chrome.tabs.remove(senderTabId);
+    } else {
+      chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
+        if (tabs && tabs.length > 0) {
+          tabs.forEach(t => chrome.tabs.remove(t.id));
+        }
+      });
+    }
+    sendResponse({ ok: true, status: 'task_ended' });
   }
 });
 

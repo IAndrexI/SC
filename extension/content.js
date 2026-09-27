@@ -124,8 +124,20 @@
             isTest: false
           });
           if (res && res.success) {
-            window.SnapStreakOverlay?.log('🎉 Auto-boot streaks sent successfully!', 'success');
+            window.SnapStreakOverlay?.log('🎉 Auto-boot streaks sent successfully! All recipients verified delivered.', 'success');
             chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: (cfg.friends || []).length });
+
+            // Automatically end the task and close browser once daily automation is completed
+            const shouldEndTask = (cfg.endTaskOnComplete !== false);
+            if (shouldEndTask) {
+              if (window.SnapStreakOverlay && window.SnapStreakOverlay.triggerEndTaskCountdown) {
+                window.SnapStreakOverlay.triggerEndTaskCountdown(5);
+              } else {
+                setTimeout(() => {
+                  chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'auto_boot_complete' });
+                }, 5000);
+              }
+            }
           } else {
             chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: res?.error || 'Auto-boot sequence incomplete' });
           }
@@ -209,8 +221,19 @@
               isTest: false
             });
             if (res && res.success) {
-              window.SnapStreakOverlay?.log('🎉 Scheduled streaks sent successfully!', 'success');
+              window.SnapStreakOverlay?.log('🎉 Scheduled streaks sent successfully! All recipients verified delivered.', 'success');
               chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: friends.length, result: res });
+
+              const shouldEndTask = (cfg.endTaskOnComplete !== false);
+              if (shouldEndTask) {
+                if (window.SnapStreakOverlay && window.SnapStreakOverlay.triggerEndTaskCountdown) {
+                  window.SnapStreakOverlay.triggerEndTaskCountdown(5);
+                } else {
+                  setTimeout(() => {
+                    chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'scheduled_send_complete' });
+                  }, 5000);
+                }
+              }
             } else {
               chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: res?.error || 'Send sequence incomplete' });
             }
@@ -224,8 +247,19 @@
               false
             );
             if (res && res.success) {
-              window.SnapStreakOverlay?.log('🎉 Scheduled macro streaks sent successfully!', 'success');
+              window.SnapStreakOverlay?.log('🎉 Scheduled macro streaks sent successfully! All recipients verified delivered.', 'success');
               chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: friends.length, result: res });
+
+              const shouldEndTask = (cfg.endTaskOnComplete !== false);
+              if (shouldEndTask) {
+                if (window.SnapStreakOverlay && window.SnapStreakOverlay.triggerEndTaskCountdown) {
+                  window.SnapStreakOverlay.triggerEndTaskCountdown(5);
+                } else {
+                  setTimeout(() => {
+                    chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'macro_send_complete' });
+                  }, 5000);
+                }
+              }
             } else {
               chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: res?.error || 'Macro replay failed' });
             }
