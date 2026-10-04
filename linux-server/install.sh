@@ -41,9 +41,10 @@ fi
 
 
 # clone or update
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 if [[ -d "$APP_DIR/.git" ]]; then
   step "Updating repo..."
-  git -C "$APP_DIR" pull --ff-only
+  git -C "$APP_DIR" pull --ff-only || (git -C "$APP_DIR" fetch origin && git -C "$APP_DIR" reset --hard origin/main)
 else
   step "Cloning repo..."
   git clone https://github.com/IAndrexI/SC "$APP_DIR"
