@@ -361,16 +361,26 @@
 
       <!-- Real Interactive Browser Desktop (noVNC) -->
       <div id="novnc-container" style="border:2px solid var(--accent);border-radius:8px;overflow:hidden;margin-bottom:12px;background:#000">
-        <div style="display:flex;justify-content:space-between;align-items:center;background:#1b1d2a;padding:8px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;background:#1b1d2a;padding:8px 12px;flex-wrap:wrap;gap:8px">
           <div style="font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px">
-            <span>🌐 Interactive Chrome Browser (Real Mouse, Keyboard &amp; Popups)</span>
+            <span>🌐 Interactive Chrome Browser (Snapchat Web + Live Extension HUD)</span>
           </div>
-          <div style="display:flex;gap:10px;align-items:center">
-            <button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="reloadVncFrame()">↺ Reconnect Display</button>
-            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600">↗ Open Fullscreen Tab</a>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks Now</button>
+            <button class="btn btn-success" style="font-size:11px;padding:4px 10px" onclick="saveLogin()">💾 Save Session</button>
+            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px" onclick="reloadVncFrame()">↺ Reconnect</button>
+            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600">↗ Fullscreen</a>
+            <button class="btn btn-danger" style="font-size:11px;padding:4px 8px" onclick="cancelLogin()">✕ Close Browser</button>
           </div>
         </div>
-        <iframe id="novnc-iframe" src="" style="width:100%;height:640px;border:none;display:block;background:#000"></iframe>
+        <div style="position:relative">
+          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:680px;border:none;display:block;background:#000"></iframe>
+          <div id="vnc-connecting-overlay" style="position:absolute;inset:0;background:#0d0e15;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text);z-index:10">
+            <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div>
+            <div style="font-size:13px;font-weight:600">Connecting to Chrome Desktop (noVNC)...</div>
+            <div style="font-size:11px;color:var(--text-dim)">Launching virtual display, Google Chrome &amp; live extension</div>
+          </div>
+        </div>
       </div>
 
       <!-- Fallback / Secondary Live Screenshot Stream -->
@@ -580,11 +590,23 @@
           const frame = document.getElementById('novnc-iframe');
           if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
             frame.src = s.novnc_url;
+            const overlay = document.getElementById('vnc-connecting-overlay');
+            if (overlay) overlay.style.display = 'none';
           }
           const link = document.getElementById('novnc-tab-link');
           if (link) link.href = s.novnc_url;
         }
         if (!_shotLoop) _startShotLoop();
+      } else {
+        document.getElementById('login-idle').style.display = '';
+        document.getElementById('login-active').style.display = 'none';
+        const frame = document.getElementById('novnc-iframe');
+        if (frame && frame.src && frame.src !== 'about:blank') {
+          frame.src = 'about:blank';
+        }
+        const overlay = document.getElementById('vnc-connecting-overlay');
+        if (overlay) overlay.style.display = 'none';
+        _stopShotLoop();
       }
 
 
@@ -734,19 +756,30 @@
   async function startLogin() {
     const statusEl = document.getElementById('login-status');
     statusEl.style.color = 'var(--text-dim)';
-    statusEl.textContent = 'Starting browser session on server…';
+    statusEl.textContent = 'Launching real Chrome browser on server…';
+    
+    document.getElementById('login-idle').style.display   = 'none';
+    document.getElementById('login-active').style.display = '';
+    
+    const frame = document.getElementById('novnc-iframe');
+    if (frame) frame.src = 'about:blank';
+    const overlay = document.getElementById('vnc-connecting-overlay');
+    if (overlay) overlay.style.display = 'flex';
+
     const r = await fetch('/api/login/start', { method: 'POST' });
     const d = await r.json();
     if (!r.ok) {
       statusEl.style.color = 'var(--red)';
       statusEl.textContent = '✗ ' + (d.detail || d.message);
+      document.getElementById('login-idle').style.display   = '';
+      document.getElementById('login-active').style.display = 'none';
+      if (overlay) overlay.style.display = 'none';
       return;
     }
-    document.getElementById('login-idle').style.display   = 'none';
-    document.getElementById('login-active').style.display = '';
-    document.getElementById('browser-loading').style.display = 'flex';
     statusEl.textContent = '';
     _startShotLoop();
+    setTimeout(refreshStatus, 1500);
+    setTimeout(refreshStatus, 3000);
   }
 
   function _startShotLoop() {
@@ -1264,12 +1297,42 @@
   }
 
 
+  async function sendStreakInLiveSession() {
+    const statusEl = document.getElementById('login-status');
+    if (statusEl) {
+      statusEl.style.color = 'var(--accent)';
+      statusEl.textContent = '🚀 Triggering auto-send streaks in live browser...';
+    }
+    try {
+      const r = await fetch('/api/send', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) {
+        if (statusEl) {
+          statusEl.style.color = 'var(--red)';
+          statusEl.textContent = '✗ ' + (d.detail || d.message || 'Send failed');
+        }
+      } else {
+        if (statusEl) {
+          statusEl.style.color = 'var(--green)';
+          statusEl.textContent = '✓ Automated streak run started!';
+        }
+      }
+    } catch (e) {
+      if (statusEl) {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = '✗ Error: ' + e;
+      }
+    }
+  }
+
   function reloadVncFrame() {
     const frame = document.getElementById('novnc-iframe');
-    if (frame && frame.src) {
-      const src = frame.src;
+    if (frame) {
+      const host = window.location.hostname || 'localhost';
       frame.src = 'about:blank';
-      setTimeout(() => { frame.src = src; }, 400);
+      setTimeout(() => {
+        frame.src = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale`;
+      }, 300);
     }
   }
 

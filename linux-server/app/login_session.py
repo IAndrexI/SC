@@ -84,6 +84,7 @@ _state: dict = {
     "last_shot_b64": "",
     "url":           "",
     "xvfb":          None,
+    "openbox":       None,
     "x11vnc":        None,
     "websockify":    None,
 }
@@ -104,8 +105,9 @@ def _kill(proc):
 def _cleanup_processes():
     _kill(_state.get("websockify"))
     _kill(_state.get("x11vnc"))
+    _kill(_state.get("openbox"))
     _kill(_state.get("xvfb"))
-    _state["xvfb"] = _state["x11vnc"] = _state["websockify"] = None
+    _state["xvfb"] = _state["openbox"] = _state["x11vnc"] = _state["websockify"] = None
 
 
 async def _cleanup():
@@ -208,6 +210,15 @@ async def start(emit: Callable | None = None) -> str:
         )
         await asyncio.sleep(0.8)
 
+        if shutil.which("openbox"):
+            _log("Starting X11 window manager (openbox)...", emit)
+            _state["openbox"] = subprocess.Popen(
+                ["openbox"],
+                env={**env, "DISPLAY": DISPLAY},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            await asyncio.sleep(0.4)
+
         novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
         websock_cmd = ["websockify", "--web", novnc_web, str(NOVNC_PORT), f"localhost:{VNC_PORT}"] if novnc_web else ["websockify", str(NOVNC_PORT), f"localhost:{VNC_PORT}"]
         _log(f"Starting web desktop proxy (noVNC port {NOVNC_PORT})...", emit)
@@ -242,6 +253,28 @@ async def start(emit: Callable | None = None) -> str:
     ]
     if Y4M_FILE.exists():
         launch_args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+
+    # Auto-load SnapStreak extension so the user has the overlay HUD just like Windows
+    ext_dir = None
+    candidates = [
+        Path(__file__).resolve().parent.parent / "extension",
+        Path(__file__).resolve().parent / "extension",
+        Path("/opt/sc/linux-server/extension"),
+        Path("/opt/sc/extension"),
+        Path("/opt/snapstreak/linux-server/extension"),
+        Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
+    ]
+    for cand in candidates:
+        if (cand / "manifest.json").exists():
+            ext_dir = cand.resolve()
+            break
+
+    if ext_dir and not headless:
+        launch_args.extend([
+            f"--disable-extensions-except={ext_dir}",
+            f"--load-extension={ext_dir}",
+        ])
+        _log(f"  ✓ Loaded SnapStreak Extension: {ext_dir}", emit)
 
     kwargs = {
         "user_data_dir": str(USER_DATA_DIR),
@@ -321,9 +354,11 @@ async def start(emit: Callable | None = None) -> str:
         _log(f"CDP Screencast fallback: {ex}", emit)
         asyncio.create_task(_fast_frame_loop())
 
-    _log("Navigating to Snapchat Login...", emit)
+    # Navigate directly to Snapchat Web with autoboot enabled so the extension activates
+    target_url = "https://web.snapchat.com/?snapstreak_autoboot=1"
+    _log(f"Navigating to {target_url}...", emit)
     try:
-        await page.goto("https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F", timeout=25_000, wait_until="domcontentloaded")
+        await page.goto(target_url, timeout=30_000, wait_until="domcontentloaded")
     except Exception as ex:
         _log(f"Navigation notice: {ex}", emit)
 
@@ -588,13 +623,22 @@ async def run_streak_in_active_session(friends: list[str] | None = None, emit: C
     if not _state["active"] or not _state["page"]:
         return {"error": "Browser not active"}
 
-    from automation import MACRO_FILE, replay_macro, send_streaks_shortcut_flow, ensure_snap_image
+    from automation import MACRO_FILE, replay_macro, send_streaks_flow, ensure_snap_image
+    import config
     ensure_snap_image()
     page = _state["page"]
+
+    cfg = config.load()
+    if not friends:
+        friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
+    selection_method = cfg.get("selection_method", "auto")
+
     if MACRO_FILE.exists():
+        _log("Replaying custom recorded macro in active browser...", emit)
         results = await replay_macro(page, emit=emit)
     else:
-        results = await send_streaks_shortcut_flow(page, emit=emit)
+        _log(f"Starting auto send streak sequence in active browser (Targets: {friends})...", emit)
+        results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
     return results
 
 
