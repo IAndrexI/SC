@@ -565,8 +565,19 @@ async def login_key(body: KeyInput):
 
 @app.post("/api/login/navigate")
 async def login_navigate(body: NavInput):
-    await login_session.navigate(body.url)
-    return {"ok": True}
+    return await login_session.navigate(body.url)
+
+@app.post("/api/login/back")
+async def login_back():
+    return await login_session.go_back()
+
+@app.post("/api/login/forward")
+async def login_forward():
+    return await login_session.go_forward()
+
+@app.post("/api/login/reload")
+async def login_reload():
+    return await login_session.reload_page()
 
 @app.post("/api/login/upload-snap-here")
 async def login_upload_snap_here():

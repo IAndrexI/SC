@@ -327,35 +327,68 @@
         </div>
       </div>
 
-      <!-- Real Interactive Browser Desktop (noVNC) -->
-      <div id="novnc-container" style="border:2px solid var(--accent);border-radius:8px;overflow:hidden;margin-bottom:12px;background:#000">
-        <div style="display:flex;justify-content:space-between;align-items:center;background:#1b1d2a;padding:8px 12px;flex-wrap:wrap;gap:8px">
-          <div style="font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px">
-            <span>🌐 Emulated Chrome Browser</span>
+      <!-- Integrated Desktop Browser (Embedded Container) -->
+      <div id="novnc-container" style="border:2px solid var(--accent);border-radius:10px;overflow:hidden;margin-bottom:14px;background:#0d0e15;box-shadow:0 8px 24px rgba(0,0,0,0.5)">
+        <!-- Browser Window Titlebar -->
+        <div style="background:#171822;padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="display:flex;gap:5px">
+              <span style="width:10px;height:10px;border-radius:50%;background:#ff5f56;display:inline-block"></span>
+              <span style="width:10px;height:10px;border-radius:50%;background:#ffbd2e;display:inline-block"></span>
+              <span style="width:10px;height:10px;border-radius:50%;background:#27c93f;display:inline-block"></span>
+            </div>
+            <span style="font-size:12px;font-weight:700;color:var(--text);letter-spacing:0.3px">🌐 Embedded Server Browser</span>
           </div>
+
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-success" style="font-size:11px;padding:5px 12px;font-weight:bold" onclick="saveLogin()">💾 Save Session</button>
-            <button class="btn btn-primary" style="font-size:11px;padding:5px 12px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks Now</button>
-            <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="reloadVncFrame()">↺ Reconnect</button>
-            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600;padding:0 4px">↗ Fullscreen</a>
-            <button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="cancelLogin()">✕ Close Browser</button>
+            <button class="btn btn-success" style="font-size:11px;padding:4px 10px;font-weight:bold" onclick="saveLogin()">💾 Save Session</button>
+            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks</button>
+            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2)">↗ Fullscreen</a>
+            <button class="btn btn-danger" style="font-size:11px;padding:4px 8px" onclick="cancelLogin()">✕ Close</button>
           </div>
         </div>
+
+        <!-- Browser Navigation Bar (Address Omnibox) -->
+        <div style="background:#212232;padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-secondary" style="font-size:13px;padding:5px 9px;line-height:1" title="Back" onclick="browserBack()">◀</button>
+            <button class="btn btn-secondary" style="font-size:13px;padding:5px 9px;line-height:1" title="Forward" onclick="browserForward()">▶</button>
+            <button class="btn btn-secondary" style="font-size:13px;padding:5px 9px;line-height:1" title="Reload" onclick="browserReload()">↻</button>
+            <button class="btn btn-secondary" style="font-size:13px;padding:5px 9px;line-height:1" title="Snapchat Home" onclick="browserGo('https://web.snapchat.com/')">🏠</button>
+          </div>
+
+          <!-- URL Omnibox Input -->
+          <form onsubmit="handleUrlSubmit(event)" style="flex:1;min-width:240px;display:flex;gap:6px;margin:0">
+            <div style="position:relative;flex:1;display:flex;align-items:center">
+              <span style="position:absolute;left:10px;font-size:12px;color:var(--text-dim);pointer-events:none">🔒</span>
+              <input id="browser-address-input" type="text"
+                     value="https://web.snapchat.com/"
+                     placeholder="Search or enter web address (e.g. google.com, web.snapchat.com)..."
+                     style="width:100%;padding:6px 10px 6px 30px;font-size:12px;font-family:monospace;background:#0d0e15;border:1px solid var(--border);border-radius:20px;color:var(--text);outline:none" />
+            </div>
+            <button type="submit" class="btn btn-secondary" style="font-size:11px;padding:6px 14px;border-radius:20px">Go ↵</button>
+          </form>
+        </div>
+
+        <!-- Bookmarks Bar -->
+        <div style="background:#1b1d2a;padding:5px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;overflow-x:auto;font-size:11px">
+          <span style="color:var(--text-dim);font-weight:600">Shortcuts:</span>
+          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://web.snapchat.com/')">👻 Snapchat Web</button>
+          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://accounts.snapchat.com/v2/login')">🔑 Snapchat Login</button>
+          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://www.google.com')">🔍 Google Search</button>
+          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://myaccount.google.com')">👤 Google Account</button>
+          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="clearBrowserData()">🧹 Clear Cookies</button>
+        </div>
+
+        <!-- Live Desktop / Browser Viewport -->
         <div style="position:relative">
-          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:720px;border:none;display:block;background:#000"></iframe>
+          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:750px;border:none;display:block;background:#000"></iframe>
           <div id="vnc-connecting-overlay" style="position:absolute;inset:0;background:#0d0e15;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text);z-index:10">
             <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div>
-            <div style="font-size:13px;font-weight:600">Connecting to Emulated Chrome Desktop...</div>
-            <div style="font-size:11px;color:var(--text-dim)">Launching virtual display, Google Chrome &amp; Snapchat</div>
+            <div style="font-size:13px;font-weight:600">Connecting to Embedded Browser...</div>
+            <div style="font-size:11px;color:var(--text-dim)">Starting virtual display, Chrome desktop &amp; Snapchat</div>
           </div>
         </div>
-      </div>
-
-      <!-- Quick Navigation & Cache Controls -->
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat Web</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://accounts.snapchat.com/v2/login')">🔑 Go to Login Page</button>
-        <button class="btn btn-danger" style="font-size:11px;padding:5px 12px" onclick="clearBrowserData()">🧹 Clear Browser Cache</button>
       </div>
 
       <!-- Live Action Macro Recorder Toolbar -->
@@ -463,7 +496,10 @@
               const loader = document.getElementById('browser-loading');
               if (loader) loader.style.display = 'none';
             }
-            if (d.url) document.getElementById('browser-url').textContent = d.url;
+            if (d.url) {
+              const addr = document.getElementById('browser-address-input');
+              if (addr && document.activeElement !== addr) addr.value = d.url;
+            }
             return;
           }
         } catch(err) {}
@@ -733,7 +769,10 @@
           img.src = 'data:image/jpeg;base64,' + d.image;
           document.getElementById('browser-loading').style.display = 'none';
         }
-        if (d.url) document.getElementById('browser-url').textContent = d.url;
+        if (d.url) {
+          const addr = document.getElementById('browser-address-input');
+          if (addr && document.activeElement !== addr) addr.value = d.url;
+        }
       } catch(e) {}
     }, 1000);
   }
@@ -899,7 +938,10 @@
         img.src = 'data:image/jpeg;base64,' + d.image;
         document.getElementById('browser-loading').style.display = 'none';
       }
-      if (d.url) document.getElementById('browser-url').textContent = d.url;
+      if (d.url) {
+        const addr = document.getElementById('browser-address-input');
+        if (addr && document.activeElement !== addr) addr.value = d.url;
+      }
     } catch(e) {}
 }
 
@@ -1184,13 +1226,59 @@
     setTimeout(triggerRefreshNow, 600);
   }
 
+  async function handleUrlSubmit(e) {
+    if (e) e.preventDefault();
+    const input = document.getElementById('browser-address-input');
+    if (!input) return;
+    const url = input.value.trim();
+    if (!url) return;
+    await browserNav(url);
+  }
+
+  async function browserGo(url) {
+    const input = document.getElementById('browser-address-input');
+    if (input) input.value = url;
+    await browserNav(url);
+  }
+
+  async function browserBack() {
+    appendLog('info', 'Navigating back ◀');
+    const r = await fetch('/api/login/back', { method: 'POST' });
+    const d = await r.json();
+    if (d.url) {
+      const input = document.getElementById('browser-address-input');
+      if (input) input.value = d.url;
+    }
+  }
+
+  async function browserForward() {
+    appendLog('info', 'Navigating forward ▶');
+    const r = await fetch('/api/login/forward', { method: 'POST' });
+    const d = await r.json();
+    if (d.url) {
+      const input = document.getElementById('browser-address-input');
+      if (input) input.value = d.url;
+    }
+  }
+
+  async function browserReload() {
+    appendLog('info', 'Reloading page ↻');
+    await fetch('/api/login/reload', { method: 'POST' });
+  }
+
   async function browserNav(url) {
-    await fetch('/api/login/navigate', {
+    appendLog('info', 'Navigating to: ' + url);
+    const r = await fetch('/api/login/navigate', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ url }),
     });
-    setTimeout(triggerRefreshNow, 1200);
+    const d = await r.json();
+    if (d.url) {
+      const input = document.getElementById('browser-address-input');
+      if (input) input.value = d.url;
+    }
+    setTimeout(triggerRefreshNow, 1000);
   }
 
 

@@ -282,7 +282,6 @@ async def start(emit: Callable | None = None) -> str:
     kwargs = {
         "user_data_dir": str(USER_DATA_DIR),
         "headless": headless,
-        "viewport": VIEWPORT,
         "user_agent": USER_AGENT,
         "locale": "en-US",
         "timezone_id": "America/Los_Angeles",
@@ -297,6 +296,11 @@ async def start(emit: Callable | None = None) -> str:
             "Upgrade-Insecure-Requests": "1",
         },
     }
+    if not headless:
+        kwargs["no_viewport"] = True
+    else:
+        kwargs["viewport"] = VIEWPORT
+
     if chrome_exe:
         kwargs["executable_path"] = chrome_exe
 
@@ -598,11 +602,65 @@ async def key_press(key: str):
         await page.keyboard.press(key)
 
 
-async def navigate(url: str):
-    """Navigate the browser to a URL."""
+async def navigate(url: str) -> dict:
+    """Navigate the browser to a URL (supports query searches or full URLs)."""
+    page: Page | None = _state["page"]
+    if not page:
+        return {"ok": False, "error": "No browser active"}
+    url = url.strip()
+    if not url:
+        url = "https://web.snapchat.com/"
+    elif not url.startswith(("http://", "https://", "about:")):
+        if "." in url and " " not in url:
+            url = "https://" + url
+        else:
+            import urllib.parse
+            url = f"https://www.google.com/search?q={urllib.parse.quote(url)}"
+    try:
+        await page.goto(url, timeout=30_000, wait_until="domcontentloaded")
+        _state["url"] = page.url
+        return {"ok": True, "url": page.url}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+
+async def go_back() -> dict:
+    """Navigate back in browser history."""
     page: Page | None = _state["page"]
     if page:
-        await page.goto(url, timeout=20_000)
+        try:
+            await page.go_back(timeout=10_000)
+            _state["url"] = page.url
+            return {"ok": True, "url": page.url}
+        except Exception as ex:
+            return {"ok": False, "error": str(ex)}
+    return {"ok": False, "error": "No browser active"}
+
+
+async def go_forward() -> dict:
+    """Navigate forward in browser history."""
+    page: Page | None = _state["page"]
+    if page:
+        try:
+            await page.go_forward(timeout=10_000)
+            _state["url"] = page.url
+            return {"ok": True, "url": page.url}
+        except Exception as ex:
+            return {"ok": False, "error": str(ex)}
+    return {"ok": False, "error": "No browser active"}
+
+
+async def reload_page() -> dict:
+    """Reload the active webpage."""
+    page: Page | None = _state["page"]
+    if page:
+        try:
+            await page.reload(timeout=15_000)
+            _state["url"] = page.url
+            return {"ok": True, "url": page.url}
+        except Exception as ex:
+            return {"ok": False, "error": str(ex)}
+    return {"ok": False, "error": "No browser active"}
 
 
 async def upload_snap_to_chat() -> dict:
