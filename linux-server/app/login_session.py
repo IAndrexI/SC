@@ -244,6 +244,8 @@ async def start(emit: Callable | None = None) -> str:
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-setuid-sandbox",
+        "--start-maximized",
+        "--window-position=0,0",
         f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
         "--disable-blink-features=AutomationControlled",
         "--no-default-browser-check",
@@ -362,6 +364,32 @@ async def start(emit: Callable | None = None) -> str:
         await page.goto(target_url, timeout=30_000, wait_until="domcontentloaded")
     except Exception as ex:
         _log(f"Navigation notice: {ex}", emit)
+
+    # Background task to monitor for login completion directly inside the browser
+    async def _auto_save_watcher():
+        while _state.get("active"):
+            try:
+                p = _state.get("page")
+                ctx = _state.get("context")
+                if p and ctx:
+                    u = p.url
+                    # User completed login if on web.snapchat.com and not on accounts/login page
+                    if "web.snapchat.com" in u and "accounts.snapchat.com" not in u and "/login" not in u:
+                        cookies = await ctx.cookies()
+                        c_names = {c.get("name") for c in cookies}
+                        if any(k in c_names for k in ["sc-a-nonce", "sc-session", "web_client_id"]) or len(cookies) >= 5:
+                            storage = await ctx.storage_state()
+                            SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+                            SESSION_FILE.write_text(json.dumps(storage, indent=2), encoding="utf-8")
+                            _log("✓ Detected successful Snapchat login inside emulated browser! Session saved.", emit)
+                            if emit:
+                                emit("LOGIN_AUTO_SAVED")
+                            break
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+
+    asyncio.create_task(_auto_save_watcher())
 
     _log("✓ Browser ready — live stream active.", emit)
     return "ok"

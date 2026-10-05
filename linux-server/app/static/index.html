@@ -291,71 +291,39 @@
 
     <!-- Idle state -->
     <div id="login-idle">
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px">
-        Start a browser session on the server to interact with Snapchat, record macros, or test automated streak sending.
-      </p>
-      <div class="btn-row" style="margin-bottom:16px">
-        <button class="btn btn-primary" onclick="startLogin()">🖥️ Open Live Browser Session</button>
-      </div>
-
-
-      <!-- 1-Click Session / Cookie Importer -->
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:10px">
-        <div style="font-size:13px;font-weight:700;color:var(--yellow);margin-bottom:6px">🍪 1-Click Cookie / Session Import (Bypass Login & Captchas)</div>
-        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
-          If Snapchat Web blocks login on server IPs, export cookies from <code>web.snapchat.com</code> on your PC (e.g. using the <b>Cookie-Editor</b> Chrome extension → <i>Export JSON</i>) and paste below:
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:24px;text-align:center;margin-bottom:14px">
+        <div style="font-size:38px;margin-bottom:10px">🌐</div>
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:8px">Emulated Desktop Chrome Browser</h3>
+        <p style="font-size:13px;color:var(--text-dim);max-width:520px;margin:0 auto 18px;line-height:1.5">
+          All authentication happens directly inside the emulated desktop browser. Click below to launch Chrome, type your credentials, approve 2FA, and authenticate Snapchat.
         </p>
-        <textarea id="session-import-text" rows="3" placeholder='Paste Cookie-Editor JSON or cookies string here ([{"name":"sc-a-nonce", ...}])' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:8px;resize:vertical"></textarea>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-success" style="font-size:12px;padding:6px 16px" onclick="importSession()">📥 Import Session &amp; Save Login</button>
-          <button class="btn btn-danger" style="font-size:12px;padding:6px 16px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
-        </div>
+        <button class="btn btn-primary" style="font-size:15px;padding:12px 28px;box-shadow:0 0 16px rgba(255,252,0,0.3)" onclick="startLogin()">
+          🖥️ Open Emulated Browser
+        </button>
       </div>
+
+      <!-- Optional Advanced Cookie Importer (Collapsed) -->
+      <details style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:10px">
+        <summary style="font-size:12px;font-weight:600;color:var(--text-dim);cursor:pointer">⚙️ Advanced: Alternative Cookie / Session JSON Import</summary>
+        <p style="font-size:11px;color:var(--text-dim);margin:8px 0 6px">If your server IP is blocked from accessing the login page, you can paste cookies exported from desktop Chrome (e.g. Cookie-Editor extension):</p>
+        <textarea id="session-import-text" rows="2" placeholder='[{"name":"sc-a-nonce", ...}]' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:6px;resize:vertical"></textarea>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-success" style="font-size:11px;padding:4px 12px" onclick="importSession()">📥 Import Session</button>
+          <button class="btn btn-danger" style="font-size:11px;padding:4px 12px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
+        </div>
+      </details>
     </div>
 
     <!-- Active remote browser view -->
     <div id="login-active" style="display:none">
-      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-        <span style="font-size:12px;color:var(--text-dim);white-space:nowrap">URL:</span>
-        <code id="browser-url" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)">loading…</code>
-      </div>
-
-      <!-- 1-Click Session / Cookie Importer inside active view -->
-      <details style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px">
-        <summary style="font-size:12px;font-weight:700;color:var(--yellow);cursor:pointer">🍪 Bypass Login: Import Cookies / Session JSON</summary>
-        <p style="font-size:11px;color:var(--text-dim);margin:6px 0">Paste Cookie-Editor JSON from your desktop browser to log in instantly:</p>
-        <textarea id="session-import-text-active" rows="2" placeholder='Paste Cookie-Editor JSON here...' style="font-family:monospace;font-size:11px;width:100%;margin-bottom:6px;resize:vertical"></textarea>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-success" style="font-size:11px;padding:4px 12px" onclick="importSessionActive()">📥 Inject Cookies &amp; Reload</button>
-          <button class="btn btn-danger" style="font-size:11px;padding:4px 12px" onclick="clearSession()">🗑️ Clear Cookies &amp; Cache</button>
+      <!-- Instruction Banner -->
+      <div style="background:rgba(255,252,0,0.08);border:1px solid rgba(255,252,0,0.3);border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="font-size:13px;color:var(--text);display:flex;align-items:center;gap:8px">
+          <span style="font-size:16px">💡</span>
+          <span><strong>Log in directly inside the browser window below.</strong> Click the page to focus, then type your credentials or solve any captcha just like desktop Chrome.</span>
         </div>
-      </details>
-
-      <!-- Quick Auto-Fill Helper Form -->
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-size:12px;font-weight:700;color:var(--accent)">⚡ Quick Fill &amp; Login Options</div>
-          <button class="btn btn-secondary" style="font-size:11px;padding:4px 10px;background:#4285F4;color:#fff;border-color:#4285F4;display:inline-flex;align-items:center;gap:5px" onclick="loginWithGoogle()">
-            <svg width="12" height="12" viewBox="0 0 24 24"><path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#fff" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
-            Continue with Google
-          </button>
-        </div>
-        
-        <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px">
-          <input id="quick-user" type="text" placeholder="Snapchat Username / Email" />
-          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('username')">Fill Username ↵</button>
-        </div>
-
-
-        <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px">
-          <input id="quick-pass" type="password" placeholder="Password" />
-          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('password')">Fill Password ↵</button>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr auto auto;gap:6px">
-          <input id="quick-code" type="text" placeholder="2FA / SMS Code" />
-          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="fillQuick('code')">Fill Code ↵</button>
-          <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="submitQuick()">👉 Click Next / Log In</button>
+        <div id="auto-save-pill" style="font-size:11px;font-weight:700;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:3px 10px;color:var(--accent)">
+          Watching for login...
         </div>
       </div>
 
@@ -363,54 +331,31 @@
       <div id="novnc-container" style="border:2px solid var(--accent);border-radius:8px;overflow:hidden;margin-bottom:12px;background:#000">
         <div style="display:flex;justify-content:space-between;align-items:center;background:#1b1d2a;padding:8px 12px;flex-wrap:wrap;gap:8px">
           <div style="font-size:12px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px">
-            <span>🌐 Interactive Chrome Browser (Snapchat Web + Live Extension HUD)</span>
+            <span>🌐 Emulated Chrome Browser</span>
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks Now</button>
-            <button class="btn btn-success" style="font-size:11px;padding:4px 10px" onclick="saveLogin()">💾 Save Session</button>
-            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px" onclick="reloadVncFrame()">↺ Reconnect</button>
-            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600">↗ Fullscreen</a>
-            <button class="btn btn-danger" style="font-size:11px;padding:4px 8px" onclick="cancelLogin()">✕ Close Browser</button>
+            <button class="btn btn-success" style="font-size:11px;padding:5px 12px;font-weight:bold" onclick="saveLogin()">💾 Save Session</button>
+            <button class="btn btn-primary" style="font-size:11px;padding:5px 12px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks Now</button>
+            <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="reloadVncFrame()">↺ Reconnect</button>
+            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600;padding:0 4px">↗ Fullscreen</a>
+            <button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="cancelLogin()">✕ Close Browser</button>
           </div>
         </div>
         <div style="position:relative">
-          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:680px;border:none;display:block;background:#000"></iframe>
+          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:720px;border:none;display:block;background:#000"></iframe>
           <div id="vnc-connecting-overlay" style="position:absolute;inset:0;background:#0d0e15;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text);z-index:10">
             <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div>
-            <div style="font-size:13px;font-weight:600">Connecting to Chrome Desktop (noVNC)...</div>
-            <div style="font-size:11px;color:var(--text-dim)">Launching virtual display, Google Chrome &amp; live extension</div>
+            <div style="font-size:13px;font-weight:600">Connecting to Emulated Chrome Desktop...</div>
+            <div style="font-size:11px;color:var(--text-dim)">Launching virtual display, Google Chrome &amp; Snapchat</div>
           </div>
         </div>
       </div>
 
-      <!-- Fallback / Secondary Live Screenshot Stream -->
-      <details style="margin-bottom:12px">
-        <summary style="font-size:11px;color:var(--text-dim);cursor:pointer;margin-bottom:6px">📷 Video Stream &amp; Low-Bandwidth Screenshot View</summary>
-        <div style="position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:crosshair;margin-bottom:10px;background:#000"
-             id="browser-frame" onclick="browserClick(event)">
-          <img id="browser-shot" src="" style="width:100%;display:block;min-height:260px" />
-          <div id="click-dot" style="position:absolute;width:12px;height:12px;background:#ff0055;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);display:none;pointer-events:none;z-index:10;box-shadow:0 0 8px #ff0055"></div>
-          <div id="browser-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);font-size:14px;color:#fff">
-            ⏳ Launching browser and navigating to Snapchat…
-          </div>
-        </div>
-      </details>
-
-
-      <!-- Raw text / key input -->
-      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
-        <input id="browser-text" type="text" placeholder="Raw typing into focused field…"
-               onkeydown="if(event.key==='Enter'){browserKey('Enter');this.value='';event.preventDefault()}" />
-        <button class="btn btn-secondary" onclick="browserSendText()">Send ↵</button>
-      </div>
-
-      <div class="btn-row" style="margin-bottom:14px;flex-wrap:wrap;gap:6px">
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Tab')">Tab</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Enter')">Enter</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Backspace')">⌫ Backspace</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserKey('Escape')">Esc</button>
-        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
-        <button class="btn btn-danger" style="font-size:11px;padding:5px 12px" onclick="clearBrowserData()">🧹 Clear Cache &amp; Cookies</button>
+      <!-- Quick Navigation & Cache Controls -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat Web</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="browserNav('https://accounts.snapchat.com/v2/login')">🔑 Go to Login Page</button>
+        <button class="btn btn-danger" style="font-size:11px;padding:5px 12px" onclick="clearBrowserData()">🧹 Clear Browser Cache</button>
       </div>
 
       <!-- Live Action Macro Recorder Toolbar -->
@@ -420,28 +365,13 @@
           <span id="macro-status-badge" style="font-size:11px;color:var(--text-dim)">No custom macro recorded</span>
         </div>
         <div id="macro-rec-banner" style="display:none;background:#ff2b55;color:#fff;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:700;margin-bottom:8px;animation:pulse 1s infinite">
-          🔴 RECORDING ACTIVE: Click your exact steps on the live screen below (Ghost icon, camera, ✨, Select, Send). When done, click Stop & Save!
+          🔴 RECORDING ACTIVE: Click your exact steps on the live screen above (Ghost icon, camera, ✨, Select, Send). When done, click Stop & Save!
         </div>
         <div class="btn-row" style="margin-top:0;gap:6px">
           <button class="btn btn-danger" id="btn-macro-start" style="font-size:12px;padding:6px 14px" onclick="startMacroRec()">🔴 Start Recording Clicks</button>
           <button class="btn btn-secondary" id="btn-macro-stop" style="font-size:12px;padding:6px 14px;display:none" onclick="stopMacroRec()">⏹️ Stop & Save Macro</button>
           <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="sendStreaksInOpenBrowser()">🚀 Run Streaks (Replay Macro)</button>
         </div>
-      </div>
-
-      <!-- Live Chat & Streak Tools inside the open browser -->
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
-        <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px">📸 Live Controls</div>
-        <div class="btn-row" style="margin-top:0;gap:6px">
-          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="uploadSnapToOpenChat()">📷 Attach Snap to Active Chat</button>
-          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="browserKey('Enter')">↵ Send (Enter)</button>
-          <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="browserNav('https://web.snapchat.com/')">↺ Reload Snapchat</button>
-        </div>
-      </div>
-
-      <div class="btn-row">
-        <button class="btn btn-success" onclick="saveLogin()">✓ Save & Close Browser</button>
-        <button class="btn btn-secondary" onclick="cancelLogin()">✗ Close Browser</button>
       </div>
     </div>
 
@@ -586,16 +516,16 @@
       if (s.login_active) {
         document.getElementById('login-idle').style.display = 'none';
         document.getElementById('login-active').style.display = '';
-        if (s.novnc_url) {
-          const frame = document.getElementById('novnc-iframe');
-          if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
-            frame.src = s.novnc_url;
-            const overlay = document.getElementById('vnc-connecting-overlay');
-            if (overlay) overlay.style.display = 'none';
-          }
-          const link = document.getElementById('novnc-tab-link');
-          if (link) link.href = s.novnc_url;
+        const host = window.location.hostname || 'localhost';
+        const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale`;
+        const frame = document.getElementById('novnc-iframe');
+        if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
+          frame.src = vncUrl;
+          const overlay = document.getElementById('vnc-connecting-overlay');
+          if (overlay) overlay.style.display = 'none';
         }
+        const link = document.getElementById('novnc-tab-link');
+        if (link) link.href = vncUrl;
         if (!_shotLoop) _startShotLoop();
       } else {
         document.getElementById('login-idle').style.display = '';
@@ -777,9 +707,19 @@
       return;
     }
     statusEl.textContent = '';
+    setTimeout(() => {
+      const host = window.location.hostname || 'localhost';
+      const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale`;
+      if (frame && (!frame.src || frame.src === 'about:blank')) {
+        frame.src = vncUrl;
+      }
+      const link = document.getElementById('novnc-tab-link');
+      if (link) link.href = vncUrl;
+      if (overlay) overlay.style.display = 'none';
+    }, 1800);
     _startShotLoop();
-    setTimeout(refreshStatus, 1500);
-    setTimeout(refreshStatus, 3000);
+    setTimeout(refreshStatus, 2000);
+    setTimeout(refreshStatus, 4000);
   }
 
   function _startShotLoop() {
@@ -961,50 +901,7 @@
       }
       if (d.url) document.getElementById('browser-url').textContent = d.url;
     } catch(e) {}
-  }
-
-  async function fillQuick(fieldName) {
-    let val = '';
-    if (fieldName === 'username') val = document.getElementById('quick-user').value.trim();
-    if (fieldName === 'password') val = document.getElementById('quick-pass').value;
-    if (fieldName === 'code') val = document.getElementById('quick-code').value.trim();
-    if (!val) { appendLog('err', `Please enter a ${fieldName} first.`); return; }
-
-    appendLog('info', `Filling ${fieldName}…`);
-    const r = await fetch('/api/login/fill', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ field: fieldName, value: val }),
-    });
-    const res = await r.json();
-    if (res.ok) {
-      appendLog('info', `✓ ${fieldName} filled.`);
-    } else {
-      appendLog('err', `Could not find field automatically: ${res.error || 'unknown'}`);
-    }
-    setTimeout(triggerRefreshNow, 600);
-    setTimeout(triggerRefreshNow, 1400);
-  }
-
-  async function submitQuick() {
-    appendLog('info', 'Clicking Next / Submit…');
-    await fetch('/api/login/submit', { method: 'POST' });
-    setTimeout(triggerRefreshNow, 800);
-    setTimeout(triggerRefreshNow, 1800);
-  }
-
-  async function loginWithGoogle() {
-    appendLog('info', 'Clicking Continue with Google in browser…');
-    const r = await fetch('/api/login/google', { method: 'POST' });
-    const res = await r.json();
-    if (res.ok) {
-      appendLog('info', '✓ Clicked Continue with Google! Follow Google sign-in prompts on the live screen.');
-    } else {
-      appendLog('err', '✗ ' + (res.error || 'Could not find Google button automatically. Try clicking it on the live screen.'));
-    }
-    setTimeout(triggerRefreshNow, 800);
-    setTimeout(triggerRefreshNow, 2000);
-  }
+}
 
 
   async function uploadSnapToOpenChat() {
