@@ -15,10 +15,14 @@ Endpoints:
 
 import asyncio
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("snapstreak")
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger

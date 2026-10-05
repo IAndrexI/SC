@@ -32,6 +32,7 @@ try:
 except Exception:
     pass
 
+USER_DATA_DIR = DATA_DIR / "browser_profile"
 try:
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 except Exception:

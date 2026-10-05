@@ -99,6 +99,7 @@ WorkingDirectory=${APP_SUBDIR}
 Environment="DATA_DIR=${DATA_DIR}"
 Environment="PORT=${PORT}"
 Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers"
+Environment="PYTHONPATH=${APP_SUBDIR}:${APP_DIR}"
 ExecStart=${APP_DIR}/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT}
 Restart=always
 RestartSec=5
@@ -117,8 +118,17 @@ systemctl daemon-reload
 systemctl enable sc
 systemctl restart sc
 
+sleep 2
+
 IP=$(hostname -I | awk '{print $1}')
 echo ""
-echo -e "${GREEN}✓ Done.${NC}"
-echo -e "  Open → ${YELLOW}http://${IP}:${PORT}${NC}"
+echo -e "${GREEN}✓ Installation complete.${NC}"
+echo -e "  Open in your PC's browser → ${YELLOW}http://${IP}:${PORT}${NC}"
 echo ""
+
+if curl -s -f "http://127.0.0.1:${PORT}/api/status" &>/dev/null; then
+  echo -e "${GREEN}✓ SnapStreak is active and responding healthy on http://${IP}:${PORT}${NC}"
+else
+  echo -e "${YELLOW}[!] Checking service logs...${NC}"
+  systemctl status sc --no-pager -n 10 || true
+fi
