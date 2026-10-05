@@ -42,16 +42,18 @@ fi
 
 # clone or update
 git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+git config --global --add safe.directory "*" 2>/dev/null || true
 if [[ -d "$APP_DIR/.git" ]]; then
   step "Updating repo..."
-  git -C "$APP_DIR" pull --ff-only || (git -C "$APP_DIR" fetch origin && git -C "$APP_DIR" reset --hard origin/main)
+  git -C "$APP_DIR" fetch origin main || true
+  git -C "$APP_DIR" reset --hard origin/main || git -C "$APP_DIR" pull --ff-only || true
 else
   step "Cloning repo..."
   git clone https://github.com/IAndrexI/SC "$APP_DIR"
 fi
 
 step "Creating data directory..."
-mkdir -p "$DATA_DIR"
+mkdir -p "$DATA_DIR" /data /opt/sc-browsers
 
 # always wipe and rebuild the venv for a clean install
 step "Building fresh Python environment..."
@@ -78,9 +80,10 @@ else
   APP_SUBDIR="$APP_DIR/app"
 fi
 
-step "Creating service user..."
+step "Creating service user and setting permissions..."
 id -u "$SERVICE_USER" &>/dev/null || useradd -r -s /bin/false -d "$APP_DIR" "$SERVICE_USER"
-chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" "$DATA_DIR" /opt/sc-browsers
+chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" "$DATA_DIR" /opt/sc-browsers /data
+chmod -R 775 "$DATA_DIR" /data 2>/dev/null || true
 
 step "Registering systemd service..."
 cat > /etc/systemd/system/sc.service <<EOF
@@ -105,8 +108,14 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+if [[ -d "/usr/share/novnc" ]]; then
+  [[ -f "/usr/share/novnc/vnc_lite.html" && ! -f "/usr/share/novnc/vnc.html" ]] && ln -s /usr/share/novnc/vnc_lite.html /usr/share/novnc/vnc.html 2>/dev/null || true
+  [[ -f "/usr/share/novnc/vnc.html" && ! -f "/usr/share/novnc/index.html" ]] && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html 2>/dev/null || true
+fi
+
 systemctl daemon-reload
-systemctl enable --now sc
+systemctl enable sc
+systemctl restart sc
 
 IP=$(hostname -I | awk '{print $1}')
 echo ""

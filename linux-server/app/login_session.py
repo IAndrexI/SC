@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import time
+from pathlib import Path
 from typing import Callable
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page

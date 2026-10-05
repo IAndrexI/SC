@@ -27,10 +27,15 @@ LOG_FILE     = DATA_DIR / "activity.log"
 SCREENSHOT_FILE = DATA_DIR / "last_screenshot.png"
 MACRO_FILE   = DATA_DIR / "macro.json"
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
-USER_DATA_DIR = DATA_DIR / "browser_profile"
-USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 # Realistic desktop Chrome fingerprint (matches Playwright Chromium 130)

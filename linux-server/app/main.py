@@ -39,13 +39,23 @@ import socket
 # ---------------------------------------------------------------------------
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+try:
+    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # In-memory state
 # ---------------------------------------------------------------------------
+_init_logged_in = False
+try:
+    _init_logged_in = automation.SESSION_FILE.exists()
+except Exception:
+    pass
+
 _state: dict[str, Any] = {
-    "logged_in": automation.SESSION_FILE.exists(),
+    "logged_in": _init_logged_in,
     "last_run_time": None,
     "last_run_results": {},
     "running": False,
@@ -105,13 +115,18 @@ def _reschedule(schedule_time: str):
         _scheduler.remove_job("daily_streak")
     except Exception:
         pass
-    hour, minute = schedule_time.split(":")
-    _scheduler.add_job(
-        _do_send,
-        trigger=CronTrigger(hour=int(hour), minute=int(minute)),
-        id="daily_streak",
-        replace_existing=True,
-    )
+    try:
+        parts = schedule_time.strip().split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        _scheduler.add_job(
+            _do_send,
+            trigger=CronTrigger(hour=hour, minute=minute),
+            id="daily_streak",
+            replace_existing=True,
+        )
+    except Exception as e:
+        log.error(f"Failed to schedule daily_streak with {schedule_time}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -119,26 +134,43 @@ def _reschedule(schedule_time: str):
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    cfg = config.load()
-    if cfg["enabled"]:
-        _reschedule(cfg["schedule_time"])
+    try:
+        cfg = config.load()
+        if cfg.get("enabled", True):
+            _reschedule(cfg.get("schedule_time", "09:00"))
+    except Exception as e:
+        log.error(f"Failed to load initial schedule: {e}")
 
     # 15-minute webcam frame refresh
     def _refresh_cam():
-        automation.fetch_webcam_image(force_refresh=True)
+        try:
+            automation.fetch_webcam_image(force_refresh=True)
+        except Exception:
+            pass
 
-    _scheduler.add_job(
-        _refresh_cam,
-        trigger=CronTrigger(minute="*/15"),
-        id="webcam_refresh_job",
-        replace_existing=True,
-    )
-    # Fetch initial webcam frame on startup
-    asyncio.create_task(asyncio.to_thread(_refresh_cam))
+    try:
+        _scheduler.add_job(
+            _refresh_cam,
+            trigger=CronTrigger(minute="*/15"),
+            id="webcam_refresh_job",
+            replace_existing=True,
+        )
+        # Fetch initial webcam frame on startup in background
+        asyncio.create_task(asyncio.to_thread(_refresh_cam))
+    except Exception:
+        pass
 
-    _scheduler.start()
+    try:
+        _scheduler.start()
+    except Exception as e:
+        log.error(f"Scheduler failed to start: {e}")
+
     yield
-    _scheduler.shutdown()
+
+    try:
+        _scheduler.shutdown()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="SnapStreak", lifespan=lifespan)
@@ -166,8 +198,17 @@ async def get_webcam_feed():
 # ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    html_file = STATIC_DIR / "index.html"
-    return HTMLResponse(html_file.read_text(encoding="utf-8"))
+    candidates = [
+        STATIC_DIR / "index.html",
+        Path(__file__).resolve().parent / "static" / "index.html",
+        Path("/opt/sc/linux-server/app/static/index.html"),
+        Path("/opt/sc/app/static/index.html"),
+        Path("/opt/snapstreak/linux-server/app/static/index.html"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return HTMLResponse(p.read_text(encoding="utf-8"))
+    return HTMLResponse("<h2>SnapStreak is running</h2><p>Static UI loading...</p>", status_code=200)
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +227,10 @@ class ConfigUpdate(BaseModel):
 
 @app.get("/api/config")
 async def get_config():
-    return config.load()
+    try:
+        return config.load()
+    except Exception:
+        return config._DEFAULTS
 
 
 @app.post("/api/config")
@@ -221,29 +265,58 @@ async def update_config(body: ConfigUpdate):
 
 @app.get("/api/status")
 async def get_status(request: Request):
-    cfg = config.load()
-    next_run = None
-    job = _scheduler.get_job("daily_streak")
-    if job:
-        next_run = str(job.next_run_time)
+    try:
+        cfg = config.load()
+        next_run = None
+        job = _scheduler.get_job("daily_streak")
+        if job:
+            next_run = str(job.next_run_time)
 
-    host_ip = request.url.hostname or "localhost"
-    novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale"
+        host_ip = request.url.hostname or "localhost"
+        novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale"
 
-    return {
-        "logged_in":       (bliss_client.is_connected() if cfg.get("mode") == "bliss" else automation.SESSION_FILE.exists()),
-        "login_active":    login_session.is_active(),
-        "novnc_url":       novnc_url,
-        "running":         _state["running"],
-        "last_run_time":   _state["last_run_time"],
-        "last_run_results": _state["last_run_results"],
-        "next_run":        next_run,
-        "enabled":         cfg["enabled"],
-        "friend_count":    len(cfg["friends"]),
-        "mode":            cfg.get("mode", "bliss"),
-        "bliss_connected": bliss_client.is_connected(),
-        "bliss_target":    bliss_client.get_target_device(),
-    }
+        is_logged_in = False
+        try:
+            if cfg.get("mode") == "bliss":
+                is_logged_in = bliss_client.is_connected()
+            else:
+                is_logged_in = automation.SESSION_FILE.exists()
+        except Exception:
+            pass
+
+        return {
+            "logged_in":       is_logged_in,
+            "login_active":    login_session.is_active(),
+            "novnc_url":       novnc_url,
+            "running":         _state.get("running", False),
+            "last_run_time":   _state.get("last_run_time"),
+            "last_run_results": _state.get("last_run_results", {}),
+            "next_run":        next_run,
+            "enabled":         cfg.get("enabled", True),
+            "friend_count":    len(cfg.get("friends", [])),
+            "mode":            cfg.get("mode", "web"),
+            "bliss_connected": bliss_client.is_connected() if hasattr(bliss_client, "is_connected") else False,
+            "bliss_target":    bliss_client.get_target_device() if hasattr(bliss_client, "get_target_device") else "127.0.0.1:5555",
+            "selection_method": cfg.get("selection_method", "auto"),
+        }
+    except Exception as ex:
+        host_ip = request.url.hostname or "localhost"
+        return {
+            "error": str(ex),
+            "logged_in": False,
+            "login_active": False,
+            "novnc_url": f"http://{host_ip}:6080/vnc.html?autoconnect=true&resize=scale",
+            "running": False,
+            "last_run_time": None,
+            "last_run_results": {},
+            "next_run": None,
+            "enabled": False,
+            "friend_count": 0,
+            "mode": "web",
+            "bliss_connected": False,
+            "bliss_target": "127.0.0.1:5555",
+            "selection_method": "auto",
+        }
 
 
 
@@ -384,8 +457,13 @@ async def session_import(body: SessionImportInput):
         }]
 
     # Save to session.json
-    automation.SESSION_FILE.write_text(json.dumps(storage_state, indent=2), encoding="utf-8")
-    _state["logged_in"] = True
+    try:
+        automation.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        automation.SESSION_FILE.write_text(json.dumps(storage_state, indent=2), encoding="utf-8")
+        _state["logged_in"] = True
+    except Exception as ex:
+        _emit(f"⚠ Warning: Could not write session.json: {ex}")
+        _state["logged_in"] = True
 
     # If live browser session is active, inject cookies immediately and navigate
     if login_session.is_active():
