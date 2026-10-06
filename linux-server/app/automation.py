@@ -314,39 +314,63 @@ async def _build_context(playwright, headless: bool = True):
     _cleanup_stale_locks()
     fetch_webcam_image()  # ensure Y4M_FILE is ready before launch
 
-    args = [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-setuid-sandbox",
-        f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-        "--disable-blink-features=AutomationControlled",
-        "--enable-webgl",
-        "--enable-webgl2",
-        "--use-fake-ui-for-media-stream",
-        "--use-fake-device-for-media-stream",
-    ]
-    if Y4M_FILE.exists():
-        args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+    cfg = config.load()
+    browser_engine = cfg.get("browser_engine", "firefox").lower()
 
-    context = await playwright.chromium.launch_persistent_context(
-        user_data_dir=str(USER_DATA_DIR),
-        headless=headless,
-        viewport=VIEWPORT,
-        user_agent=USER_AGENT,
-        locale="en-US",
-        timezone_id="America/Los_Angeles",
-        permissions=["camera", "microphone", "notifications"],
-        args=args,
-        extra_http_headers={
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Upgrade-Insecure-Requests": "1",
-        },
-    )
+    if browser_engine == "firefox":
+        ff_profile_dir = DATA_DIR / "firefox_profile"
+        ff_profile_dir.mkdir(parents=True, exist_ok=True)
+        context = await playwright.firefox.launch_persistent_context(
+            user_data_dir=str(ff_profile_dir),
+            headless=headless,
+            viewport=VIEWPORT,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
+            permissions=["camera", "microphone", "notifications"],
+            firefox_user_prefs={
+                "media.navigator.permission.disabled": True,
+                "permissions.default.camera": 1,
+                "permissions.default.microphone": 1,
+                "dom.webdriver.enabled": False,
+                "useAutomationExtension": False,
+            },
+        )
+    else:
+        args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-setuid-sandbox",
+            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
+            "--disable-blink-features=AutomationControlled",
+            "--enable-webgl",
+            "--enable-webgl2",
+            "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
+        ]
+        if Y4M_FILE.exists():
+            args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=str(USER_DATA_DIR),
+            headless=headless,
+            viewport=VIEWPORT,
+            user_agent=USER_AGENT,
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
+            permissions=["camera", "microphone", "notifications"],
+            args=args,
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+        await context.add_init_script(STEALTH_INIT_SCRIPT)
 
     if SESSION_FILE.exists():
         try:
@@ -358,7 +382,6 @@ async def _build_context(playwright, headless: bool = True):
         except Exception as ex:
             _log(f"  ⚠ Failed to inject session cookies: {ex}")
 
-    await context.add_init_script(STEALTH_INIT_SCRIPT)
     return context
 
 

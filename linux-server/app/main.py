@@ -224,6 +224,7 @@ class ConfigUpdate(BaseModel):
     enabled: bool | None = None
     mode: str | None = None
     selection_method: str | None = None
+    browser_engine: str | None = None
     step_delay: int | None = None
     bliss_host: str | None = None
     bliss_port: int | None = None
@@ -255,6 +256,8 @@ async def update_config(body: ConfigUpdate):
             _scheduler.remove_all_jobs()
     if body.mode is not None:
         cfg["mode"] = body.mode
+    if body.browser_engine is not None:
+        cfg["browser_engine"] = body.browser_engine
     if body.selection_method is not None:
         cfg["selection_method"] = body.selection_method
     if body.step_delay is not None:
@@ -324,19 +327,24 @@ async def get_status(request: Request):
 
 
 
+class LoginStartInput(BaseModel):
+    engine: str | None = None
+
+
 @app.post("/api/login/start")
-async def login_start():
+async def login_start(body: LoginStartInput | None = None):
     """Start a visible browser session via VNC so you can log in manually."""
     if _state["running"]:
         raise HTTPException(status_code=409, detail="A send job is running.")
     if login_session.is_active():
         raise HTTPException(status_code=409, detail="Login session already active.")
-    asyncio.create_task(_do_login_start())
+    engine = body.engine if body else None
+    asyncio.create_task(_do_login_start(engine=engine))
     return {"message": "Starting login session..."}
 
 
-async def _do_login_start():
-    await login_session.start(emit=_emit)
+async def _do_login_start(engine: str | None = None):
+    await login_session.start(emit=_emit, engine=engine)
     _emit("LOGIN_SESSION_READY")
 
 

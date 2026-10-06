@@ -16,6 +16,7 @@ _DEFAULTS = {
     "enabled": True,                       # whether auto-send is active
     "snap_image_custom": False,            # whether a custom image has been uploaded
     "mode": "web",                         # "web" (Browser) or "bliss" (Android VM)
+    "browser_engine": "firefox",           # "firefox" (Gecko, bypasses bot detection) or "chromium"
     "selection_method": "auto",            # "auto" (shortcut + fallback), "direct" (search/click friends), or "shortcut"
     "step_delay": 4,                       # seconds between automation verification steps
     "bliss_host": "127.0.0.1",

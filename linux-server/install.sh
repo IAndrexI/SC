@@ -30,7 +30,7 @@ apt-get install -y -qq \
   libasound2t64 libdbus-1-3 libexpat1 libx11-6 libxcb1 \
   libgtk-3-0t64 libatspi2.0-0t64 libglib2.0-0t64 \
   fonts-liberation fonts-unifont \
-  xdg-utils
+  xdg-utils firefox-esr
 
 if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
   step "Installing official Google Chrome..."
@@ -67,10 +67,10 @@ if [[ ! -f "$REQ_FILE" ]]; then
 fi
 "$APP_DIR/.venv/bin/pip" install -q -r "$REQ_FILE"
 
-# install Chromium — skip install-deps (we handled them above manually)
-step "Downloading Chromium..."
+# install Chromium & Firefox for Playwright
+step "Downloading browser engines (Chromium & Firefox)..."
 PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers \
-  "$APP_DIR/.venv/bin/playwright" install chromium
+  "$APP_DIR/.venv/bin/playwright" install chromium firefox
 
 # locate app directory (supports both linux-server/app and root /app)
 if [[ -d "$APP_DIR/linux-server/app" ]]; then

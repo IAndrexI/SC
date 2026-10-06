@@ -211,9 +211,20 @@ def _find_chrome_executable() -> str | None:
     return None
 
 
+def _find_firefox_executable() -> str | None:
+    for path in [
+        "/usr/bin/firefox-esr",
+        "/usr/bin/firefox",
+        "/opt/firefox/firefox",
+        "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+        "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe",
+    ]:
+        if os.path.exists(path):
+            return path
+    return None
 
 
-async def start(emit: Callable | None = None) -> str:
+async def start(emit: Callable | None = None, engine: str | None = None) -> str:
     if _state["active"] and _state["page"]:
         return "Already running."
 
@@ -299,80 +310,124 @@ async def start(emit: Callable | None = None) -> str:
     else:
         headless = True
 
-    chrome_exe = _find_chrome_executable()
-    if chrome_exe:
-        _log(f"  ✓ Using official browser: {chrome_exe}", emit)
+    import config
+    cfg = config.load()
+    chosen_engine = (engine or cfg.get("browser_engine") or "firefox").lower()
+
+    if chosen_engine == "firefox":
+        _log("🦊 Using Firefox ESR Gecko Engine (Arkose Labs anti-bot bypass)...", emit)
+        ff_exe = _find_firefox_executable()
+        ff_profile_dir = DATA_DIR / "firefox_profile"
+        ff_profile_dir.mkdir(parents=True, exist_ok=True)
+
+        ff_args = [
+            "--start-maximized",
+            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
+        ]
+
+        ff_kwargs = {
+            "user_data_dir": str(ff_profile_dir),
+            "headless": headless,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            "locale": "en-US",
+            "timezone_id": "America/Los_Angeles",
+            "permissions": ["camera", "microphone", "notifications"],
+            "firefox_user_prefs": {
+                "media.navigator.permission.disabled": True,
+                "permissions.default.camera": 1,
+                "permissions.default.microphone": 1,
+                "dom.webdriver.enabled": False,
+                "useAutomationExtension": False,
+            },
+            "args": ff_args,
+            "env": env,
+        }
+        if not headless:
+            ff_kwargs["no_viewport"] = True
+        else:
+            ff_kwargs["viewport"] = VIEWPORT
+        if ff_exe:
+            ff_kwargs["executable_path"] = ff_exe
+            _log(f"  ✓ Using system Firefox: {ff_exe}", emit)
+        else:
+            _log("  ℹ Using Playwright Firefox engine.", emit)
+
+        context = await pw.firefox.launch_persistent_context(**ff_kwargs)
+
     else:
-        _log("  ℹ Using Playwright Chromium.", emit)
+        _log("🌐 Using Google Chrome / Chromium engine...", emit)
+        chrome_exe = _find_chrome_executable()
+        if chrome_exe:
+            _log(f"  ✓ Using official browser: {chrome_exe}", emit)
+        else:
+            _log("  ℹ Using Playwright Chromium.", emit)
 
-    launch_args = [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-setuid-sandbox",
-        "--start-maximized",
-        "--window-position=0,0",
-        f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-        "--disable-blink-features=AutomationControlled",
-        "--no-default-browser-check",
-        "--enable-webgl",
-        "--enable-webgl2",
-        "--use-fake-ui-for-media-stream",
-        "--use-fake-device-for-media-stream",
-    ]
-    if Y4M_FILE.exists():
-        launch_args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+        launch_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-setuid-sandbox",
+            "--start-maximized",
+            "--window-position=0,0",
+            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-default-browser-check",
+            "--enable-webgl",
+            "--enable-webgl2",
+            "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
+        ]
+        if Y4M_FILE.exists():
+            launch_args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
 
-    # Auto-load SnapStreak extension so the user has the overlay HUD just like Windows
-    ext_dir = None
-    candidates = [
-        Path(__file__).resolve().parent.parent / "extension",
-        Path(__file__).resolve().parent / "extension",
-        Path("/opt/sc/linux-server/extension"),
-        Path("/opt/sc/extension"),
-        Path("/opt/snapstreak/linux-server/extension"),
-        Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
-    ]
-    for cand in candidates:
-        if (cand / "manifest.json").exists():
-            ext_dir = cand.resolve()
-            break
+        # Auto-load SnapStreak extension so the user has the overlay HUD just like Windows
+        ext_dir = None
+        candidates = [
+            Path(__file__).resolve().parent.parent / "extension",
+            Path(__file__).resolve().parent / "extension",
+            Path("/opt/sc/linux-server/extension"),
+            Path("/opt/sc/extension"),
+            Path("/opt/snapstreak/linux-server/extension"),
+            Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
+        ]
+        for cand in candidates:
+            if (cand / "manifest.json").exists():
+                ext_dir = cand.resolve()
+                break
 
-    if ext_dir and not headless:
-        launch_args.extend([
-            f"--disable-extensions-except={ext_dir}",
-            f"--load-extension={ext_dir}",
-        ])
-        _log(f"  ✓ Loaded SnapStreak Extension: {ext_dir}", emit)
+        if ext_dir and not headless:
+            launch_args.extend([
+                f"--disable-extensions-except={ext_dir}",
+                f"--load-extension={ext_dir}",
+            ])
+            _log(f"  ✓ Loaded SnapStreak Extension: {ext_dir}", emit)
 
-    kwargs = {
-        "user_data_dir": str(USER_DATA_DIR),
-        "headless": headless,
-        "user_agent": USER_AGENT,
-        "locale": "en-US",
-        "timezone_id": "America/Los_Angeles",
-        "permissions": ["camera", "microphone", "notifications"],
-        "args": launch_args,
-        "env": env,
-        "extra_http_headers": {
-            "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Upgrade-Insecure-Requests": "1",
-        },
-    }
-    if not headless:
-        kwargs["no_viewport"] = True
-    else:
-        kwargs["viewport"] = VIEWPORT
+        kwargs = {
+            "user_data_dir": str(USER_DATA_DIR),
+            "headless": headless,
+            "user_agent": USER_AGENT,
+            "locale": "en-US",
+            "timezone_id": "America/Los_Angeles",
+            "permissions": ["camera", "microphone", "notifications"],
+            "args": launch_args,
+            "env": env,
+            "extra_http_headers": {
+                "Accept-Language": "en-US,en;q=0.9",
+                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Upgrade-Insecure-Requests": "1",
+            },
+        }
+        if not headless:
+            kwargs["no_viewport"] = True
+        else:
+            kwargs["viewport"] = VIEWPORT
 
-    if chrome_exe:
-        kwargs["executable_path"] = chrome_exe
+        if chrome_exe:
+            kwargs["executable_path"] = chrome_exe
 
-    context = await pw.chromium.launch_persistent_context(**kwargs)
-
-
-    await context.add_init_script(STEALTH_INIT_SCRIPT)
+        context = await pw.chromium.launch_persistent_context(**kwargs)
+        await context.add_init_script(STEALTH_INIT_SCRIPT)
 
 
     if SESSION_FILE.exists():
