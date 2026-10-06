@@ -229,7 +229,7 @@ async def _take_screenshot(page: Page, label: str = ""):
 
 STEALTH_INIT_SCRIPT = """
 (() => {
-    // 1. Strip navigator.webdriver
+    // 1. Strip navigator.webdriver completely
     try {
         delete Object.getPrototypeOf(navigator).webdriver;
     } catch(e) {}
@@ -241,7 +241,45 @@ STEALTH_INIT_SCRIPT = """
         configurable: true
     });
 
-    // 2. Mock chrome object
+    // 2. Mask platform and appVersion to Windows 10/11
+    Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
+    Object.defineProperty(navigator, 'appVersion', {
+        get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        configurable: true
+    });
+
+    // 3. Mock High-Entropy UserAgentData (NavigatorUAData) to Windows Direct
+    if (navigator.userAgentData) {
+        const brandList = [
+            { brand: 'Chromium', version: '130' },
+            { brand: 'Google Chrome', version: '130' },
+            { brand: 'Not?A_Brand', version: '99' }
+        ];
+        try {
+            Object.defineProperty(navigator.userAgentData, 'brands', { get: () => brandList, configurable: true });
+            Object.defineProperty(navigator.userAgentData, 'mobile', { get: () => false, configurable: true });
+            Object.defineProperty(navigator.userAgentData, 'platform', { get: () => 'Windows', configurable: true });
+            navigator.userAgentData.getHighEntropyValues = function(hints) {
+                return Promise.resolve({
+                    architecture: 'x86',
+                    bitness: '64',
+                    brands: brandList,
+                    mobile: false,
+                    model: '',
+                    platform: 'Windows',
+                    platformVersion: '15.0.0',
+                    uaFullVersion: '130.0.6723.31',
+                    fullVersionList: [
+                        { brand: 'Chromium', version: '130.0.6723.31' },
+                        { brand: 'Google Chrome', version: '130.0.6723.31' },
+                        { brand: 'Not?A_Brand', version: '99.0.0.0' }
+                    ]
+                });
+            };
+        } catch(e) {}
+    }
+
+    // 4. Mock chrome object
     window.chrome = {
         app: {
             isInstalled: false,
@@ -260,7 +298,7 @@ STEALTH_INIT_SCRIPT = """
         loadTimes: function() {}
     };
 
-    // 3. Mock plugins and mimeTypes
+    // 5. Mock plugins and mimeTypes
     const fakePlugins = [
         { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
         { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
@@ -274,12 +312,12 @@ STEALTH_INIT_SCRIPT = """
         configurable: true
     });
 
-    // 4. Mock hardware & languages
+    // 6. Mock hardware & languages
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
 
-    // 5. Mock WebGL Vendor & Renderer (NVIDIA / ANGLE)
+    // 7. Mock WebGL Vendor & Renderer (NVIDIA GeForce Direct3D11 - Windows)
     const getParam = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {
         if (parameter === 37445) return 'Google Inc. (NVIDIA)';
@@ -296,7 +334,27 @@ STEALTH_INIT_SCRIPT = """
         };
     }
 
-    // 6. Notification permission mock
+    // 8. Mask enumerateDevices to show authentic physical camera device
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        const origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+        navigator.mediaDevices.enumerateDevices = async function() {
+            const list = await origEnum();
+            return list.map(d => {
+                if (d.kind === 'videoinput') {
+                    return {
+                        deviceId: d.deviceId || 'default',
+                        groupId: d.groupId || 'video-group-1',
+                        kind: 'videoinput',
+                        label: 'Integrated HD Camera (04f2:b6d9)',
+                        toJSON: () => ({ deviceId: d.deviceId, kind: 'videoinput', label: 'Integrated HD Camera (04f2:b6d9)' })
+                    };
+                }
+                return d;
+            });
+        };
+    }
+
+    // 9. Notification permission mock
     if (navigator.permissions && navigator.permissions.query) {
         const origQuery = navigator.permissions.query.bind(navigator.permissions);
         navigator.permissions.query = (p) => (

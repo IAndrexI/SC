@@ -401,6 +401,9 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
             f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
             "--disable-blink-features=AutomationControlled",
             "--no-default-browser-check",
+            "--no-first-run",
+            "--disable-infobars",
+            "--disable-features=IsolateOrigins,site-per-process",
             "--enable-webgl",
             "--enable-webgl2",
             "--use-fake-ui-for-media-stream",
@@ -447,6 +450,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 "Sec-Ch-Ua-Platform": '"Windows"',
                 "Upgrade-Insecure-Requests": "1",
             },
+            "ignore_default_args": ["--enable-automation"],
         }
         if not headless:
             kwargs["no_viewport"] = True
