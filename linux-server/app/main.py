@@ -338,6 +338,8 @@ async def login_start(body: LoginStartInput | None = None):
         raise HTTPException(status_code=409, detail="A send job is running.")
     if login_session.is_active():
         raise HTTPException(status_code=409, detail="Login session already active.")
+    if login_session.is_starting():
+        raise HTTPException(status_code=409, detail="Browser is already launching — please wait.")
     engine = body.engine if body else None
     asyncio.create_task(_do_login_start(engine=engine))
     return {"message": "Starting login session..."}

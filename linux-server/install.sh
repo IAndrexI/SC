@@ -71,6 +71,7 @@ fi
 step "Downloading browser engines (Chromium & Firefox)..."
 PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers \
   "$APP_DIR/.venv/bin/playwright" install chromium firefox
+"$APP_DIR/.venv/bin/playwright" install-deps chromium firefox || true
 
 # locate app directory (supports both linux-server/app and root /app)
 if [[ -d "$APP_DIR/linux-server/app" ]]; then

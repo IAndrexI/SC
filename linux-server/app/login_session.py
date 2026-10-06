@@ -117,8 +117,8 @@ def _cleanup_processes():
         subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "Xvfb :99"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "firefox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "chrome"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "firefox_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "browser_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -233,7 +233,28 @@ def _find_firefox_executable() -> str | None:
     return None
 
 
+_start_lock = asyncio.Lock()
+
+
+def is_starting() -> bool:
+    return _start_lock.locked()
+
+
 async def start(emit: Callable | None = None, engine: str | None = None) -> str:
+    """Serialize launches: a second concurrent start used to stop the first
+    launch's Playwright driver, producing 'Target ... has been closed'."""
+    if _start_lock.locked():
+        _log("  ℹ A browser launch is already in progress — ignoring duplicate request.", emit)
+        return "Already starting."
+    async with _start_lock:
+        try:
+            return await _start_impl(emit=emit, engine=engine)
+        except Exception:
+            await _cleanup()
+            raise
+
+
+async def _start_impl(emit: Callable | None = None, engine: str | None = None) -> str:
     if _state["active"] and _state["page"]:
         return "Already running."
 
@@ -350,11 +371,9 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
             ff_kwargs["no_viewport"] = True
         else:
             ff_kwargs["viewport"] = VIEWPORT
-        if ff_exe:
-            ff_kwargs["executable_path"] = ff_exe
-            _log(f"  ✓ Using system Firefox: {ff_exe}", emit)
-        else:
-            _log("  ℹ Using Playwright Firefox engine.", emit)
+        # NOTE: Playwright requires its own patched Firefox build (Juggler protocol).
+        # Stock /usr/bin/firefox-esr closes immediately ("Target ... has been closed").
+        _log("  ℹ Using Playwright's patched Firefox (Gecko) build.", emit)
 
         try:
             _log("  Launching Firefox persistent context...", emit)
@@ -440,11 +459,20 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
         try:
             _log("  Launching Chromium persistent context...", emit)
             context = await pw.chromium.launch_persistent_context(**kwargs)
-            await context.add_init_script(STEALTH_INIT_SCRIPT)
-            _log("  ✓ Chromium context launched successfully.", emit)
         except Exception as cr_err:
-            _log(f"  ✗ Chromium failed to launch: {cr_err}", emit)
-            raise cr_err
+            _log(f"  ⚠ Chrome failed to launch: {cr_err}", emit)
+            if "executable_path" not in kwargs:
+                raise
+            _log("  🔄 Retrying with Playwright's bundled Chromium...", emit)
+            kwargs.pop("executable_path", None)
+            for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                try:
+                    (USER_DATA_DIR / lock_name).unlink()
+                except Exception:
+                    pass
+            context = await pw.chromium.launch_persistent_context(**kwargs)
+        await context.add_init_script(STEALTH_INIT_SCRIPT)
+        _log("  ✓ Chromium context launched successfully.", emit)
 
     if SESSION_FILE.exists():
         try:
