@@ -294,6 +294,7 @@ async def get_status(request: Request):
         return {
             "logged_in":       is_logged_in,
             "login_active":    login_session.is_active(),
+            "login_starting":  login_session.is_starting(),
             "novnc_url":       novnc_url,
             "running":         _state.get("running", False),
             "last_run_time":   _state.get("last_run_time"),

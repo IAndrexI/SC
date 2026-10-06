@@ -629,6 +629,11 @@
         document.getElementById('step-browser-txt').innerHTML = '✓ Browser Active';
       }
     }
+    if (lower.includes('failed to start browser session')) {
+      window._lastLaunchError = text;
+      const st = document.getElementById('login-status');
+      if (st) { st.style.color = 'var(--red)'; st.textContent = text; }
+    }
   }
 
   function appendLog(cls, text) {
@@ -665,7 +670,13 @@
         _startSendMonitor();
       }
 
-      if (s.login_active) {
+      if (s.login_starting && !s.login_active) {
+        // Browser still launching on the server — keep the launch overlay up.
+        document.getElementById('login-idle').style.display = 'none';
+        document.getElementById('login-active').style.display = '';
+        const overlay = document.getElementById('vnc-connecting-overlay');
+        if (overlay) overlay.style.display = 'flex';
+      } else if (s.login_active) {
         document.getElementById('login-idle').style.display = 'none';
         document.getElementById('login-active').style.display = '';
         const host = window.location.hostname || 'localhost';
