@@ -90,6 +90,7 @@ _state: dict = {
     "openbox":       None,
     "x11vnc":        None,
     "websockify":    None,
+    "chrome_proc":   None,
 }
 
 
@@ -106,17 +107,19 @@ def _kill(proc):
 
 
 def _cleanup_processes():
+    _kill(_state.get("chrome_proc"))
     _kill(_state.get("websockify"))
     _kill(_state.get("x11vnc"))
     _kill(_state.get("openbox"))
     _kill(_state.get("xvfb"))
-    _state["xvfb"] = _state["openbox"] = _state["x11vnc"] = _state["websockify"] = None
+    _state["xvfb"] = _state["openbox"] = _state["x11vnc"] = _state["websockify"] = _state["chrome_proc"] = None
 
     # Kill lingering instances by process name if orphaned
     try:
         subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "Xvfb :99"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "google-chrome"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "firefox_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "browser_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
@@ -434,49 +437,109 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
             ])
             _log(f"  ✓ Loaded SnapStreak Extension: {ext_dir}", emit)
 
-        kwargs = {
-            "user_data_dir": str(USER_DATA_DIR),
-            "headless": headless,
-            "user_agent": USER_AGENT,
-            "locale": "en-US",
-            "timezone_id": "America/Los_Angeles",
-            "permissions": ["camera", "microphone", "notifications"],
-            "args": launch_args,
-            "env": env,
-            "extra_http_headers": {
-                "Accept-Language": "en-US,en;q=0.9",
-                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-                "Upgrade-Insecure-Requests": "1",
-            },
-            "ignore_default_args": ["--enable-automation"],
-        }
-        if not headless:
-            kwargs["no_viewport"] = True
-        else:
-            kwargs["viewport"] = VIEWPORT
+        CDP_PORT = 9222
+        # If an official system Chrome is installed, launch it as a native OS process with remote debugging
+        # This completely strips all Playwright automation drivers, process trees, and runtime flags.
+        if chrome_exe and not headless:
+            _log("  🚀 Launching official Chrome as native system process (CDP un-automated mode)...", emit)
+            chrome_cmd = [
+                chrome_exe,
+                f"--remote-debugging-port={CDP_PORT}",
+                f"--user-data-dir={USER_DATA_DIR}",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-infobars",
+                "--disable-blink-features=AutomationControlled",
+                "--password-store=basic",
+                "--enable-webgl",
+                "--enable-webgl2",
+                "--start-maximized",
+                "--window-position=0,0",
+                f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
+                f"--user-agent={USER_AGENT}",
+                "--use-fake-ui-for-media-stream",
+                "--use-fake-device-for-media-stream",
+            ]
+            if Y4M_FILE.exists():
+                chrome_cmd.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+            if ext_dir:
+                chrome_cmd.extend([
+                    f"--disable-extensions-except={ext_dir}",
+                    f"--load-extension={ext_dir}",
+                ])
 
-        if chrome_exe:
-            kwargs["executable_path"] = chrome_exe
-
-        try:
-            _log("  Launching Chromium persistent context...", emit)
-            context = await pw.chromium.launch_persistent_context(**kwargs)
-        except Exception as cr_err:
-            _log(f"  ⚠ Chrome failed to launch: {cr_err}", emit)
-            if "executable_path" not in kwargs:
-                raise
-            _log("  🔄 Retrying with Playwright's bundled Chromium...", emit)
-            kwargs.pop("executable_path", None)
             for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
                 try:
                     (USER_DATA_DIR / lock_name).unlink()
                 except Exception:
                     pass
-            context = await pw.chromium.launch_persistent_context(**kwargs)
-        await context.add_init_script(STEALTH_INIT_SCRIPT)
-        _log("  ✓ Chromium context launched successfully.", emit)
+
+            chrome_env = {**env, "DISPLAY": DISPLAY}
+            _state["chrome_proc"] = subprocess.Popen(
+                chrome_cmd,
+                env=chrome_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            _log(f"  ⏳ Waiting for native Chrome CDP on port {CDP_PORT}...", emit)
+            cdp_ready = await _wait_for_port(CDP_PORT, "127.0.0.1", timeout=8.0)
+            if cdp_ready:
+                _log(f"  ✓ Native Chrome listening on CDP port {CDP_PORT}. Connecting...", emit)
+                browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                await context.add_init_script(STEALTH_INIT_SCRIPT)
+                _log("  ✓ Connected cleanly to native Chrome without automation flags.", emit)
+            else:
+                _log("  ⚠ Native Chrome CDP wait timed out; falling back to persistent context...", emit)
+
+        if not context:
+            kwargs = {
+                "user_data_dir": str(USER_DATA_DIR),
+                "headless": headless,
+                "user_agent": USER_AGENT,
+                "locale": "en-US",
+                "timezone_id": "America/Los_Angeles",
+                "permissions": ["camera", "microphone", "notifications"],
+                "args": launch_args,
+                "env": env,
+                "extra_http_headers": {
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                    "Upgrade-Insecure-Requests": "1",
+                },
+                "ignore_default_args": ["--enable-automation"],
+            }
+            if not headless:
+                kwargs["no_viewport"] = True
+            else:
+                kwargs["viewport"] = VIEWPORT
+
+            if chrome_exe:
+                kwargs["executable_path"] = chrome_exe
+
+            try:
+                _log("  Launching Chromium persistent context...", emit)
+                context = await pw.chromium.launch_persistent_context(**kwargs)
+            except Exception as cr_err:
+                _log(f"  ⚠ Chrome failed to launch: {cr_err}", emit)
+                if "executable_path" not in kwargs:
+                    raise
+                _log("  🔄 Retrying with Playwright's bundled Chromium...", emit)
+                kwargs.pop("executable_path", None)
+                for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                    try:
+                        (USER_DATA_DIR / lock_name).unlink()
+                    except Exception:
+                        pass
+                context = await pw.chromium.launch_persistent_context(**kwargs)
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
+            _log("  ✓ Chromium context launched successfully.", emit)
 
     if SESSION_FILE.exists():
         try:
