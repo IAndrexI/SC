@@ -277,7 +277,7 @@ async def get_status(request: Request):
             next_run = str(job.next_run_time)
 
         host_ip = request.url.hostname or "localhost"
-        novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale"
+        novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale&path=websockify"
 
         is_logged_in = False
         try:

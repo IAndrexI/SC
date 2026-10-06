@@ -36,6 +36,7 @@ from automation import (
 import os
 import sys
 import shutil
+import socket
 import subprocess
 
 DISPLAY    = ":99"
@@ -109,6 +110,39 @@ def _cleanup_processes():
     _kill(_state.get("openbox"))
     _kill(_state.get("xvfb"))
     _state["xvfb"] = _state["openbox"] = _state["x11vnc"] = _state["websockify"] = None
+
+    # Kill lingering instances by process name if orphaned
+    try:
+        subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "Xvfb :99"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    # Remove stale X11 lock files and socket handles
+    for f in ["/tmp/.X99-lock", "/tmp/.X11-unix/X99"]:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except Exception:
+            pass
+
+
+def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except Exception:
+        return False
+
+
+async def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 4.0) -> bool:
+    start_t = time.time()
+    while time.time() - start_t < timeout:
+        if _is_port_listening(port, host):
+            return True
+        await asyncio.sleep(0.2)
+    return False
 
 
 async def _cleanup():
@@ -198,18 +232,35 @@ async def start(emit: Callable | None = None) -> str:
     if is_linux and has_xvfb:
         _log("Starting virtual X11 desktop (Xvfb)...", emit)
         _cleanup_processes()
+        await asyncio.sleep(0.3)
+
         _state["xvfb"] = subprocess.Popen(
-            ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac", "+extension", "RANDR", "+extension", "GLX", "-noreset"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
 
         _log("Starting VNC server (x11vnc)...", emit)
         _state["x11vnc"] = subprocess.Popen(
-            ["x11vnc", "-display", DISPLAY, "-nopw", "-forever", "-port", str(VNC_PORT), "-shared", "-quiet"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            [
+                "x11vnc",
+                "-display", DISPLAY,
+                "-nopw",
+                "-forever",
+                "-shared",
+                "-rfbport", str(VNC_PORT),
+                "-listen", "127.0.0.1",
+                "-wait", "5",
+                "-defer", "5",
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
-        await asyncio.sleep(0.8)
+
+        vnc_ok = await _wait_for_port(VNC_PORT, "127.0.0.1", timeout=3.5)
+        if vnc_ok:
+            _log(f"  ✓ x11vnc listening on 127.0.0.1:{VNC_PORT}", emit)
+        else:
+            _log(f"  ⚠ x11vnc failed to bind port {VNC_PORT} in time.", emit)
 
         if shutil.which("openbox"):
             _log("Starting X11 window manager (openbox)...", emit)
@@ -218,16 +269,30 @@ async def start(emit: Callable | None = None) -> str:
                 env={**env, "DISPLAY": DISPLAY},
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.3)
 
         novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
-        websock_cmd = ["websockify", "--web", novnc_web, str(NOVNC_PORT), f"localhost:{VNC_PORT}"] if novnc_web else ["websockify", str(NOVNC_PORT), f"localhost:{VNC_PORT}"]
-        _log(f"Starting web desktop proxy (noVNC port {NOVNC_PORT})...", emit)
+        websock_cmd = [
+            "websockify",
+            "--web", novnc_web,
+            f"0.0.0.0:{NOVNC_PORT}",
+            f"127.0.0.1:{VNC_PORT}",
+        ] if novnc_web else [
+            "websockify",
+            f"0.0.0.0:{NOVNC_PORT}",
+            f"127.0.0.1:{VNC_PORT}",
+        ]
+        _log(f"Starting web desktop proxy (noVNC port {NOVNC_PORT} -> 127.0.0.1:{VNC_PORT})...", emit)
         _state["websockify"] = subprocess.Popen(
             websock_cmd,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
-        await asyncio.sleep(0.8)
+        novnc_ok = await _wait_for_port(NOVNC_PORT, "127.0.0.1", timeout=3.5)
+        if novnc_ok:
+            _log(f"  ✓ noVNC websockify listening on port {NOVNC_PORT}", emit)
+        else:
+            _log(f"  ⚠ websockify failed to bind port {NOVNC_PORT}.", emit)
+
         env["DISPLAY"] = DISPLAY
         headless = False
         _log(f"✓ Real browser desktop ready on port {NOVNC_PORT}.", emit)

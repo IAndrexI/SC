@@ -553,7 +553,7 @@
         document.getElementById('login-idle').style.display = 'none';
         document.getElementById('login-active').style.display = '';
         const host = window.location.hostname || 'localhost';
-        const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale`;
+        const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale&path=websockify`;
         const frame = document.getElementById('novnc-iframe');
         if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
           frame.src = vncUrl;
@@ -745,7 +745,7 @@
     statusEl.textContent = '';
     setTimeout(() => {
       const host = window.location.hostname || 'localhost';
-      const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale`;
+      const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale&path=websockify`;
       if (frame && (!frame.src || frame.src === 'about:blank')) {
         frame.src = vncUrl;
       }
@@ -1316,7 +1316,7 @@
       const host = window.location.hostname || 'localhost';
       frame.src = 'about:blank';
       setTimeout(() => {
-        frame.src = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale`;
+        frame.src = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale&path=websockify`;
       }, 300);
     }
   }

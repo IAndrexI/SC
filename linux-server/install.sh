@@ -84,6 +84,9 @@ step "Creating service user and setting permissions..."
 id -u "$SERVICE_USER" &>/dev/null || useradd -r -s /bin/false -d "$APP_DIR" "$SERVICE_USER"
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR" "$DATA_DIR" /opt/sc-browsers /data
 chmod -R 775 "$DATA_DIR" /data 2>/dev/null || true
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix /tmp 2>/dev/null || true
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
 step "Registering systemd service..."
 cat > /etc/systemd/system/sc.service <<EOF
