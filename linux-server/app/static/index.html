@@ -154,13 +154,14 @@
       font-family: 'Consolas', 'Fira Mono', monospace;
       font-size: 12px;
       line-height: 1.7;
-      height: 200px;
+      min-height: 380px;
+      max-height: 700px;
       overflow-y: auto;
       color: #79f79e;
       white-space: pre-wrap;
       word-break: break-all;
     }
-    #log-box .err { color: var(--red); }
+    #log-box .err { color: var(--red); font-weight: bold; }
     #log-box .info { color: var(--accent); }
 
     /* Results table */
@@ -531,7 +532,17 @@
 
   <!-- ── LIVE LOG ── -->
   <div class="card wide">
-    <h2>Activity & Live Logs</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0;display:flex;align-items:center;gap:8px">
+        Activity &amp; Live Server Logs
+        <span id="log-count-badge" class="badge" style="background:#08080c;color:var(--accent);font-size:11px;font-weight:normal">0 entries</span>
+      </h2>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="loadAllLogs()" title="Load entire activity.log file from disk">🔄 Load Full History</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="copyAllLogs()" title="Copy entire log to clipboard">📋 Copy All</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px" onclick="clearLiveLogs()" title="Clear terminal view & server log file">🧹 Clear Logs</button>
+      </div>
+    </div>
     <div id="log-box">Connecting to log stream…</div>
   </div>
 
@@ -662,12 +673,16 @@
   function appendLog(cls, text) {
     appendLaunchLog(text);
     const box = document.getElementById('log-box');
+    if (!box) return;
     const line = document.createElement('div');
     if (cls) line.className = cls;
     line.textContent = text;
     box.appendChild(line);
     box.scrollTop = box.scrollHeight;
-    while (box.children.length > 300) box.removeChild(box.firstChild);
+    while (box.children.length > 3000) box.removeChild(box.firstChild);
+
+    const badge = document.getElementById('log-count-badge');
+    if (badge) badge.textContent = `${box.children.length} entries`;
   }
 
   // ── Poll status ──
@@ -1624,14 +1639,53 @@
   });
 
   // ── Load historical logs ──
-  async function loadLogs() {
+  async function loadLogs(limit = 300) {
     try {
-      const data = await fetch('/api/logs').then(r => r.json());
+      const data = await fetch(`/api/logs?limit=${limit}`).then(r => r.json());
       if (data.lines && data.lines.length) {
         const box = document.getElementById('log-box');
         box.textContent = '';
         data.lines.forEach(l => appendLog('', l));
       }
+    } catch(e) {}
+  }
+
+  async function loadAllLogs() {
+    const box = document.getElementById('log-box');
+    box.textContent = 'Fetching complete log history from server…';
+    try {
+      const data = await fetch('/api/logs?limit=0').then(r => r.json());
+      if (data.lines && data.lines.length) {
+        box.textContent = '';
+        data.lines.forEach(l => appendLog('', l));
+        box.scrollTop = box.scrollHeight;
+      } else {
+        box.textContent = 'Log file is currently empty.';
+      }
+    } catch(e) {
+      box.textContent = 'Failed to load logs: ' + e.message;
+    }
+  }
+
+  function copyAllLogs() {
+    const box = document.getElementById('log-box');
+    if (!box) return;
+    const text = box.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      alert(`Copied ${box.children.length || text.split('\n').length} log lines to clipboard!`);
+    }).catch(() => {
+      prompt('Copy log lines manually:', text);
+    });
+  }
+
+  async function clearLiveLogs() {
+    if (!confirm('Clear all logs on the server and reset the view?')) return;
+    try {
+      await fetch('/api/logs/clear', { method: 'POST' });
+      const box = document.getElementById('log-box');
+      if (box) box.textContent = '';
+      const badge = document.getElementById('log-count-badge');
+      if (badge) badge.textContent = '0 entries';
     } catch(e) {}
   }
 

@@ -847,11 +847,21 @@ async def import_cookies(body: CookieImport):
 
 
 @app.get("/api/logs")
-async def get_logs():
+async def get_logs(limit: int = 1000):
     if not automation.LOG_FILE.exists():
         return {"lines": []}
     lines = automation.LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    return {"lines": lines[-100:]}  # last 100 lines
+    if limit > 0 and len(lines) > limit:
+        return {"lines": lines[-limit:]}
+    return {"lines": lines}
+
+
+@app.post("/api/logs/clear")
+async def clear_logs():
+    if automation.LOG_FILE.exists():
+        automation.LOG_FILE.write_text("", encoding="utf-8")
+    _emit("🧹 Logs cleared.")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
