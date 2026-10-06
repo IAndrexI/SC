@@ -529,10 +529,15 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
     # Navigate directly to Snapchat Web with autoboot enabled so the extension activates
     target_url = "https://web.snapchat.com/?snapstreak_autoboot=1"
     _log(f"Navigating to {target_url}...", emit)
-    try:
-        await page.goto(target_url, timeout=30_000, wait_until="domcontentloaded")
-    except Exception as ex:
-        _log(f"Navigation notice: {ex}", emit)
+
+    async def _initial_navigation():
+        try:
+            # Short wait for commit/DOM, letting the user watch the load live in noVNC
+            await page.goto(target_url, timeout=45_000, wait_until="commit")
+        except Exception as ex:
+            _log(f"Navigation notice: {ex}", emit)
+
+    asyncio.create_task(_initial_navigation())
 
     # Background task to monitor for login completion directly inside the browser
     async def _auto_save_watcher():

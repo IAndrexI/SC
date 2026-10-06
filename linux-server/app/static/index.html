@@ -431,6 +431,10 @@
                 <div style="color:var(--accent)">• Contacting server to spawn browser worker...</div>
               </div>
             </div>
+
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('vnc-connecting-overlay').style.display='none'" style="margin-top:14px;font-size:12px;padding:6px 16px;background:rgba(255,255,255,0.08);border:1px solid var(--border);border-radius:20px;cursor:pointer">
+              👀 Dismiss &amp; View Desktop Now
+            </button>
           </div>
         </div>
       </div>
@@ -628,6 +632,9 @@
         el.style.background = 'rgba(39, 201, 63, 0.1)';
         document.getElementById('step-browser-txt').innerHTML = '✓ Browser Active';
       }
+      const overlay = document.getElementById('vnc-connecting-overlay');
+      if (overlay) overlay.style.display = 'none';
+      if (_vncTimer) { clearInterval(_vncTimer); _vncTimer = null; }
     }
     if (lower.includes('failed to start browser session')) {
       window._lastLaunchError = text;
@@ -684,9 +691,10 @@
         const frame = document.getElementById('novnc-iframe');
         if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
           frame.src = vncUrl;
-          const overlay = document.getElementById('vnc-connecting-overlay');
-          if (overlay) overlay.style.display = 'none';
         }
+        const overlay = document.getElementById('vnc-connecting-overlay');
+        if (overlay) overlay.style.display = 'none';
+        if (_vncTimer) { clearInterval(_vncTimer); _vncTimer = null; }
         const link = document.getElementById('novnc-tab-link');
         if (link) link.href = vncUrl;
         if (!_shotLoop) _startShotLoop();
