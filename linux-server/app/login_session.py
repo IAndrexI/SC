@@ -16,6 +16,7 @@ from typing import Callable
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from automation import (
+    DATA_DIR,
     SESSION_FILE,
     USER_AGENT,
     VIEWPORT,
@@ -116,11 +117,19 @@ def _cleanup_processes():
         subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-9", "-f", "Xvfb :99"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "firefox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "chrome"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
-    # Remove stale X11 lock files and socket handles
-    for f in ["/tmp/.X99-lock", "/tmp/.X11-unix/X99"]:
+    # Remove stale X11 and profile lock files
+    for f in [
+        "/tmp/.X99-lock",
+        "/tmp/.X11-unix/X99",
+        "/data/sc/firefox_profile/.parentlock",
+        "/data/sc/firefox_profile/parent.lock",
+        "/data/sc/firefox_profile/lock",
+    ]:
         try:
             if os.path.exists(f):
                 os.remove(f)
@@ -314,16 +323,12 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
     cfg = config.load()
     chosen_engine = (engine or cfg.get("browser_engine") or "firefox").lower()
 
+    context = None
     if chosen_engine == "firefox":
         _log("🦊 Using Firefox ESR Gecko Engine (Arkose Labs anti-bot bypass)...", emit)
         ff_exe = _find_firefox_executable()
         ff_profile_dir = DATA_DIR / "firefox_profile"
         ff_profile_dir.mkdir(parents=True, exist_ok=True)
-
-        ff_args = [
-            "--start-maximized",
-            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-        ]
 
         ff_kwargs = {
             "user_data_dir": str(ff_profile_dir),
@@ -339,7 +344,6 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
                 "dom.webdriver.enabled": False,
                 "useAutomationExtension": False,
             },
-            "args": ff_args,
             "env": env,
         }
         if not headless:
@@ -352,9 +356,16 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
         else:
             _log("  ℹ Using Playwright Firefox engine.", emit)
 
-        context = await pw.firefox.launch_persistent_context(**ff_kwargs)
+        try:
+            _log("  Launching Firefox persistent context...", emit)
+            context = await pw.firefox.launch_persistent_context(**ff_kwargs)
+            _log("  ✓ Firefox context launched successfully.", emit)
+        except Exception as ff_err:
+            _log(f"  ⚠ Firefox ESR failed to launch: {ff_err}", emit)
+            _log("  🔄 Automatically falling back to Google Chrome / Chromium...", emit)
+            chosen_engine = "chromium"
 
-    else:
+    if not context or chosen_engine != "firefox":
         _log("🌐 Using Google Chrome / Chromium engine...", emit)
         chrome_exe = _find_chrome_executable()
         if chrome_exe:
@@ -426,9 +437,14 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
         if chrome_exe:
             kwargs["executable_path"] = chrome_exe
 
-        context = await pw.chromium.launch_persistent_context(**kwargs)
-        await context.add_init_script(STEALTH_INIT_SCRIPT)
-
+        try:
+            _log("  Launching Chromium persistent context...", emit)
+            context = await pw.chromium.launch_persistent_context(**kwargs)
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
+            _log("  ✓ Chromium context launched successfully.", emit)
+        except Exception as cr_err:
+            _log(f"  ✗ Chromium failed to launch: {cr_err}", emit)
+            raise cr_err
 
     if SESSION_FILE.exists():
         try:
@@ -442,43 +458,44 @@ async def start(emit: Callable | None = None, engine: str | None = None) -> str:
 
     _state["context"] = context
 
-
-
-
     page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page
     _state["active"] = True
 
-    # Start native real-time CDP Screencast (high-speed, low-latency)
-    try:
-        cdp = await context.new_cdp_session(page)
-        _state["cdp"] = cdp
+    # Start screencast: CDP for Chromium, fast frame loop for Firefox
+    if chosen_engine != "firefox":
+        try:
+            cdp = await context.new_cdp_session(page)
+            _state["cdp"] = cdp
 
-        async def on_screencast_frame(params):
-            session_id = params.get("sessionId")
-            data_b64 = params.get("data", "")
-            if session_id:
-                try:
-                    await cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
-                except Exception:
-                    pass
-            if data_b64:
-                _state["last_shot_b64"] = data_b64
-                _state["url"] = page.url
-                if emit:
-                    emit(json.dumps({"type": "screencast", "image": data_b64, "url": page.url}))
+            async def on_screencast_frame(params):
+                session_id = params.get("sessionId")
+                data_b64 = params.get("data", "")
+                if session_id:
+                    try:
+                        await cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
+                    except Exception:
+                        pass
+                if data_b64:
+                    _state["last_shot_b64"] = data_b64
+                    _state["url"] = page.url
+                    if emit:
+                        emit(json.dumps({"type": "screencast", "image": data_b64, "url": page.url}))
 
-        cdp.on("Page.screencastFrame", lambda params: asyncio.create_task(on_screencast_frame(params)))
+            cdp.on("Page.screencastFrame", lambda params: asyncio.create_task(on_screencast_frame(params)))
 
-        await cdp.send("Page.startScreencast", {
-            "format": "jpeg",
-            "quality": 60,
-            "maxWidth": 1440,
-            "maxHeight": 900,
-            "everyNthFrame": 1,
-        })
-    except Exception as ex:
-        _log(f"CDP Screencast fallback: {ex}", emit)
+            await cdp.send("Page.startScreencast", {
+                "format": "jpeg",
+                "quality": 60,
+                "maxWidth": 1440,
+                "maxHeight": 900,
+                "everyNthFrame": 1,
+            })
+        except Exception as ex:
+            _log(f"CDP Screencast fallback: {ex}", emit)
+            asyncio.create_task(_fast_frame_loop())
+    else:
+        _log("  ℹ Firefox active — streaming via screenshot loop.", emit)
         asyncio.create_task(_fast_frame_loop())
 
     # Navigate directly to Snapchat Web with autoboot enabled so the extension activates

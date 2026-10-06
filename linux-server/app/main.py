@@ -344,8 +344,11 @@ async def login_start(body: LoginStartInput | None = None):
 
 
 async def _do_login_start(engine: str | None = None):
-    await login_session.start(emit=_emit, engine=engine)
-    _emit("LOGIN_SESSION_READY")
+    try:
+        await login_session.start(emit=_emit, engine=engine)
+        _emit("LOGIN_SESSION_READY")
+    except Exception as ex:
+        _emit(f"✗ Failed to start browser session: {ex}")
 
 
 @app.post("/api/login/save")
