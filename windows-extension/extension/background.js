@@ -137,6 +137,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       lastStreakStatus: 'success'
     });
     showNotification('SnapStreak Sent! 🔥', `Daily streaks were sent successfully at ${timeStr}!`);
+    try {
+      fetch('http://127.0.0.1:8080/api/extension/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', recipientsCount: message.recipientsCount || 0, timestamp: new Date().toISOString() })
+      }).catch(() => {});
+    } catch(e) {}
     sendResponse({ ok: true });
   } else if (message.type === 'CLOSE_OTHER_TABS') {
     const activeTabId = sender?.tab?.id;
@@ -162,6 +169,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       lastStreakStatus: 'error',
       lastStreakError: message.error || 'Unknown error'
     });
+    try {
+      fetch('http://127.0.0.1:8080/api/extension/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'error', error: message.error || 'Unknown error', timestamp: new Date().toISOString() })
+      }).catch(() => {});
+    } catch(e) {}
     showNotification('SnapStreak Alert ⚠️', `Scheduled streak send failed: ${message.error || 'Unknown error'}`);
     sendResponse({ ok: true });
   } else if (message.type === 'CANCEL_RUNNING_COMMAND') {
@@ -211,6 +225,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function setupAlarms() {
+  try {
+    const srv = await fetch('http://127.0.0.1:8080/api/config').then(r => r.json()).catch(() => null);
+    if (srv && srv.schedule_time) {
+      const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
+      const current = { ...(res.snapstreak_config || {}) };
+      current.scheduleTime = srv.schedule_time;
+      if (srv.enabled !== undefined) current.scheduleEnabled = srv.enabled;
+      if (srv.friends && srv.friends.length) current.friends = srv.friends;
+      await new Promise(r => chrome.storage.local.set({ snapstreak_config: current }, r));
+    }
+  } catch(e) {}
+
   chrome.storage.local.get(['snapstreak_config', 'lastStreakSentDate'], (res) => {
     const config = { ...DEFAULT_CONFIG, ...(res.snapstreak_config || {}) };
 

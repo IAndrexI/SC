@@ -334,23 +334,19 @@ STEALTH_INIT_SCRIPT = """
         };
     }
 
-    // 8. Mask enumerateDevices to show authentic physical camera device
+    // 8. Mask enumerateDevices to show authentic physical camera device without breaking MediaDeviceInfo prototypes
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
         const origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
         navigator.mediaDevices.enumerateDevices = async function() {
             const list = await origEnum();
-            return list.map(d => {
-                if (d.kind === 'videoinput') {
-                    return {
-                        deviceId: d.deviceId || 'default',
-                        groupId: d.groupId || 'video-group-1',
-                        kind: 'videoinput',
-                        label: 'Integrated HD Camera (04f2:b6d9)',
-                        toJSON: () => ({ deviceId: d.deviceId, kind: 'videoinput', label: 'Integrated HD Camera (04f2:b6d9)' })
-                    };
+            list.forEach(d => {
+                if (d && d.kind === 'videoinput') {
+                    try {
+                        Object.defineProperty(d, 'label', { get: () => 'Integrated HD Camera (04f2:b6d9)', configurable: true });
+                    } catch(e) {}
                 }
-                return d;
             });
+            return list;
         };
     }
 
@@ -408,6 +404,27 @@ async def _build_context(playwright, headless: bool = True):
         ]
         if Y4M_FILE.exists():
             args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+
+        # Locate and load the SnapStreak extension
+        ext_dir = None
+        for cand in [
+            Path(__file__).resolve().parent.parent / "extension",
+            Path(__file__).resolve().parent / "extension",
+            Path("/opt/sc/linux-server/extension"),
+            Path("/opt/sc/extension"),
+            Path("/opt/snapstreak/linux-server/extension"),
+            Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
+        ]:
+            if (cand / "manifest.json").exists():
+                ext_dir = cand.resolve()
+                break
+
+        if ext_dir:
+            args.extend([
+                f"--disable-extensions-except={ext_dir}",
+                f"--load-extension={ext_dir}",
+            ])
+            _log(f"  ✓ SnapStreak Extension enabled in context: {ext_dir}")
 
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=str(USER_DATA_DIR),
@@ -1275,6 +1292,22 @@ async def send_streaks(
     if not selection_method:
         selection_method = cfg.get("selection_method", "auto")
 
+    # 1. Prefer running inside the full desktop session with the SnapStreak extension
+    try:
+        import login_session
+        if not login_session.is_active():
+            _log("Starting emulated desktop browser environment with SnapStreak extension...", emit)
+            await login_session.start(emit=emit)
+            # Give Chrome 3 seconds to spin up on :99 and connect
+            await asyncio.sleep(3.0)
+
+        if login_session.is_active():
+            _log("Delegating execution to in-page SnapStreak Extension in live desktop session...", emit)
+            return await login_session.run_streak_in_active_session(friends=friends, emit=emit)
+    except Exception as ex:
+        _log(f"  Live browser session notice: {ex}. Falling back to standalone context...", emit)
+
+    # 2. Standalone browser fallback with loaded extension
     async with async_playwright() as p:
         context = await _build_context(p, headless=True)
         page = context.pages[0] if context.pages else await context.new_page()

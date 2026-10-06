@@ -149,6 +149,117 @@
     }, 8500);
   }
 
+  async function syncServerConfig() {
+    try {
+      const resp = await fetch('http://127.0.0.1:8080/api/config');
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.friends) {
+          const stored = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
+          const current = { ...(stored.snapstreak_config || {}) };
+          const merged = {
+            ...current,
+            friends: data.friends,
+            selectionMethod: data.selection_method || current.selectionMethod || 'auto',
+            stepDelay: data.step_delay || current.stepDelay || 3,
+            scheduleTime: data.schedule_time || current.scheduleTime || '09:00',
+            scheduleEnabled: data.enabled !== undefined ? data.enabled : true,
+          };
+          chrome.storage.local.set({ snapstreak_config: merged });
+          console.log('[SnapStreak] Synchronized target friends and schedule with server config:', merged.friends);
+        }
+      }
+    } catch(e) {}
+  }
+
+  async function handleTriggerSend(customOpts = {}) {
+    try {
+      // Resolve any multi-tab "Use Here" modal if present
+      const modalBtns = document.querySelectorAll('button, div[role="button"], a');
+      for (const btn of modalBtns) {
+        if (!isVisible(btn)) continue;
+        const txt = (btn.textContent || '').trim().toLowerCase();
+        if (txt === 'use here' || txt.includes('use here') || txt === 'open here' || txt.includes('open here')) {
+          console.log('[SnapStreak] Clearing multi-tab modal before run...');
+          btn.click();
+          await new Promise(r => setTimeout(r, 1500));
+          break;
+        }
+      }
+
+      let cfg = window.SnapStreakOverlay ? window.SnapStreakOverlay.getConfig() : null;
+      if (!cfg || !cfg.friends) {
+        const stored = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
+        cfg = { ...(cfg || {}), ...(stored.snapstreak_config || {}) };
+      }
+
+      const friends = customOpts.friends || (cfg.friends && cfg.friends.length > 0 ? cfg.friends : ['*//Eric\\*', 'Dylan']);
+      const selectionMethod = customOpts.selectionMethod || cfg.selectionMethod || 'auto';
+      const stepDelay = customOpts.stepDelay || cfg.stepDelay || 3;
+      const humanMode = customOpts.humanMode ?? cfg.humanMode ?? true;
+      const isDirect = (cfg.sendingEngine !== 'macro');
+
+      let res = null;
+      if (isDirect && window.SnapStreakAutomation) {
+        window.SnapStreakOverlay?.log(`⏰ Executing Streak Send via Direct Script (Camera ➔ ${selectionMethod.toUpperCase()} ➔ Send)...`, 'info');
+        res = await window.SnapStreakAutomation.runSendStreaks({
+          friends: friends,
+          selectionMethod: selectionMethod,
+          stepDelay: stepDelay,
+          humanMode: humanMode,
+          isTest: false
+        });
+      } else if (window.SnapStreakMacro) {
+        const activeMacro = cfg.activeMacro || window.SnapStreakMacro.DEFAULT_MACRO_NAME || '⚡ Default Streak Macro';
+        window.SnapStreakOverlay?.log(`⏰ Executing Streak Send via Macro: "${activeMacro}"...`, 'info');
+        res = await window.SnapStreakMacro.replayMacro(
+          activeMacro,
+          stepDelay,
+          cfg.waitForUIChanges ?? true,
+          false
+        );
+      }
+
+      if (res && res.success) {
+        window.SnapStreakOverlay?.log('🎉 Streaks sent successfully! All recipients verified delivered.', 'success');
+        try {
+          chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: friends.length, result: res });
+        } catch(e) {}
+        window.dispatchEvent(new CustomEvent('SNAPSTREAK_RUN_FINISHED', { detail: res }));
+        window.postMessage({ type: 'SNAPSTREAK_RUN_FINISHED', result: res }, '*');
+
+        const shouldEndTask = (cfg.endTaskOnComplete !== false);
+        if (shouldEndTask) {
+          if (window.SnapStreakOverlay && window.SnapStreakOverlay.triggerEndTaskCountdown) {
+            window.SnapStreakOverlay.triggerEndTaskCountdown(5);
+          } else {
+            setTimeout(() => {
+              try { chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'send_complete' }); } catch(e) {}
+            }, 5000);
+          }
+        }
+        return res;
+      } else {
+        const err = res?.error || 'Send sequence incomplete';
+        try {
+          chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: err });
+        } catch(e) {}
+        window.dispatchEvent(new CustomEvent('SNAPSTREAK_RUN_FINISHED', { detail: { success: false, error: err } }));
+        window.postMessage({ type: 'SNAPSTREAK_RUN_FINISHED', result: { success: false, error: err } }, '*');
+        return res;
+      }
+    } catch (err) {
+      console.error('[SnapStreak] Send failed:', err);
+      window.SnapStreakOverlay?.log(`❌ Send error: ${err.message}`, 'err');
+      try {
+        chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: err.message });
+      } catch(e) {}
+      window.dispatchEvent(new CustomEvent('SNAPSTREAK_RUN_FINISHED', { detail: { success: false, error: err.message } }));
+      window.postMessage({ type: 'SNAPSTREAK_RUN_FINISHED', result: { success: false, error: err.message } }, '*');
+      return { success: false, error: err.message };
+    }
+  }
+
   function init() {
     if (window.location.hostname.includes('snapchat.com')) {
       // Ensure UI is initialized once DOM is ready
@@ -157,14 +268,29 @@
           window.SnapStreakOverlay?.initUI();
           setupStartupMultiTabHandler();
           checkAutoBootRoutine();
+          syncServerConfig();
         });
       } else {
         window.SnapStreakOverlay?.initUI();
         setupStartupMultiTabHandler();
         checkAutoBootRoutine();
+        syncServerConfig();
       }
     }
   }
+
+  // Listen for custom DOM events / postMessage from page or Python evaluations
+  window.addEventListener('SNAPSTREAK_TRIGGER_SEND', (evt) => {
+    console.log('[SnapStreak Content] Received SNAPSTREAK_TRIGGER_SEND custom event:', evt.detail);
+    handleTriggerSend(evt.detail || {});
+  });
+
+  window.addEventListener('message', (evt) => {
+    if (evt.data && evt.data.type === 'SNAPSTREAK_TRIGGER_SEND') {
+      console.log('[SnapStreak Content] Received SNAPSTREAK_TRIGGER_SEND postMessage:', evt.data);
+      handleTriggerSend(evt.data.options || {});
+    }
+  });
 
   // Listen for scheduled automation requests from background service worker
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -183,94 +309,7 @@
     if (request.type === 'TRIGGER_SCHEDULED_SEND') {
       console.log('[SnapStreak] Received scheduled send trigger from background alarm.');
       sendResponse({ status: 'started' }); // Acknowledge receipt immediately
-
-      (async () => {
-        try {
-          // Resolve any multi-tab "Use Here" modal if present
-          const modalBtns = document.querySelectorAll('button, div[role="button"], a');
-          for (const btn of modalBtns) {
-            if (!isVisible(btn)) continue;
-            const txt = (btn.textContent || '').trim().toLowerCase();
-            if (txt === 'use here' || txt.includes('use here') || txt === 'open here' || txt.includes('open here')) {
-              console.log('[SnapStreak] Clearing multi-tab modal before scheduled run...');
-              btn.click();
-              await new Promise(r => setTimeout(r, 1500));
-              break;
-            }
-          }
-
-          let cfg = window.SnapStreakOverlay ? window.SnapStreakOverlay.getConfig() : null;
-          if (!cfg || !cfg.friends) {
-            const stored = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
-            cfg = { ...(cfg || {}), ...(stored.snapstreak_config || {}) };
-          }
-
-          const friends = cfg.friends && cfg.friends.length > 0 ? cfg.friends : ['*//Eric\\*', 'Dylan'];
-          const selectionMethod = cfg.selectionMethod || 'auto';
-          const stepDelay = cfg.stepDelay || 3;
-          const humanMode = cfg.humanMode ?? true;
-          const isDirect = (cfg.sendingEngine !== 'macro');
-
-          if (isDirect && window.SnapStreakAutomation) {
-            window.SnapStreakOverlay?.log(`⏰ Executing Scheduled Auto-Send via Direct Script (Camera ➔ ${selectionMethod.toUpperCase()} ➔ Send)...`, 'info');
-            const res = await window.SnapStreakAutomation.runSendStreaks({
-              friends: friends,
-              selectionMethod: selectionMethod,
-              stepDelay: stepDelay,
-              humanMode: humanMode,
-              isTest: false
-            });
-            if (res && res.success) {
-              window.SnapStreakOverlay?.log('🎉 Scheduled streaks sent successfully! All recipients verified delivered.', 'success');
-              chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: friends.length, result: res });
-
-              const shouldEndTask = (cfg.endTaskOnComplete !== false);
-              if (shouldEndTask) {
-                if (window.SnapStreakOverlay && window.SnapStreakOverlay.triggerEndTaskCountdown) {
-                  window.SnapStreakOverlay.triggerEndTaskCountdown(5);
-                } else {
-                  setTimeout(() => {
-                    chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'scheduled_send_complete' });
-                  }, 5000);
-                }
-              }
-            } else {
-              chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: res?.error || 'Send sequence incomplete' });
-            }
-          } else if (window.SnapStreakMacro) {
-            const activeMacro = cfg.activeMacro || window.SnapStreakMacro.DEFAULT_MACRO_NAME || '⚡ Default Streak Macro';
-            window.SnapStreakOverlay?.log(`⏰ Executing Scheduled Auto-Send via Macro: "${activeMacro}"...`, 'info');
-            const res = await window.SnapStreakMacro.replayMacro(
-              activeMacro,
-              stepDelay,
-              cfg.waitForUIChanges ?? true,
-              false
-            );
-            if (res && res.success) {
-              window.SnapStreakOverlay?.log('🎉 Scheduled macro streaks sent successfully! All recipients verified delivered.', 'success');
-              chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: friends.length, result: res });
-
-              const shouldEndTask = (cfg.endTaskOnComplete !== false);
-              if (shouldEndTask) {
-                if (window.SnapStreakOverlay && window.SnapStreakOverlay.triggerEndTaskCountdown) {
-                  window.SnapStreakOverlay.triggerEndTaskCountdown(5);
-                } else {
-                  setTimeout(() => {
-                    chrome.runtime.sendMessage({ type: 'END_TASK_AND_CLOSE', reason: 'macro_send_complete' });
-                  }, 5000);
-                }
-              }
-            } else {
-              chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: res?.error || 'Macro replay failed' });
-            }
-          }
-        } catch (err) {
-          console.error('[SnapStreak] Scheduled send failed:', err);
-          window.SnapStreakOverlay?.log(`❌ Scheduled send error: ${err.message}`, 'err');
-          chrome.runtime.sendMessage({ type: 'STREAK_SEND_FAILURE', error: err.message });
-        }
-      })();
-
+      handleTriggerSend(request.config || {});
       return true;
     }
   });

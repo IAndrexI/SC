@@ -169,6 +169,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"Scheduler failed to start: {e}")
 
+    # Autostart emulated background browser with SnapStreak extension
+    try:
+        cfg = config.load()
+        if cfg.get("browser_autostart", True) and cfg.get("mode", "web") == "web":
+            async def _delayed_browser_autostart():
+                await asyncio.sleep(2.5)
+                if not login_session.is_active() and not login_session.is_starting():
+                    log.info("Launching background desktop browser session with SnapStreak extension...")
+                    try:
+                        await login_session.start(emit=_emit)
+                        _emit("LOGIN_SESSION_READY")
+                    except Exception as err:
+                        log.warning(f"Background browser autostart notice: {err}")
+            asyncio.create_task(_delayed_browser_autostart())
+    except Exception as e:
+        log.warning(f"Failed to schedule browser autostart: {e}")
+
     yield
 
     try:
@@ -434,17 +451,30 @@ async def session_import(body: SessionImportInput):
             # Standard Cookie-Editor / EditThisCookie array format
             cookies = []
             for c in parsed:
+                raw_ss = c.get("sameSite")
+                is_secure = bool(c.get("secure", True))
+                if raw_ss is None or str(raw_ss).lower() in ("null", "none", "no_restriction", "unspecified"):
+                    same_site = "None" if is_secure else "Lax"
+                elif str(raw_ss).lower() in ("lax", "strict"):
+                    same_site = str(raw_ss).capitalize()
+                else:
+                    same_site = "Lax"
+
+                exp = c.get("expirationDate", c.get("expires"))
+                expires = int(exp) if exp and isinstance(exp, (int, float)) and exp > 0 else -1
+
                 cookie = {
-                    "name": c.get("name"),
-                    "value": c.get("value"),
-                    "domain": c.get("domain", ".snapchat.com"),
-                    "path": c.get("path", "/"),
-                    "expires": int(c.get("expirationDate", time.time() + 86400 * 180)) if c.get("expirationDate") else -1,
+                    "name": str(c.get("name", "")).strip(),
+                    "value": str(c.get("value", "")),
+                    "domain": str(c.get("domain", ".snapchat.com")),
+                    "path": str(c.get("path", "/")),
+                    "expires": expires,
                     "httpOnly": bool(c.get("httpOnly", False)),
-                    "secure": bool(c.get("secure", True)),
-                    "sameSite": "None" if c.get("sameSite") == "no_restriction" else (c.get("sameSite", "Lax").capitalize() if c.get("sameSite") else "Lax")
+                    "secure": is_secure,
+                    "sameSite": same_site
                 }
-                cookies.append(cookie)
+                if cookie["name"]:
+                    cookies.append(cookie)
             storage_state["cookies"] = cookies
             storage_state["origins"] = [{
                 "origin": "https://web.snapchat.com",
@@ -733,6 +763,54 @@ async def android_launch():
     return await bliss_launch()
 
 
+# ---------------------------------------------------------------------------
+# Extension bridge callbacks
+# ---------------------------------------------------------------------------
+class ExtensionLogInput(BaseModel):
+    message: str
+    type: str | None = "info"
+
+
+@app.post("/api/extension/log")
+async def extension_log(body: ExtensionLogInput):
+    """Receive live log entries directly from the in-browser SnapStreak Extension."""
+    level_icon = "✓" if body.type == "success" else ("✗" if body.type == "err" else "ℹ")
+    formatted = f"🧩 [Extension] {level_icon} {body.message}"
+    _emit(formatted)
+    try:
+        automation.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(automation.LOG_FILE, "a", encoding="utf-8") as f:
+            import time
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{ts}] {formatted}\n")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+class ExtensionStatusInput(BaseModel):
+    status: str
+    recipientsCount: int | None = 0
+    error: str | None = None
+    timestamp: str | None = None
+
+
+@app.post("/api/extension/status")
+async def extension_status(body: ExtensionStatusInput):
+    """Receive execution status callbacks from the in-browser SnapStreak Extension."""
+    import time
+    _state["last_run_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    if body.status == "success":
+        cfg = config.load()
+        friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
+        _state["last_run_results"] = {f: "ok" for f in friends}
+        _emit(f"🎉 Extension reported streaks sent successfully! ({body.recipientsCount} verified)")
+    else:
+        _state["last_run_results"] = {"error": body.error or "failed"}
+        _emit(f"⚠ Extension reported streak error: {body.error}")
+    return {"ok": True}
+
+
 @app.post("/api/send")
 
 async def trigger_send():
@@ -798,14 +876,13 @@ async def import_cookies(body: CookieImport):
             continue
 
         ss_raw = c.get("sameSite", c.get("samesite", "no_restriction"))
-        ss_map = {
-            "no_restriction": "None",
-            "unspecified":    "None",
-            "lax":            "Lax",
-            "strict":         "Strict",
-            "none":           "None",
-        }
-        same_site = ss_map.get(str(ss_raw).lower(), "None")
+        is_secure = bool(c.get("secure", True))
+        if ss_raw is None or str(ss_raw).lower() in ("null", "none", "no_restriction", "unspecified"):
+            same_site = "None" if is_secure else "Lax"
+        elif str(ss_raw).lower() in ("lax", "strict"):
+            same_site = str(ss_raw).capitalize()
+        else:
+            same_site = "Lax"
 
         exp = c.get("expirationDate", c.get("expires"))
         expires = int(exp) if isinstance(exp, (int, float)) and exp > 0 else None
@@ -817,7 +894,7 @@ async def import_cookies(body: CookieImport):
                 "value":    value,
                 "domain":   domain,
                 "path":     c.get("path", "/"),
-                "secure":   bool(c.get("secure", True)),
+                "secure":   is_secure,
                 "httpOnly": bool(c.get("httpOnly", c.get("httponly", False))),
                 "sameSite": same_site,
             }
@@ -843,6 +920,21 @@ async def import_cookies(body: CookieImport):
 
     automation.SESSION_FILE.write_text(json.dumps(session_state, indent=2), encoding="utf-8")
     _emit("✓ Cookies imported successfully. Session saved.")
+
+    # Live inject into active browser if running
+    if login_session.is_active():
+        try:
+            ctx = login_session._state.get("context")
+            pg = login_session._state.get("page")
+            if ctx and playwright_cookies:
+                await ctx.add_cookies(playwright_cookies)
+                _emit("✓ Injected cookies into live browser session.")
+                if pg:
+                    await pg.goto("https://web.snapchat.com/", timeout=25000)
+                    _emit("✓ Navigated to web.snapchat.com with imported cookies.")
+        except Exception as ex:
+            _emit(f"⚠ Live injection notice: {ex}")
+
     return {"message": f"Imported {len(playwright_cookies)} cookies. You're logged in!"}
 
 

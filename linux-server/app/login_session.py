@@ -462,6 +462,11 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 f"--user-agent={USER_AGENT}",
                 "--use-fake-ui-for-media-stream",
                 "--use-fake-device-for-media-stream",
+                "--disable-session-crashed-bubble",
+                "--disable-restore-session-state",
+                "--new-window",
+                "--sec-ch-ua-platform=Windows",
+                "--disable-features=Translate,OptimizationHints,MediaRouter",
             ]
             if Y4M_FILE.exists():
                 chrome_cmd.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
@@ -470,6 +475,9 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                     f"--disable-extensions-except={ext_dir}",
                     f"--load-extension={ext_dir}",
                 ])
+
+            initial_url = "https://web.snapchat.com/?snapstreak_autoboot=1" if SESSION_FILE.exists() else "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
+            chrome_cmd.append(initial_url)
 
             for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
                 try:
@@ -956,13 +964,72 @@ async def run_streak_in_active_session(friends: list[str] | None = None, emit: C
     if not friends:
         friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
     selection_method = cfg.get("selection_method", "auto")
+    step_delay = cfg.get("step_delay", 3)
 
     if MACRO_FILE.exists():
         _log("Replaying custom recorded macro in active browser...", emit)
-        results = await replay_macro(page, emit=emit)
-    else:
-        _log(f"Starting auto send streak sequence in active browser (Targets: {friends})...", emit)
-        results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
+        return await replay_macro(page, emit=emit)
+
+    _log(f"🚀 Triggering in-page SnapStreak Extension automation (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
+
+    # 1. Ask the in-page SnapStreak Extension to execute the streak sequence natively
+    try:
+        ext_res = await page.evaluate("""
+            async (opts) => {
+                return new Promise((resolve) => {
+                    const timer = setTimeout(() => {
+                        resolve({ success: false, timeout: true, error: 'Extension wait timed out' });
+                    }, 120000);
+
+                    function cleanup() {
+                        clearTimeout(timer);
+                        window.removeEventListener('SNAPSTREAK_RUN_FINISHED', onDone);
+                    }
+
+                    function onDone(e) {
+                        cleanup();
+                        resolve(e.detail || { success: true });
+                    }
+
+                    window.addEventListener('SNAPSTREAK_RUN_FINISHED', onDone);
+
+                    // Dispatch both CustomEvent and postMessage to reach content script in either world
+                    window.dispatchEvent(new CustomEvent('SNAPSTREAK_TRIGGER_SEND', { detail: opts }));
+                    window.postMessage({ type: 'SNAPSTREAK_TRIGGER_SEND', options: opts }, '*');
+
+                    // If extension object is in page scope, execute directly
+                    if (window.SnapStreakAutomation && typeof window.SnapStreakAutomation.runSendStreaks === 'function') {
+                        window.SnapStreakAutomation.runSendStreaks(opts).then((res) => {
+                            cleanup();
+                            resolve(res);
+                        }).catch((err) => {
+                            cleanup();
+                            resolve({ success: false, error: err.message });
+                        });
+                    }
+                });
+            }
+        """, {
+            "friends": friends,
+            "selectionMethod": selection_method,
+            "stepDelay": step_delay,
+            "humanMode": True,
+            "isTest": False
+        })
+
+        if ext_res and ext_res.get("success"):
+            _log("🎉 In-page SnapStreak Extension successfully completed streak send! Delivered. 🔥", emit)
+            return {f: "ok" for f in friends}
+        elif ext_res and not ext_res.get("timeout") and not ext_res.get("fallback"):
+            _log(f"  Extension report: {ext_res.get('error', 'completed')}", emit)
+            if ext_res.get("success"):
+                return {f: "ok" for f in friends}
+    except Exception as ex:
+        _log(f"  Notice invoking extension: {ex}. Using direct desktop flow...", emit)
+
+    # 2. Direct desktop driver flow fallback
+    _log(f"Starting direct desktop send streak sequence (Targets: {friends})...", emit)
+    results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
     return results
 
 

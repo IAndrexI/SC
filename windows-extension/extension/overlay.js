@@ -46,6 +46,14 @@ window.SnapStreakOverlay = (function() {
     while (box.children.length > 200) {
       box.removeChild(box.firstChild);
     }
+
+    try {
+      fetch('http://127.0.0.1:8080/api/extension/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg, type: type })
+      }).catch(() => {});
+    } catch(e) {}
   }
 
   function setRunning(running, isTest = false) {
