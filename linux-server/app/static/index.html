@@ -389,8 +389,24 @@
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://web.snapchat.com/')">👻 Snapchat Web</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://accounts.snapchat.com/v2/login')">🔑 Snapchat Login</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://www.google.com')">🔍 Google Search</button>
-          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://myaccount.google.com')">👤 Google Account</button>
+          <button class="btn btn-primary" style="padding:2px 10px;font-size:11px;border-radius:12px;background:var(--green);color:#000;font-weight:bold" onclick="showCookieImportModal()">📥 Paste Cookies / Sync Session</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="clearBrowserData()">🧹 Clear Cookies</button>
+        </div>
+
+        <!-- Quick Cookie Sync Dialog Modal -->
+        <div id="cookie-sync-modal" style="display:none;position:absolute;top:90px;left:50%;transform:translateX(-50%);width:92%;max-width:540px;background:#13151f;border:2px solid var(--green);border-radius:10px;padding:16px;z-index:50;box-shadow:0 12px 32px rgba(0,0,0,0.85)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h4 style="margin:0;font-size:14px;color:#fff;display:flex;align-items:center;gap:6px">📥 Sync Session from Windows Desktop</h4>
+            <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="document.getElementById('cookie-sync-modal').style.display='none'">✕</button>
+          </div>
+          <p style="font-size:11px;color:var(--text-dim);margin:0 0 10px;line-height:1.4">
+            If login fails inside the emulated browser due to datacenter IP checks, export your session cookies from your working Windows browser (using <strong>Cookie-Editor</strong> extension or <code>session.json</code>) and paste below:
+          </p>
+          <textarea id="quick-cookie-paste" rows="4" placeholder='Paste Cookie-Editor JSON or cookie string here (e.g. [{"name":"sc-a-nonce", ...}])...' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;padding:8px;background:#06070a;border:1px solid var(--border);border-radius:6px;color:#fff;resize:vertical;margin-bottom:10px"></textarea>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn btn-secondary" style="font-size:12px;padding:5px 12px" onclick="document.getElementById('cookie-sync-modal').style.display='none'">Cancel</button>
+            <button class="btn btn-success" style="font-size:12px;padding:5px 16px;font-weight:bold" onclick="applyQuickCookieSync()">✓ Inject &amp; Refresh Snapchat</button>
+          </div>
         </div>
 
         <!-- Live Desktop / Browser Viewport -->
@@ -1006,6 +1022,47 @@
     } else {
       appendLog('err', `✗ Failed to import cookies: ${d.detail || 'Invalid format'}`);
       alert('Error: ' + (d.detail || 'Invalid format'));
+    }
+  }
+
+  function showCookieImportModal() {
+    const modal = document.getElementById('cookie-sync-modal');
+    if (modal) {
+      modal.style.display = 'block';
+      const ta = document.getElementById('quick-cookie-paste');
+      if (ta) ta.focus();
+    }
+  }
+
+  async function applyQuickCookieSync() {
+    const text = (document.getElementById('quick-cookie-paste')?.value || '').trim();
+    if (!text) {
+      alert('Please paste your Cookie-Editor JSON or cookie string first.');
+      return;
+    }
+    appendLog('info', 'Injecting session cookies into browser context...');
+    try {
+      const r = await fetch('/api/session/import', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ data: text })
+      });
+      const d = await r.json();
+      if (d.ok) {
+        appendLog('info', `✓ Injected ${d.cookies_count} cookies! Reloading Snapchat...`);
+        document.getElementById('cookie-sync-modal').style.display = 'none';
+        document.getElementById('quick-cookie-paste').value = '';
+        await fetch('/api/login/navigate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ url: 'https://web.snapchat.com/' })
+        });
+        setTimeout(refreshStatus, 1500);
+      } else {
+        alert('Failed to import cookies: ' + (d.detail || 'Invalid format'));
+      }
+    } catch(e) {
+      alert('Sync error: ' + e.message);
     }
   }
 
