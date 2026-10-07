@@ -61,6 +61,7 @@ window.SnapStreakOverlay = (function() {
     if (!shadowRoot) return;
     const autoSendBtn = shadowRoot.getElementById('btn-auto-send-streaks') || shadowRoot.getElementById('btn-send-streaks');
     const testBtn = shadowRoot.getElementById('btn-test-streaks');
+    const pauseBtn = shadowRoot.getElementById('btn-pause-resume');
     const cancelBtn = shadowRoot.getElementById('btn-cancel-running');
     const quickCancelBtn = shadowRoot.getElementById('btn-quick-cancel');
     const macroCancelBtn = shadowRoot.getElementById('btn-macro-cancel');
@@ -76,16 +77,20 @@ window.SnapStreakOverlay = (function() {
       }
       if (testBtn) {
         testBtn.disabled = true;
-        testBtn.textContent = isTest ? '🧪 Testing Macro...' : '🧪 Test Streak';
+        testBtn.textContent = isTest ? '🧪 Sample Running...' : '🧪 Sample Preview';
       }
       if (macroReplayBtn) macroReplayBtn.disabled = true;
-      if (cancelBtn) cancelBtn.style.display = 'block';
+      if (pauseBtn) {
+        pauseBtn.style.display = 'inline-flex';
+        pauseBtn.textContent = '⏸️ Pause';
+      }
+      if (cancelBtn) cancelBtn.style.display = 'inline-flex';
       if (quickCancelBtn) quickCancelBtn.style.display = 'inline-flex';
       if (macroCancelBtn) macroCancelBtn.style.display = 'block';
       if (dot) dot.className = 'status-dot busy';
-      if (label) label.textContent = isTest ? 'Testing Macro (Dry-Run)...' : 'Executing Macro Send...';
+      if (label) label.textContent = isTest ? 'Sample Preview (Pauses before Send)...' : 'Executing Streak Send...';
       if (pillBadge) {
-        pillBadge.textContent = isTest ? 'Testing' : 'Busy';
+        pillBadge.textContent = isTest ? 'Previewing' : 'Busy';
         pillBadge.style.background = isTest ? 'var(--blue)' : 'var(--green)';
       }
     } else {
@@ -95,9 +100,13 @@ window.SnapStreakOverlay = (function() {
       }
       if (testBtn) {
         testBtn.disabled = false;
-        testBtn.textContent = '🧪 Test Streak';
+        testBtn.textContent = '🧪 Sample Preview';
       }
       if (macroReplayBtn) macroReplayBtn.disabled = false;
+      if (pauseBtn) {
+        pauseBtn.style.display = 'none';
+        pauseBtn.textContent = '⏸️ Pause';
+      }
       if (cancelBtn) cancelBtn.style.display = 'none';
       if (quickCancelBtn) quickCancelBtn.style.display = 'none';
       if (macroCancelBtn) macroCancelBtn.style.display = 'none';
@@ -270,13 +279,18 @@ window.SnapStreakOverlay = (function() {
                 <button class="btn btn-primary btn-full" id="btn-auto-send-streaks" style="font-size: 13px; padding: 11px; font-weight: 700;">
                   🔥 Auto Send Streaks
                 </button>
-                <button class="btn btn-test btn-full" id="btn-test-streaks" style="font-size: 13px; padding: 11px; font-weight: 700;" title="Test camera & recipient selection without sending live snap">
-                  🧪 Test Streak
+                <button class="btn btn-test btn-full" id="btn-test-streaks" style="font-size: 13px; padding: 11px; font-weight: 700;" title="Test camera & recipient selection with visual confirmation before final send">
+                  🧪 Sample Preview
                 </button>
               </div>
-              <button class="btn btn-danger btn-full" id="btn-cancel-running" style="display: none; font-size: 13px; padding: 11px; font-weight: 700; margin-top: 6px;" title="Abort in-flight streak execution immediately">
-                ⏹️ Cancel Running Streak
-              </button>
+              <div class="btn-row" style="margin-top: 6px;">
+                <button class="btn btn-secondary" id="btn-pause-resume" style="flex: 1; font-size: 12px; padding: 8px; font-weight: 700; display: none;" title="Pause or Resume active automation task">
+                  ⏸️ Pause
+                </button>
+                <button class="btn btn-danger" id="btn-cancel-running" style="flex: 1; font-size: 12px; padding: 8px; font-weight: 700; display: none;" title="Abort in-flight streak execution immediately">
+                  ⏹️ Stop Task
+                </button>
+              </div>
             </div>
 
             <!-- SJSU Meteorology Live Webcam Card -->
@@ -410,8 +424,15 @@ window.SnapStreakOverlay = (function() {
                   <span class="toggle-slider"></span>
                 </label>
               </div>
-              <label style="margin-top: 10px;">Daily Send Time (Local Time)</label>
-              <input type="time" id="inp-schedule-time" value="09:00" />
+              <label style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                <span>Daily Send Times (Local Time)</span>
+                <button type="button" class="btn btn-secondary" id="btn-add-schedule-time" style="padding: 2px 8px; font-size: 11px; font-weight: bold; color: var(--accent); border-color: var(--accent);" title="Add another daily send time">
+                  ➕ Add Time
+                </button>
+              </label>
+              <div id="schedule-times-container" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px; margin-bottom: 6px;">
+                <!-- Populated dynamically -->
+              </div>
               <button class="btn btn-primary btn-full" id="btn-save-schedule" style="margin-top: 6px;">
                 ⏰ Update Schedule
               </button>
@@ -634,6 +655,27 @@ window.SnapStreakOverlay = (function() {
       });
     }
 
+    // ⏸️ Pause / ▶️ Resume running task
+    const pauseBtn = shadowRoot.getElementById('btn-pause-resume');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', () => {
+        if (!window.SnapStreakAutomation) return;
+        if (window.SnapStreakAutomation.isPaused && window.SnapStreakAutomation.isPaused()) {
+          window.SnapStreakAutomation.resume();
+          pauseBtn.textContent = '⏸️ Pause';
+          const label = shadowRoot.getElementById('status-text');
+          if (label) label.textContent = 'Executing Streak Send...';
+          log('▶️ Automation task resumed.', 'info');
+        } else {
+          window.SnapStreakAutomation.pause();
+          pauseBtn.textContent = '▶️ Resume';
+          const label = shadowRoot.getElementById('status-text');
+          if (label) label.textContent = '⏸️ Task Paused';
+          log('⏸️ Automation task paused.', 'warn');
+        }
+      });
+    }
+
     // ⏹️ Cancel running streak / macro command
     const handleCancelRequest = () => {
       log('⏹️ User requested cancellation of running command.', 'warn');
@@ -705,20 +747,81 @@ window.SnapStreakOverlay = (function() {
       updateFriendsCount();
     });
 
+    // Multi-Schedule Times Management
+    function renderScheduleTimesUI() {
+      const container = shadowRoot.getElementById('schedule-times-container');
+      if (!container) return;
+      container.innerHTML = '';
+
+      const times = (config.scheduleTimes && config.scheduleTimes.length > 0)
+        ? config.scheduleTimes
+        : [config.scheduleTime || '09:00'];
+
+      times.forEach((timeVal, idx) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
+        row.innerHTML = `
+          <input type="time" class="inp-sched-item" value="${timeVal}" style="flex: 1;" />
+          <button type="button" class="btn btn-secondary btn-del-time" data-idx="${idx}" style="padding: 4px 8px; font-size: 11px; color: var(--red); border-color: var(--red);" title="Remove this time">✕</button>
+        `;
+        container.appendChild(row);
+      });
+
+      // Bind input changes and delete clicks
+      container.querySelectorAll('.inp-sched-item').forEach((inp, idx) => {
+        inp.addEventListener('change', () => {
+          if (!config.scheduleTimes) config.scheduleTimes = [];
+          config.scheduleTimes[idx] = inp.value || '09:00';
+          config.scheduleTime = config.scheduleTimes[0] || '09:00';
+          saveConfig();
+          updateScheduleUIStatus();
+        });
+      });
+
+      container.querySelectorAll('.btn-del-time').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          if (config.scheduleTimes && config.scheduleTimes.length > 1) {
+            config.scheduleTimes.splice(idx, 1);
+            config.scheduleTime = config.scheduleTimes[0] || '09:00';
+            saveConfig();
+            renderScheduleTimesUI();
+            updateScheduleUIStatus();
+            log(`Removed schedule time slot #${idx + 1}.`, 'info');
+          } else {
+            alert('At least one schedule time must remain.');
+          }
+        });
+      });
+    }
+
+    const addTimeBtn = shadowRoot.getElementById('btn-add-schedule-time');
+    if (addTimeBtn) {
+      addTimeBtn.addEventListener('click', () => {
+        if (!config.scheduleTimes) config.scheduleTimes = [config.scheduleTime || '09:00'];
+        config.scheduleTimes.push('18:00');
+        saveConfig();
+        renderScheduleTimesUI();
+        updateScheduleUIStatus();
+        log('➕ Added new schedule time slot (18:00). Update to desired time.', 'info');
+      });
+    }
+
     // Schedule Tab Handlers
     const chkSchedule = shadowRoot.getElementById('chk-schedule-enabled');
-    const inpSchedule = shadowRoot.getElementById('inp-schedule-time');
-
     const handleScheduleUpdate = () => {
       config.scheduleEnabled = chkSchedule.checked;
-      config.scheduleTime = inpSchedule.value || '09:00';
+      const inputs = shadowRoot.querySelectorAll('.inp-sched-item');
+      if (inputs.length > 0) {
+        config.scheduleTimes = Array.from(inputs).map(i => i.value || '09:00');
+        config.scheduleTime = config.scheduleTimes[0] || '09:00';
+      }
       saveConfig();
       updateScheduleUIStatus();
-      log(`⏰ Schedule updated: ${config.scheduleEnabled ? config.scheduleTime : 'Disabled'}`, 'success');
+      log(`⏰ Schedule updated: ${config.scheduleEnabled ? (config.scheduleTimes || [config.scheduleTime]).join(', ') : 'Disabled'}`, 'success');
     };
 
     chkSchedule.addEventListener('change', handleScheduleUpdate);
-    inpSchedule.addEventListener('change', handleScheduleUpdate);
     shadowRoot.getElementById('btn-save-schedule').addEventListener('click', handleScheduleUpdate);
 
     // End Task On Complete Toggle
@@ -902,7 +1005,6 @@ window.SnapStreakOverlay = (function() {
     shadowRoot.getElementById('chk-human-mode').checked = config.humanMode ?? true;
     shadowRoot.getElementById('chk-wait-ui').checked = config.waitForUIChanges ?? true;
     shadowRoot.getElementById('chk-schedule-enabled').checked = config.scheduleEnabled;
-    shadowRoot.getElementById('inp-schedule-time').value = config.scheduleTime;
     const chkEndTask = shadowRoot.getElementById('chk-end-task-on-complete');
     if (chkEndTask) chkEndTask.checked = (config.endTaskOnComplete !== false);
     const chkAlwaysClose = shadowRoot.getElementById('chk-always-close-other-tabs');
@@ -910,6 +1012,7 @@ window.SnapStreakOverlay = (function() {
 
     updateFriendsCount();
     refreshMacroDropdowns();
+    renderScheduleTimesUI();
     updateScheduleUIStatus();
   }
 

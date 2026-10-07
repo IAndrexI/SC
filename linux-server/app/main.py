@@ -113,24 +113,38 @@ async def _do_send():
 
 
 
-def _reschedule(schedule_time: str):
-    """Update APScheduler job with a new HH:MM time without wiping other jobs."""
-    try:
-        _scheduler.remove_job("daily_streak")
-    except Exception:
-        pass
-    try:
-        parts = schedule_time.strip().split(":")
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-        _scheduler.add_job(
-            _do_send,
-            trigger=CronTrigger(hour=hour, minute=minute),
-            id="daily_streak",
-            replace_existing=True,
-        )
-    except Exception as e:
-        log.error(f"Failed to schedule daily_streak with {schedule_time}: {e}")
+def _reschedule(schedule_times: list[str] | str):
+    """Update APScheduler jobs with HH:MM times without wiping other jobs."""
+    # Remove existing daily streak jobs
+    for job in list(_scheduler.get_jobs()):
+        if job.id == "daily_streak" or job.id.startswith("daily_streak_"):
+            try:
+                _scheduler.remove_job(job.id)
+            except Exception:
+                pass
+
+    if isinstance(schedule_times, str):
+        times = [schedule_times]
+    elif isinstance(schedule_times, list):
+        times = schedule_times
+    else:
+        times = ["09:00"]
+
+    for idx, st in enumerate(times):
+        try:
+            parts = st.strip().split(":")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            job_id = f"daily_streak_{idx}" if len(times) > 1 else "daily_streak"
+            _scheduler.add_job(
+                _do_send,
+                trigger=CronTrigger(hour=hour, minute=minute),
+                id=job_id,
+                replace_existing=True,
+            )
+            log.info(f"Scheduled {job_id} at {hour:02d}:{minute:02d}")
+        except Exception as e:
+            log.error(f"Failed to schedule daily streak with {st}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +155,7 @@ async def lifespan(app: FastAPI):
     try:
         cfg = config.load()
         if cfg.get("enabled", True):
-            _reschedule(cfg.get("schedule_time", "09:00"))
+            _reschedule(cfg.get("schedule_times") or cfg.get("schedule_time", "09:00"))
     except Exception as e:
         log.error(f"Failed to load initial schedule: {e}")
 
@@ -238,6 +252,7 @@ async def root():
 class ConfigUpdate(BaseModel):
     friends: list[str] | None = None
     schedule_time: str | None = None
+    schedule_times: list[str] | None = None
     enabled: bool | None = None
     mode: str | None = None
     selection_method: str | None = None
@@ -261,14 +276,21 @@ async def update_config(body: ConfigUpdate):
     if body.friends is not None:
         # Strip whitespace and @ symbols
         cfg["friends"] = [u.strip().lstrip("@") for u in body.friends if u.strip()]
-    if body.schedule_time is not None:
-        cfg["schedule_time"] = body.schedule_time
+    if body.schedule_times is not None:
+        cfg["schedule_times"] = [t.strip() for t in body.schedule_times if t.strip()]
+        if cfg["schedule_times"]:
+            cfg["schedule_time"] = cfg["schedule_times"][0]
+        if cfg["enabled"]:
+            _reschedule(cfg["schedule_times"])
+    elif body.schedule_time is not None:
+        cfg["schedule_time"] = body.schedule_time.strip()
+        cfg["schedule_times"] = [body.schedule_time.strip()]
         if cfg["enabled"]:
             _reschedule(cfg["schedule_time"])
     if body.enabled is not None:
         cfg["enabled"] = body.enabled
         if cfg["enabled"]:
-            _reschedule(cfg["schedule_time"])
+            _reschedule(cfg.get("schedule_times") or cfg.get("schedule_time", "09:00"))
         else:
             _scheduler.remove_all_jobs()
     if body.mode is not None:
@@ -292,9 +314,14 @@ async def get_status(request: Request):
     try:
         cfg = config.load()
         next_run = None
-        job = _scheduler.get_job("daily_streak")
-        if job:
-            next_run = str(job.next_run_time)
+        next_runs = []
+        for job in _scheduler.get_jobs():
+            if job.id == "daily_streak" or job.id.startswith("daily_streak_"):
+                if job.next_run_time:
+                    next_runs.append(str(job.next_run_time))
+        if next_runs:
+            next_runs.sort()
+            next_run = next_runs[0]
 
         host_ip = request.url.hostname or "localhost"
         novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale&path=websockify"
@@ -317,12 +344,16 @@ async def get_status(request: Request):
             "last_run_time":   _state.get("last_run_time"),
             "last_run_results": _state.get("last_run_results", {}),
             "next_run":        next_run,
+            "next_runs":       next_runs,
+            "schedule_times":  cfg.get("schedule_times") or [cfg.get("schedule_time", "09:00")],
             "enabled":         cfg.get("enabled", True),
             "friend_count":    len(cfg.get("friends", [])),
             "mode":            cfg.get("mode", "web"),
             "bliss_connected": bliss_client.is_connected() if hasattr(bliss_client, "is_connected") else False,
             "bliss_target":    bliss_client.get_target_device() if hasattr(bliss_client, "get_target_device") else "127.0.0.1:5555",
             "selection_method": cfg.get("selection_method", "auto"),
+            "awaiting_confirmation": _state.get("awaiting_confirmation", False),
+            "paused":          _state.get("paused", False),
         }
     except Exception as ex:
         host_ip = request.url.hostname or "localhost"
@@ -811,12 +842,86 @@ async def extension_status(body: ExtensionStatusInput):
     return {"ok": True}
 
 
-@app.post("/api/send")
+@app.post("/api/task/awaiting-confirmation")
+async def task_awaiting_confirmation(request: Request):
+    """Callback when extension pauses at final send step awaiting user confirmation."""
+    data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    _state["awaiting_confirmation"] = True
+    _emit("🛑 [Awaiting Confirmation] Snap prepared! Final send paused waiting for your manual confirmation. Click 'Send Final Snap Now' in UI.")
+    return {"ok": True}
 
+
+@app.post("/api/send-preview")
+async def trigger_send_preview():
+    """Trigger a streak dry-run preview: executes all steps up to Send button and pauses."""
+    if _state["running"]:
+        raise HTTPException(status_code=409, detail="A task is already running.")
+
+    async def _do_preview():
+        _state["running"] = True
+        _state["awaiting_confirmation"] = False
+        _state["paused"] = False
+        try:
+            cfg = config.load()
+            friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
+            automation.fetch_webcam_image(force_refresh=True)
+
+            if login_session.is_active():
+                _emit("🧪 Running Streak Sample Preview in active browser session (pausing before final Send)...")
+                await login_session.run_streak_in_active_session(friends=friends, is_preview=True, emit=_emit)
+            else:
+                _emit("⚠ Starting emulated browser for preview...")
+                await login_session.start(emit=_emit)
+                await asyncio.sleep(2)
+                await login_session.run_streak_in_active_session(friends=friends, is_preview=True, emit=_emit)
+        finally:
+            _state["running"] = False
+
+    asyncio.create_task(_do_preview())
+    return {"message": "Sample preview started. Automation will pause before final Send step."}
+
+
+@app.post("/api/task/pause")
+async def task_pause():
+    """Pause currently executing streak automation."""
+    _state["paused"] = True
+    res = await login_session.pause_task(emit=_emit)
+    return res
+
+
+@app.post("/api/task/resume")
+async def task_resume():
+    """Resume currently paused streak automation."""
+    _state["paused"] = False
+    res = await login_session.resume_task(emit=_emit)
+    return res
+
+
+@app.post("/api/task/stop")
+async def task_stop():
+    """Stop/cancel running streak automation."""
+    _state["running"] = False
+    _state["paused"] = False
+    _state["awaiting_confirmation"] = False
+    res = await login_session.stop_task(emit=_emit)
+    return res
+
+
+@app.post("/api/task/confirm-send")
+async def task_confirm_send():
+    """Approve and fire final Send button from preview/confirmation state."""
+    _state["awaiting_confirmation"] = False
+    res = await login_session.confirm_send_task(emit=_emit)
+    return res
+
+
+@app.post("/api/send")
 async def trigger_send():
     """Immediately trigger a streak send."""
     if _state["running"]:
         raise HTTPException(status_code=409, detail="Already running.")
+    _state["awaiting_confirmation"] = False
+    _state["paused"] = False
     asyncio.create_task(_do_send())
     return {"message": "Streak send started. Connect to /ws/stream for live updates."}
 

@@ -950,7 +950,7 @@ async def upload_snap_to_chat() -> dict:
     return {"ok": False, "error": "Could not find upload button on active page."}
 
 
-async def run_streak_in_active_session(friends: list[str] | None = None, emit: Callable | None = None) -> dict:
+async def run_streak_in_active_session(friends: list[str] | None = None, is_preview: bool = False, emit: Callable | None = None) -> dict:
     """Execute streak sequence directly inside the currently visible interactive browser."""
     if not _state["active"] or not _state["page"]:
         return {"error": "Browser not active"}
@@ -966,11 +966,12 @@ async def run_streak_in_active_session(friends: list[str] | None = None, emit: C
     selection_method = cfg.get("selection_method", "auto")
     step_delay = cfg.get("step_delay", 3)
 
-    if MACRO_FILE.exists():
+    if MACRO_FILE.exists() and not is_preview:
         _log("Replaying custom recorded macro in active browser...", emit)
         return await replay_macro(page, emit=emit)
 
-    _log(f"🚀 Triggering in-page SnapStreak Extension automation (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
+    action_label = "Sample Preview (Pause before Send)" if is_preview else "Auto Send"
+    _log(f"🚀 Triggering in-page SnapStreak Extension {action_label} (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
 
     # 1. Ask the in-page SnapStreak Extension to execute the streak sequence natively
     try:
@@ -979,7 +980,7 @@ async def run_streak_in_active_session(friends: list[str] | None = None, emit: C
                 return new Promise((resolve) => {
                     const timer = setTimeout(() => {
                         resolve({ success: false, timeout: true, error: 'Extension wait timed out' });
-                    }, 120000);
+                    }, 180000);
 
                     function cleanup() {
                         clearTimeout(timer);
@@ -1014,7 +1015,8 @@ async def run_streak_in_active_session(friends: list[str] | None = None, emit: C
             "selectionMethod": selection_method,
             "stepDelay": step_delay,
             "humanMode": True,
-            "isTest": False
+            "isTest": is_preview,
+            "pauseBeforeFinalSend": is_preview
         })
 
         if ext_res and ext_res.get("success"):
@@ -1027,10 +1029,88 @@ async def run_streak_in_active_session(friends: list[str] | None = None, emit: C
     except Exception as ex:
         _log(f"  Notice invoking extension: {ex}. Using direct desktop flow...", emit)
 
+    if is_preview:
+        return {"error": "Extension preview requires active extension in browser"}
+
     # 2. Direct desktop driver flow fallback
     _log(f"Starting direct desktop send streak sequence (Targets: {friends})...", emit)
     results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
     return results
+
+
+async def pause_task(emit: Callable | None = None) -> dict:
+    """Pause the in-progress streak sequence."""
+    if not _state["active"] or not _state["page"]:
+        return {"ok": False, "error": "No active browser session"}
+    try:
+        await _state["page"].evaluate("""() => {
+            window.dispatchEvent(new CustomEvent('SNAPSTREAK_PAUSE_TASK'));
+            window.postMessage({ type: 'SNAPSTREAK_PAUSE_TASK' }, '*');
+            if (window.SnapStreakAutomation && window.SnapStreakAutomation.pause) {
+                window.SnapStreakAutomation.pause();
+            }
+        }""")
+        _log("⏸️ Task pause dispatched to browser.", emit)
+        return {"ok": True, "status": "paused"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def resume_task(emit: Callable | None = None) -> dict:
+    """Resume the paused streak sequence."""
+    if not _state["active"] or not _state["page"]:
+        return {"ok": False, "error": "No active browser session"}
+    try:
+        await _state["page"].evaluate("""() => {
+            window.dispatchEvent(new CustomEvent('SNAPSTREAK_RESUME_TASK'));
+            window.postMessage({ type: 'SNAPSTREAK_RESUME_TASK' }, '*');
+            if (window.SnapStreakAutomation && window.SnapStreakAutomation.resume) {
+                window.SnapStreakAutomation.resume();
+            }
+        }""")
+        _log("▶️ Task resume dispatched to browser.", emit)
+        return {"ok": True, "status": "resumed"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def stop_task(emit: Callable | None = None) -> dict:
+    """Cancel and stop the running streak sequence."""
+    if not _state["active"] or not _state["page"]:
+        return {"ok": False, "error": "No active browser session"}
+    try:
+        await _state["page"].evaluate("""() => {
+            window.dispatchEvent(new CustomEvent('SNAPSTREAK_STOP_TASK'));
+            window.postMessage({ type: 'SNAPSTREAK_STOP_TASK' }, '*');
+            if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) {
+                window.SnapStreakAutomation.cancel();
+            }
+            if (window.SnapStreakOverlay && window.SnapStreakOverlay.setRunning) {
+                window.SnapStreakOverlay.setRunning(false);
+            }
+        }""")
+        _log("⏹️ Task stop/cancel dispatched to browser.", emit)
+        return {"ok": True, "status": "stopped"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def confirm_send_task(emit: Callable | None = None) -> dict:
+    """Confirm and trigger final send step from preview state."""
+    if not _state["active"] or not _state["page"]:
+        return {"ok": False, "error": "No active browser session"}
+    try:
+        await _state["page"].evaluate("""() => {
+            window.dispatchEvent(new CustomEvent('SNAPSTREAK_CONFIRM_SEND'));
+            window.postMessage({ type: 'SNAPSTREAK_CONFIRM_SEND' }, '*');
+            if (window.SnapStreakAutomation && window.SnapStreakAutomation.confirmFinalSend) {
+                window.SnapStreakAutomation.confirmFinalSend();
+            }
+        }""")
+        _log("🚀 User confirmed final send! Sending Snap now...", emit)
+        return {"ok": True, "status": "confirmed"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 

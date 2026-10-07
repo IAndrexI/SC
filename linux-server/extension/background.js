@@ -4,7 +4,7 @@
  * tab activation, and notifications.
  */
 
-const ALARM_NAME = 'snapstreak_daily_alarm';
+const ALARM_PREFIX = 'snapstreak_alarm_';
 const HEARTBEAT_ALARM_NAME = 'snapstreak_heartbeat_alarm';
 
 const DEFAULT_CONFIG = {
@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
   waitForUIChanges: true,
   scheduleEnabled: true,
   scheduleTime: '09:00',
+  scheduleTimes: ['09:00'],
   endTaskOnComplete: true,
   alwaysCloseOtherTabs: true,
   activeMacro: '⚡ Default Streak Macro'
@@ -178,13 +179,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch(e) {}
     showNotification('SnapStreak Alert ⚠️', `Scheduled streak send failed: ${message.error || 'Unknown error'}`);
     sendResponse({ ok: true });
-  } else if (message.type === 'CANCEL_RUNNING_COMMAND') {
-    console.log('[SnapStreak Background] Broadcast cancel running command.');
+  } else if (message.type === 'CANCEL_RUNNING_COMMAND' || message.type === 'STOP_TASK') {
+    console.log('[SnapStreak Background] Broadcast stop/cancel running command.');
     chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
       if (tabs && tabs.length > 0) {
         tabs.forEach(t => {
           try {
             chrome.tabs.sendMessage(t.id, { type: 'CANCEL_RUNNING_COMMAND' }, () => {});
+          } catch (e) {}
+        });
+      }
+    });
+    sendResponse({ ok: true });
+  } else if (message.type === 'PAUSE_TASK') {
+    console.log('[SnapStreak Background] Broadcast pause task.');
+    chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        tabs.forEach(t => {
+          try {
+            chrome.tabs.sendMessage(t.id, { type: 'PAUSE_TASK' }, () => {});
+          } catch (e) {}
+        });
+      }
+    });
+    sendResponse({ ok: true });
+  } else if (message.type === 'RESUME_TASK') {
+    console.log('[SnapStreak Background] Broadcast resume task.');
+    chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        tabs.forEach(t => {
+          try {
+            chrome.tabs.sendMessage(t.id, { type: 'RESUME_TASK' }, () => {});
+          } catch (e) {}
+        });
+      }
+    });
+    sendResponse({ ok: true });
+  } else if (message.type === 'CONFIRM_SEND') {
+    console.log('[SnapStreak Background] Broadcast confirm final send.');
+    chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        tabs.forEach(t => {
+          try {
+            chrome.tabs.sendMessage(t.id, { type: 'CONFIRM_SEND' }, () => {});
           } catch (e) {}
         });
       }
@@ -227,56 +264,83 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function setupAlarms() {
   try {
     const srv = await fetch('http://127.0.0.1:8080/api/config').then(r => r.json()).catch(() => null);
-    if (srv && srv.schedule_time) {
+    if (srv) {
       const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
       const current = { ...(res.snapstreak_config || {}) };
-      current.scheduleTime = srv.schedule_time;
+      if (srv.schedule_times && Array.isArray(srv.schedule_times)) {
+        current.scheduleTimes = srv.schedule_times;
+        current.scheduleTime = srv.schedule_times[0] || '09:00';
+      } else if (srv.schedule_time) {
+        current.scheduleTime = srv.schedule_time;
+        current.scheduleTimes = [srv.schedule_time];
+      }
       if (srv.enabled !== undefined) current.scheduleEnabled = srv.enabled;
       if (srv.friends && srv.friends.length) current.friends = srv.friends;
       await new Promise(r => chrome.storage.local.set({ snapstreak_config: current }, r));
     }
   } catch(e) {}
 
-  chrome.storage.local.get(['snapstreak_config', 'lastStreakSentDate'], (res) => {
+  chrome.storage.local.get(['snapstreak_config', 'lastStreakSentDate'], async (res) => {
     const config = { ...DEFAULT_CONFIG, ...(res.snapstreak_config || {}) };
 
-    // Clear existing daily alarm
-    chrome.alarms.clear(ALARM_NAME, () => {
-      if (!config.scheduleEnabled) {
-        console.log('[SnapStreak Background] Daily schedule is disabled.');
-        chrome.storage.local.set({ nextScheduledRunText: 'Schedule Disabled' });
-        return;
+    // Clear all existing alarms starting with ALARM_PREFIX or legacy ALARM_NAME
+    const allAlarms = await chrome.alarms.getAll();
+    for (const a of allAlarms) {
+      if (a.name.startsWith(ALARM_PREFIX) || a.name === 'snapstreak_daily_alarm') {
+        await chrome.alarms.clear(a.name);
       }
+    }
 
-      const scheduleTime = config.scheduleTime || '09:00';
-      const [hourStr, minStr] = scheduleTime.split(':');
-      const targetHour = parseInt(hourStr || '9', 10);
-      const targetMin = parseInt(minStr || '0', 10);
+    if (!config.scheduleEnabled) {
+      console.log('[SnapStreak Background] Daily schedule is disabled.');
+      chrome.storage.local.set({ nextScheduledRunText: 'Schedule Disabled' });
+      return;
+    }
 
-      const now = new Date();
+    const timesList = (config.scheduleTimes && config.scheduleTimes.length > 0)
+      ? config.scheduleTimes
+      : [config.scheduleTime || '09:00'];
+
+    const now = new Date();
+    let earliestNextRun = null;
+    let nextRunDescriptions = [];
+
+    timesList.forEach((timeStr, idx) => {
+      const [hStr, mStr] = (timeStr || '09:00').split(':');
+      const targetH = parseInt(hStr || '9', 10);
+      const targetM = parseInt(mStr || '0', 10);
+
       const nextRun = new Date();
-      nextRun.setHours(targetHour, targetMin, 0, 0);
+      nextRun.setHours(targetH, targetM, 0, 0);
 
       // If scheduled time has already passed today, schedule for tomorrow
       if (nextRun.getTime() <= now.getTime()) {
         nextRun.setDate(nextRun.getDate() + 1);
       }
 
-      const diffMs = nextRun.getTime() - now.getTime();
-      const diffMins = Math.max(1, Math.round(diffMs / 60000));
-      const nextRunStr = nextRun.toLocaleDateString() + ' ' + nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (!earliestNextRun || nextRun.getTime() < earliestNextRun.getTime()) {
+        earliestNextRun = nextRun;
+      }
 
-      console.log(`[SnapStreak Background] Setting primary alarm for ${nextRunStr} (in ${diffMins} min / ${diffMs} ms).`);
-
-      chrome.alarms.create(ALARM_NAME, {
+      const alarmName = `${ALARM_PREFIX}${idx}`;
+      chrome.alarms.create(alarmName, {
         when: nextRun.getTime(),
         periodInMinutes: 1440 // Repeat every 24 hours
       });
 
-      chrome.storage.local.set({
-        nextScheduledRunTime: nextRun.getTime(),
-        nextScheduledRunText: nextRunStr
-      });
+      const formatted = nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      nextRunDescriptions.push(formatted);
+      console.log(`[SnapStreak Background] Created alarm '${alarmName}' for ${timeStr} (fires ${nextRun.toLocaleDateString()} ${formatted}).`);
+    });
+
+    const nextRunStr = earliestNextRun
+      ? `${earliestNextRun.toLocaleDateString()} ${earliestNextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+      : 'None';
+
+    chrome.storage.local.set({
+      nextScheduledRunTime: earliestNextRun ? earliestNextRun.getTime() : null,
+      nextScheduledRunText: nextRunStr,
+      activeScheduleTimes: timesList
     });
 
     // Ensure 5-minute heartbeat alarm is always active
@@ -293,8 +357,8 @@ async function setupAlarms() {
 
 // Alarm listener
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === ALARM_NAME) {
-    console.log('[SnapStreak Background] ⏰ Daily streak alarm fired!');
+  if (alarm.name.startsWith(ALARM_PREFIX) || alarm.name === 'snapstreak_daily_alarm') {
+    console.log(`[SnapStreak Background] ⏰ Daily streak alarm fired: ${alarm.name}!`);
     triggerStreakRun(false);
   } else if (alarm.name === HEARTBEAT_ALARM_NAME) {
     console.log('[SnapStreak Background] 💓 Heartbeat check: verifying schedule health...');

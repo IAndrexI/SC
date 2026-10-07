@@ -285,17 +285,58 @@
     handleTriggerSend(evt.detail || {});
   });
 
-  window.addEventListener('message', (evt) => {
-    if (evt.data && evt.data.type === 'SNAPSTREAK_TRIGGER_SEND') {
-      console.log('[SnapStreak Content] Received SNAPSTREAK_TRIGGER_SEND postMessage:', evt.data);
-      handleTriggerSend(evt.data.options || {});
+  window.addEventListener('SNAPSTREAK_PAUSE_TASK', () => {
+    console.log('[SnapStreak Content] Received SNAPSTREAK_PAUSE_TASK event.');
+    if (window.SnapStreakAutomation && window.SnapStreakAutomation.pause) {
+      window.SnapStreakAutomation.pause();
     }
   });
 
-  // Listen for scheduled automation requests from background service worker
+  window.addEventListener('SNAPSTREAK_RESUME_TASK', () => {
+    console.log('[SnapStreak Content] Received SNAPSTREAK_RESUME_TASK event.');
+    if (window.SnapStreakAutomation && window.SnapStreakAutomation.resume) {
+      window.SnapStreakAutomation.resume();
+    }
+  });
+
+  window.addEventListener('SNAPSTREAK_STOP_TASK', () => {
+    console.log('[SnapStreak Content] Received SNAPSTREAK_STOP_TASK event.');
+    if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) {
+      window.SnapStreakAutomation.cancel();
+    }
+    if (window.SnapStreakOverlay && window.SnapStreakOverlay.setRunning) {
+      window.SnapStreakOverlay.setRunning(false);
+    }
+  });
+
+  window.addEventListener('SNAPSTREAK_CONFIRM_SEND', () => {
+    console.log('[SnapStreak Content] Received SNAPSTREAK_CONFIRM_SEND event.');
+    if (window.SnapStreakAutomation && window.SnapStreakAutomation.confirmFinalSend) {
+      window.SnapStreakAutomation.confirmFinalSend();
+    }
+  });
+
+  window.addEventListener('message', (evt) => {
+    if (!evt.data) return;
+    if (evt.data.type === 'SNAPSTREAK_TRIGGER_SEND') {
+      console.log('[SnapStreak Content] Received SNAPSTREAK_TRIGGER_SEND postMessage:', evt.data);
+      handleTriggerSend(evt.data.options || {});
+    } else if (evt.data.type === 'SNAPSTREAK_PAUSE_TASK') {
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.pause) window.SnapStreakAutomation.pause();
+    } else if (evt.data.type === 'SNAPSTREAK_RESUME_TASK') {
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.resume) window.SnapStreakAutomation.resume();
+    } else if (evt.data.type === 'SNAPSTREAK_STOP_TASK') {
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) window.SnapStreakAutomation.cancel();
+      if (window.SnapStreakOverlay && window.SnapStreakOverlay.setRunning) window.SnapStreakOverlay.setRunning(false);
+    } else if (evt.data.type === 'SNAPSTREAK_CONFIRM_SEND') {
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.confirmFinalSend) window.SnapStreakAutomation.confirmFinalSend();
+    }
+  });
+
+  // Listen for scheduled automation requests and control signals from background service worker
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.type === 'CANCEL_RUNNING_COMMAND') {
-      console.log('[SnapStreak Content] Received CANCEL_RUNNING_COMMAND.');
+    if (request.type === 'CANCEL_RUNNING_COMMAND' || request.type === 'STOP_TASK') {
+      console.log('[SnapStreak Content] Received CANCEL_RUNNING_COMMAND/STOP_TASK.');
       if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) {
         window.SnapStreakAutomation.cancel();
       }
@@ -303,6 +344,33 @@
         window.SnapStreakOverlay.setRunning(false);
       }
       sendResponse({ status: 'cancelled' });
+      return true;
+    }
+
+    if (request.type === 'PAUSE_TASK') {
+      console.log('[SnapStreak Content] Received PAUSE_TASK.');
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.pause) {
+        window.SnapStreakAutomation.pause();
+      }
+      sendResponse({ status: 'paused' });
+      return true;
+    }
+
+    if (request.type === 'RESUME_TASK') {
+      console.log('[SnapStreak Content] Received RESUME_TASK.');
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.resume) {
+        window.SnapStreakAutomation.resume();
+      }
+      sendResponse({ status: 'resumed' });
+      return true;
+    }
+
+    if (request.type === 'CONFIRM_SEND') {
+      console.log('[SnapStreak Content] Received CONFIRM_SEND.');
+      if (window.SnapStreakAutomation && window.SnapStreakAutomation.confirmFinalSend) {
+        window.SnapStreakAutomation.confirmFinalSend();
+      }
+      sendResponse({ status: 'confirmed' });
       return true;
     }
 

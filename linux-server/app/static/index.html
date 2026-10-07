@@ -240,10 +240,28 @@
   <div class="card wide">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h2 style="margin:0">Snapchat Automation & Live Control</h2>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-secondary" id="btn-mode-bliss" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('bliss')">🤖 Bliss OS (Android VM)</button>
         <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('web')">🖥️ Web Browser Mode</button>
+        <button class="btn btn-secondary" id="btn-preview" style="padding:6px 14px;font-size:12px;border-color:var(--accent);color:var(--accent)" onclick="doPreview()" title="Test streak sequence up to final Send button with manual review">🧪 Sample Preview</button>
         <button class="btn btn-success" id="btn-send" style="padding:6px 16px;font-size:12px" onclick="doSend()">🔥 Send Streaks Now</button>
+        <button class="btn btn-secondary" id="btn-pause-task" style="padding:6px 12px;font-size:12px;display:none" onclick="togglePauseTask()">⏸️ Pause</button>
+        <button class="btn btn-danger" id="btn-stop-task" style="padding:6px 12px;font-size:12px;display:none" onclick="stopTask()">⏹️ Stop Task</button>
+      </div>
+    </div>
+
+    <!-- Live Manual Final Send Approval Banner (When Previewing) -->
+    <div id="manual-confirm-banner" style="display:none;background:linear-gradient(135deg, rgba(255,252,0,0.15) 0%, rgba(61,220,132,0.15) 100%);border:2px solid var(--accent);border-radius:10px;padding:14px;margin-bottom:14px;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:26px">🚀</span>
+        <div>
+          <div style="font-size:14px;font-weight:700;color:#fff">Snap Prepared &amp; Recipients Selected! (Awaiting Confirmation)</div>
+          <div style="font-size:12px;color:var(--text-dim)">Review the browser screen. When ready, click to trigger final delivery.</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" style="font-size:12px;padding:8px 16px" onclick="stopTask()">✕ Cancel</button>
+        <button class="btn btn-primary" style="font-size:12px;padding:8px 20px;font-weight:800;background:var(--green);color:#000;box-shadow:0 0 14px rgba(61,220,132,0.5)" onclick="confirmFinalSendNow()">🚀 Send Final Snap Now</button>
       </div>
     </div>
 
@@ -488,10 +506,15 @@
         <div class="toggle-slider"></div>
       </label>
     </div>
-    <label>Send Time (Local Time)</label>
-    <input type="time" id="schedule-time" value="09:00" onchange="saveSchedule()" />
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <label style="margin:0">Daily Send Times (Local Time)</label>
+      <button type="button" class="btn btn-secondary" style="padding:2px 8px;font-size:11px;font-weight:bold;color:var(--accent);border-color:var(--accent)" onclick="addWebScheduleTime()">➕ Add Time</button>
+    </div>
+    <div id="web-schedule-times-container" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+      <!-- Populated dynamically -->
+    </div>
     <div class="sep"></div>
-    <small>APScheduler triggers streak sending automatically every day.</small>
+    <small>APScheduler triggers streak sending automatically for each scheduled time.</small>
   </div>
 
   <!-- ── AUTOMATION & SELECTION METHOD ── -->
@@ -742,6 +765,26 @@
       }
 
 
+      // Update task pause / stop / confirmation banner states
+      const pauseBtn = document.getElementById('btn-pause-task');
+      const stopBtn = document.getElementById('btn-stop-task');
+      const confirmBanner = document.getElementById('manual-confirm-banner');
+
+      if (s.running) {
+        if (pauseBtn) {
+          pauseBtn.style.display = 'inline-flex';
+          pauseBtn.textContent = s.paused ? '▶️ Resume' : '⏸️ Pause';
+        }
+        if (stopBtn) stopBtn.style.display = 'inline-flex';
+      } else {
+        if (pauseBtn) pauseBtn.style.display = 'none';
+        if (stopBtn) stopBtn.style.display = 'none';
+      }
+
+      if (confirmBanner) {
+        confirmBanner.style.display = (s.awaiting_confirmation) ? 'flex' : 'none';
+      }
+
       if (s.bliss_connected) {
         const badge = document.getElementById('bliss-conn-badge');
         if (badge) {
@@ -793,12 +836,47 @@
     });
   }
 
+  let _cachedScheduleTimes = ['09:00'];
+
+  function renderWebScheduleTimesUI(times) {
+    _cachedScheduleTimes = (times && times.length > 0) ? times : ['09:00'];
+    const container = document.getElementById('web-schedule-times-container');
+    if (!container) return;
+    container.innerHTML = '';
+
+    _cachedScheduleTimes.forEach((t, idx) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;align-items:center';
+      row.innerHTML = `
+        <input type="time" class="web-sched-inp" value="${t}" onchange="saveSchedule()" style="flex:1" />
+        <button type="button" class="btn btn-secondary" onclick="removeWebScheduleTime(${idx})" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red)" title="Remove this time">✕</button>
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  function addWebScheduleTime() {
+    _cachedScheduleTimes.push('18:00');
+    renderWebScheduleTimesUI(_cachedScheduleTimes);
+    saveSchedule();
+  }
+
+  function removeWebScheduleTime(idx) {
+    if (_cachedScheduleTimes.length <= 1) {
+      alert('At least one daily send time is required.');
+      return;
+    }
+    _cachedScheduleTimes.splice(idx, 1);
+    renderWebScheduleTimesUI(_cachedScheduleTimes);
+    saveSchedule();
+  }
+
   // ── Load config ──
   async function loadConfig() {
     try {
       const cfg = await fetch('/api/config').then(r => r.json());
       document.getElementById('friends-input').value = (cfg.friends || []).join('\n');
-      document.getElementById('schedule-time').value = cfg.schedule_time || '09:00';
+      renderWebScheduleTimesUI(cfg.schedule_times || [cfg.schedule_time || '09:00']);
       document.getElementById('toggle-enabled').checked = Boolean(cfg.enabled);
       if (cfg.selection_method) document.getElementById('selection-method').value = cfg.selection_method;
       if (cfg.step_delay) document.getElementById('step-delay').value = cfg.step_delay;
@@ -826,14 +904,18 @@
 
   // ── Save schedule ──
   async function saveSchedule() {
-    const time = document.getElementById('schedule-time').value;
+    const inputs = document.querySelectorAll('.web-sched-inp');
+    let times = [];
+    inputs.forEach(inp => { if (inp.value) times.push(inp.value); });
+    if (!times.length) times = ['09:00'];
+    _cachedScheduleTimes = times;
     const enabled = document.getElementById('toggle-enabled').checked;
     await fetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ schedule_time: time, enabled })
+      body: JSON.stringify({ schedule_times: times, schedule_time: times[0], enabled })
     });
-    appendLog('info', `✓ Schedule updated: ${enabled ? time : 'disabled'}.`);
+    appendLog('info', `✓ Schedule updated: ${enabled ? times.join(', ') : 'disabled'}.`);
     refreshStatus();
   }
 
@@ -889,6 +971,51 @@
       box.style.display = 'none';
       _stopSendMonitor();
     }
+  }
+
+  // ── Trigger sample preview ──
+  async function doPreview() {
+    _startSendMonitor();
+    appendLog('info', '🧪 Initiating Streak Sample Preview (will pause before final Send step)...');
+    const r = await fetch('/api/send-preview', { method: 'POST' });
+    const d = await r.json();
+    appendLog('info', d.message || d.detail);
+    refreshStatus();
+  }
+
+  // ── Pause / Resume Task ──
+  async function togglePauseTask() {
+    const pauseBtn = document.getElementById('btn-pause-task');
+    const isPaused = pauseBtn && pauseBtn.textContent.includes('Resume');
+    const endpoint = isPaused ? '/api/task/resume' : '/api/task/pause';
+    const r = await fetch(endpoint, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', isPaused ? '▶️ Task resumed.' : '⏸️ Task paused.');
+    }
+    refreshStatus();
+  }
+
+  // ── Stop Running Task ──
+  async function stopTask() {
+    appendLog('warn', '⏹️ Cancelling running streak automation task...');
+    const r = await fetch('/api/task/stop', { method: 'POST' });
+    const d = await r.json();
+    appendLog('info', '⏹️ Automation task stopped.');
+    document.getElementById('manual-confirm-banner').style.display = 'none';
+    refreshStatus();
+  }
+
+  // ── Confirm Final Send ──
+  async function confirmFinalSendNow() {
+    appendLog('info', '🚀 User approved final send! Delivering Snap...');
+    document.getElementById('manual-confirm-banner').style.display = 'none';
+    const r = await fetch('/api/task/confirm-send', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      appendLog('info', '✓ Final Send triggered successfully!');
+    }
+    refreshStatus();
   }
 
   // ── Trigger send ──

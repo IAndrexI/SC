@@ -7,18 +7,64 @@ window.SnapStreakAutomation = (function() {
   'use strict';
 
   let isCancelled = false;
+  let isPaused = false;
+  let pendingConfirmResolver = null;
+
+  function pause() {
+    isPaused = true;
+    window.__snapstreak_pause_requested = true;
+    log('⏸️ Task execution PAUSED. All browser state and selections preserved.', 'warn');
+    if (window.SnapStreakOverlay && window.SnapStreakOverlay.setPaused) {
+      window.SnapStreakOverlay.setPaused(true);
+    }
+  }
+
+  function resume() {
+    isPaused = false;
+    window.__snapstreak_pause_requested = false;
+    log('▶️ Task execution RESUMED. Continuing streak sequence...', 'info');
+    if (window.SnapStreakOverlay && window.SnapStreakOverlay.setPaused) {
+      window.SnapStreakOverlay.setPaused(false);
+    }
+  }
+
+  function isPausedState() {
+    return isPaused || !!window.__snapstreak_pause_requested;
+  }
+
+  function confirmFinalSend() {
+    if (pendingConfirmResolver) {
+      log('🚀 Manual confirmation received! Proceeding to click Send button...', 'info');
+      pendingConfirmResolver(true);
+      pendingConfirmResolver = null;
+      return true;
+    }
+    return false;
+  }
 
   function cancel() {
     isCancelled = true;
     window.__snapstreak_cancel_requested = true;
-    log('⏹️ Cancellation requested — stopping current streak flow...', 'warn');
+    isPaused = false;
+    window.__snapstreak_pause_requested = false;
+    if (pendingConfirmResolver) {
+      pendingConfirmResolver(false);
+      pendingConfirmResolver = null;
+    }
+    dismissManualConfirmPrompt();
+    log('⏹️ STOP / CANCEL requested — aborting streak automation flow...', 'warn');
     const pointer = document.getElementById('snapstreak-virtual-cursor');
     if (pointer) pointer.style.display = 'none';
+    if (window.SnapStreakOverlay && window.SnapStreakOverlay.setRunning) {
+      window.SnapStreakOverlay.setRunning(false);
+    }
   }
 
   function resetCancellation() {
     isCancelled = false;
     window.__snapstreak_cancel_requested = false;
+    isPaused = false;
+    window.__snapstreak_pause_requested = false;
   }
 
   function isCancellationRequested() {
@@ -37,11 +83,19 @@ window.SnapStreakAutomation = (function() {
     let elapsed = 0;
     while (elapsed < d) {
       checkCancelled();
+      while (isPausedState()) {
+        checkCancelled();
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
       const chunk = Math.min(interval, d - elapsed);
       await new Promise(resolve => setTimeout(resolve, chunk));
       elapsed += chunk;
     }
     checkCancelled();
+    while (isPausedState()) {
+      checkCancelled();
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   }
 
   function log(msg, type = 'info') {
@@ -1531,19 +1585,63 @@ window.SnapStreakAutomation = (function() {
       if (!step4Ok) throw new Error('Failed to open recipient drawer and select friends on screen.');
       await sleep(humanMode ? 1000 : 500);
 
-      if (options.isTest) {
-        log('🧪 [TEST MODE] Screen matched RECIPIENTS_SELECTED. Validating final Send button on screen...', 'info');
+      const isPreviewOrTest = !!(options.isTest || options.pauseBeforeFinalSend);
+      if (isPreviewOrTest) {
+        log('🧪 [SAMPLE PREVIEW] Screen verified as RECIPIENTS_SELECTED! Locating final Send button...', 'info');
         const sendBtn = findFinalSendButton();
         if (sendBtn) {
           if (window.SnapStreakMacro && window.SnapStreakMacro.showTestIndicator) {
-            window.SnapStreakMacro.showTestIndicator(sendBtn, 5, 5, 'Send Button');
+            window.SnapStreakMacro.showTestIndicator(sendBtn, 5, 5, 'Final Send Button');
           }
-          log('  🧪 [TEST PASS] Final Send button located & verified on screen! (Final click skipped in test mode).', 'success');
+          log('  ✓ [PREVIEW PASS] Final Send button located and ready for dispatch.', 'success');
         } else {
-          log('  ⚠ [TEST WARNING] Send button not yet visible on screen.', 'err');
+          log('  ⚠ [PREVIEW WARNING] Send button not yet visible on screen.', 'err');
         }
-        log('🎉 [TEST PASSED] All 5 steps and expected screen states matched and approved! 🔥', 'success');
-        return { success: true, isTest: true };
+
+        // Show floating in-page confirmation banner
+        showManualConfirmPrompt(friends);
+
+        // Notify server and page listeners
+        window.dispatchEvent(new CustomEvent('SNAPSTREAK_AWAITING_CONFIRMATION', {
+          detail: { friends: friends, selectionMethod: selectionMethod }
+        }));
+        window.postMessage({
+          type: 'SNAPSTREAK_AWAITING_CONFIRMATION',
+          friends: friends,
+          selectionMethod: selectionMethod
+        }, '*');
+
+        try {
+          fetch('http://127.0.0.1:8080/api/task/awaiting-confirmation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ friends: friends, selectionMethod: selectionMethod })
+          }).catch(() => {});
+        } catch(e) {}
+
+        log('⏸️ [SAMPLE PREVIEW] Visual sample ready! Paused before final Send button. Press "🚀 Send Final Snap Now" to complete, or "Cancel" to abort.', 'warn');
+
+        // Wait for manual approval or cancellation
+        const userApproved = await new Promise((resolve) => {
+          pendingConfirmResolver = resolve;
+          const confirmBtn = document.getElementById('snapstreak-btn-confirm-send');
+          if (confirmBtn) {
+            confirmBtn.onclick = () => { resolve(true); };
+          }
+          const cancelBtn = document.getElementById('snapstreak-btn-cancel-preview');
+          if (cancelBtn) {
+            cancelBtn.onclick = () => { resolve(false); };
+          }
+        });
+
+        dismissManualConfirmPrompt();
+
+        if (!userApproved) {
+          log('⏹️ Sample preview dismissed without sending live snap.', 'info');
+          return { success: true, previewOnly: true, confirmed: false };
+        }
+
+        log('🚀 Manual confirmation approved! Proceeding to execute Step 5 (Final Send)...', 'info');
       }
 
       // Step 5: Click the Send button & verify delivery (drawer closed)
@@ -1576,15 +1674,75 @@ window.SnapStreakAutomation = (function() {
       log(`❌ Error during streak sequence: ${err.message}`, 'err');
       return { success: false, error: err.message };
     } finally {
+      dismissManualConfirmPrompt();
       const pointer = document.getElementById('snapstreak-virtual-cursor');
       if (pointer) pointer.style.display = 'none';
       if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(false);
     }
   }
 
+  function dismissManualConfirmPrompt() {
+    const existing = document.getElementById('snapstreak-sample-confirm-modal');
+    if (existing) existing.remove();
+  }
+
+  function showManualConfirmPrompt(friends = []) {
+    dismissManualConfirmPrompt();
+    const modal = document.createElement('div');
+    modal.id = 'snapstreak-sample-confirm-modal';
+    modal.style.cssText = `
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 2147483647;
+      background: rgba(18, 20, 29, 0.96);
+      border: 2px solid #fffc00;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.85);
+      border-radius: 14px;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 400px;
+      box-sizing: border-box;
+      backdrop-filter: blur(10px);
+    `;
+    const friendsListStr = friends.join(', ');
+    modal.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:22px">✨</span>
+          <div>
+            <div style="font-size:14px;font-weight:700;color:#fffc00">Streak Sample Preview Ready</div>
+            <div style="font-size:11px;color:#8c8da3">Camera photo captured &amp; recipients checked</div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#e8e8f0;line-height:1.4">
+        Recipients selected: <strong style="color:#fffc00">${friendsListStr || 'Default Friends'}</strong>.<br/>
+        All steps up to the final Send button are complete. Press below to approve and dispatch the snap:
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button id="snapstreak-btn-confirm-send" style="flex:1;background:#fffc00;color:#000;border:none;border-radius:8px;padding:10px 14px;font-weight:700;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+          🚀 Send Final Snap Now
+        </button>
+        <button id="snapstreak-btn-cancel-preview" style="background:#2c2d42;color:#fff;border:none;border-radius:8px;padding:10px 12px;font-weight:600;font-size:12px;cursor:pointer">
+          ✕ Cancel
+        </button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
   return {
     sleep,
     log,
+    pause,
+    resume,
+    isPaused: isPausedState,
+    confirmFinalSend,
     cancel,
     resetCancellation,
     isCancellationRequested,
@@ -1613,6 +1771,8 @@ window.SnapStreakAutomation = (function() {
     step4_sendSnap,
     step5_verifyDeliveryForEachUser,
     runSendStreaks,
+    showManualConfirmPrompt,
+    dismissManualConfirmPrompt,
     // Screen State Matching & Verification Exports
     SCREEN_STATES,
     detectCurrentScreen,
