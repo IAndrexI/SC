@@ -419,10 +419,24 @@ async def login_cancel():
     return {"message": "Login session cancelled."}
 
 
+class GoogleLoginInput(BaseModel):
+    email: str | None = None
+
+
 @app.post("/api/login/google")
-async def login_google():
-    """Click Continue with Google in the active browser session."""
-    return await login_session.click_google_login()
+async def login_google(body: GoogleLoginInput | None = None):
+    """Click Continue with Google in the active browser session and optionally fill email."""
+    if not login_session.is_active():
+        # Proactively start browser if not yet launched
+        _emit("Launching browser for Google Sign-In...")
+        try:
+            await login_session.start(emit=_emit)
+            await asyncio.sleep(2.0)
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=str(ex))
+
+    email = body.email if body else None
+    return await login_session.click_google_login(email=email, emit=_emit)
 
 
 

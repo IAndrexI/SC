@@ -327,9 +327,13 @@
           </button>
         </div>
 
-        <div>
-          <button class="btn btn-primary" style="font-size:15px;padding:12px 28px;box-shadow:0 0 16px rgba(255,252,0,0.3)" onclick="startLogin()">
-            🖥️ Launch Emulated Browser
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-primary" style="font-size:14px;padding:12px 24px;background:#fff;color:#000;font-weight:700;box-shadow:0 0 16px rgba(255,255,255,0.2)" onclick="triggerGoogleLoginFlow()">
+            <svg style="width:16px;height:16px;vertical-align:middle;margin-right:6px" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
+            Sign in with Google
+          </button>
+          <button class="btn btn-secondary" style="font-size:14px;padding:12px 22px" onclick="startLogin()">
+            🖥️ Launch Browser Window
           </button>
         </div>
       </div>
@@ -407,6 +411,7 @@
           <span style="color:var(--text-dim);font-weight:600">Shortcuts:</span>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://web.snapchat.com/')">👻 Snapchat Web</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://accounts.snapchat.com/v2/login')">🔑 Snapchat Login</button>
+          <button class="btn btn-primary" style="padding:2px 10px;font-size:11px;border-radius:12px;background:#fff;color:#000;font-weight:bold" onclick="triggerGoogleLoginFlow()">G Continue with Google</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://www.google.com')">🔍 Google Search</button>
           <button class="btn btn-primary" style="padding:2px 10px;font-size:11px;border-radius:12px;background:var(--green);color:#000;font-weight:bold" onclick="showCookieImportModal()">📥 Paste Cookies / Sync Session</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="clearBrowserData()">🧹 Clear Cookies</button>
@@ -1041,6 +1046,42 @@
   // ── Remote browser login ──
   let _vncTimer = null;
   let _vncSecs = 0;
+
+  async function triggerGoogleLoginFlow() {
+    appendLog('info', '🔑 Starting Google OAuth Sign-In flow...');
+    const statusEl = document.getElementById('login-status');
+    if (statusEl) {
+      statusEl.style.color = 'var(--accent)';
+      statusEl.textContent = 'Launching browser and navigating to Google Login...';
+    }
+
+    // Launch emulated browser if not already active
+    await startLogin();
+
+    // After brief wait for page load, invoke the server-side Google button trigger
+    setTimeout(async () => {
+      try {
+        appendLog('info', 'Clicking "Continue with Google" in browser session...');
+        const r = await fetch('/api/login/google', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({})
+        });
+        const d = await r.json();
+        if (d.ok) {
+          appendLog('info', '✓ Successfully clicked Google Sign-In button! Complete your Google login on the screen above.');
+          if (statusEl) {
+            statusEl.style.color = 'var(--green)';
+            statusEl.textContent = '✓ Google Sign-in active! Enter your Google credentials on the screen above.';
+          }
+        } else {
+          appendLog('info', 'ℹ Google OAuth window is ready on screen. Click "Continue with Google" inside the browser.');
+        }
+      } catch (e) {
+        appendLog('err', 'Google flow notice: ' + e.message);
+      }
+    }, 4000);
+  }
 
   async function startLogin() {
     const statusEl = document.getElementById('login-status');

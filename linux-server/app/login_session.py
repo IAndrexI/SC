@@ -601,8 +601,12 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
         _log("  ℹ Firefox active — streaming via screenshot loop.", emit)
         asyncio.create_task(_fast_frame_loop())
 
-    # Navigate directly to Snapchat Web with autoboot enabled so the extension activates
-    target_url = "https://web.snapchat.com/?snapstreak_autoboot=1"
+    # Navigate to login page if unauthenticated, or directly to web.snapchat.com if session exists
+    if SESSION_FILE.exists():
+        target_url = "https://web.snapchat.com/?snapstreak_autoboot=1"
+    else:
+        target_url = "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
+
     _log(f"Navigating to {target_url}...", emit)
 
     async def _initial_navigation():
@@ -644,11 +648,22 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
     return "ok"
 
 
-async def click_google_login() -> dict:
-    """Click Continue with Google / Sign in with Google button."""
+async def click_google_login(email: str | None = None, emit: Callable | None = None) -> dict:
+    """Click Continue with Google / Sign in with Google button and manage login popup."""
     page: Page | None = _state["page"]
+    context: BrowserContext | None = _state["context"]
     if not page:
         return {"ok": False, "error": "No active browser session"}
+
+    # If currently on web.snapchat.com without login form, navigate to login page first
+    try:
+        curr_url = page.url or ""
+        if "web.snapchat.com" in curr_url and "/login" not in curr_url:
+            _log("Navigating to Snapchat accounts login page to access Google OAuth...", emit)
+            await page.goto("https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F", timeout=25_000, wait_until="commit")
+            await asyncio.sleep(2.0)
+    except Exception as ex:
+        _log(f"Navigation warning: {ex}", emit)
 
     google_selectors = [
         'button:has-text("Google")',
@@ -656,18 +671,63 @@ async def click_google_login() -> dict:
         'button:has([data-testid*="google" i])',
         'a:has-text("Google")',
         'div[role="button"]:has-text("Google")',
+        'button:has-text("Continue with Google")',
+        'button:has-text("Sign in with Google")',
+        'div:has-text("Continue with Google")',
+        'iframe[src*="accounts.google.com"]',
+        '#g_id_onload',
     ]
+
+    # Check for iframe or page button
+    clicked = False
+    target_selector = None
+
     for sel in google_selectors:
         try:
             btn = page.locator(sel).first
-            if await btn.is_visible(timeout=1500):
+            if await btn.is_visible(timeout=1200):
                 await btn.scroll_into_view_if_needed()
-                await btn.click(delay=80)
-                _log("  ✓ Clicked Continue with Google button.")
+                # Watch for popup if context exists
+                try:
+                    if context:
+                        async with context.expect_page(timeout=4000) as new_page_info:
+                            await btn.click(delay=80)
+                        popup_page = await new_page_info.value
+                        _state["page"] = popup_page
+                        _log("  ✓ Opened Google OAuth popup window. Live stream switched to Google login.", emit)
+                        if email:
+                            await asyncio.sleep(1.5)
+                            try:
+                                email_input = popup_page.locator('input[type="email"], input[name="identifier"]').first
+                                if await email_input.is_visible(timeout=3000):
+                                    await email_input.fill(email)
+                                    await popup_page.keyboard.press("Enter")
+                                    _log(f"  ✓ Automatically filled Google account email: {email}", emit)
+                            except Exception:
+                                pass
+                        return {"ok": True, "selector": sel, "popup": True}
+                    else:
+                        await btn.click(delay=80)
+                except Exception:
+                    await btn.click(delay=80)
+                _log("  ✓ Clicked Continue with Google button.", emit)
                 return {"ok": True, "selector": sel}
         except Exception:
             continue
-    return {"ok": False, "error": "Google button not found on this page"}
+
+    # Try searching across all frames / iframes
+    for frame in page.frames:
+        for sel in ['button:has-text("Google")', '[aria-label*="Google" i]', 'div[role="button"]:has-text("Google")']:
+            try:
+                btn = frame.locator(sel).first
+                if await btn.is_visible(timeout=800):
+                    await btn.click()
+                    _log(f"  ✓ Clicked Google OAuth button inside frame {frame.name or frame.url}.", emit)
+                    return {"ok": True, "frame": frame.url}
+            except Exception:
+                continue
+
+    return {"ok": False, "error": "Google button not found on this page. Navigate to login page first."}
 
 
 
