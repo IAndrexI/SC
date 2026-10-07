@@ -236,19 +236,41 @@ STEALTH_INIT_SCRIPT = """
     try {
         delete navigator.webdriver;
     } catch(e) {}
-    Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-        configurable: true
-    });
+    try {
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined,
+            configurable: true
+        });
+    } catch(e) {}
 
-    // 2. Mask platform and appVersion to Windows 10/11
-    Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
-    Object.defineProperty(navigator, 'appVersion', {
-        get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        configurable: true
-    });
+    // 2. Realistic Windows desktop screen geometry (with 40px taskbar)
+    try {
+        const sw = 1440, sh = 900;
+        Object.defineProperties(window.screen, {
+            width: { get: () => sw, configurable: true },
+            height: { get: () => sh, configurable: true },
+            availWidth: { get: () => sw, configurable: true },
+            availHeight: { get: () => sh - 40, configurable: true }, // Windows taskbar subtraction
+            availTop: { get: () => 0, configurable: true },
+            availLeft: { get: () => 0, configurable: true },
+            colorDepth: { get: () => 24, configurable: true },
+            pixelDepth: { get: () => 24, configurable: true }
+        });
+        Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true });
+        Object.defineProperty(window, 'outerWidth', { get: () => sw, configurable: true });
+        Object.defineProperty(window, 'outerHeight', { get: () => sh, configurable: true });
+    } catch(e) {}
 
-    // 3. Mock High-Entropy UserAgentData (NavigatorUAData) to Windows Direct
+    // 3. Mask platform and appVersion to Windows 10/11
+    try {
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
+        Object.defineProperty(navigator, 'appVersion', {
+            get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            configurable: true
+        });
+    } catch(e) {}
+
+    // 4. Mock High-Entropy UserAgentData (NavigatorUAData) to Windows Direct
     if (navigator.userAgentData) {
         const brandList = [
             { brand: 'Chromium', version: '130' },
@@ -279,62 +301,146 @@ STEALTH_INIT_SCRIPT = """
         } catch(e) {}
     }
 
-    // 4. Mock chrome object
-    window.chrome = {
-        app: {
-            isInstalled: false,
-            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
-        },
-        runtime: {
-            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-            PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-            PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
-        },
-        csi: function() {},
-        loadTimes: function() {}
-    };
+    // 5. Mock authentic Chrome object
+    try {
+        window.chrome = {
+            app: {
+                isInstalled: false,
+                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+            },
+            runtime: {
+                OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+                OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+                PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+                PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+                PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+                RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
+            },
+            csi: function() {},
+            loadTimes: function() {}
+        };
+    } catch(e) {}
 
-    // 5. Mock plugins and mimeTypes
-    const fakePlugins = [
-        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
-    ];
-    Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins, configurable: true });
-    Object.defineProperty(navigator, 'mimeTypes', {
-        get: () => [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }],
-        configurable: true
-    });
+    // 6. Mock plugins and mimeTypes with namedItem / item functions
+    try {
+        const fakePlugins = [
+            { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+        ];
+        const pluginsArray = [...fakePlugins];
+        fakePlugins.forEach(p => { pluginsArray[p.name] = p; });
+        pluginsArray.item = (i) => fakePlugins[i] || null;
+        pluginsArray.namedItem = (n) => fakePlugins.find(p => p.name === n) || null;
+        pluginsArray.refresh = () => {};
 
-    // 6. Mock hardware & languages
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
+        Object.defineProperty(navigator, 'plugins', { get: () => pluginsArray, configurable: true });
 
-    // 7. Mock WebGL Vendor & Renderer (NVIDIA GeForce Direct3D11 - Windows)
-    const getParam = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) return 'Google Inc. (NVIDIA)';
-        if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-        return getParam.call(this, parameter);
-    };
+        const fakeMime = [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }];
+        fakeMime['application/pdf'] = fakeMime[0];
+        fakeMime.item = (i) => fakeMime[i] || null;
+        fakeMime.namedItem = (n) => (n === 'application/pdf' ? fakeMime[0] : null);
 
-    if (typeof WebGL2RenderingContext !== 'undefined') {
-        const getParam2 = WebGL2RenderingContext.prototype.getParameter;
-        WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+        Object.defineProperty(navigator, 'mimeTypes', { get: () => fakeMime, configurable: true });
+    } catch(e) {}
+
+    // 7. Mock hardware & languages
+    try {
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
+    } catch(e) {}
+
+    // 8. Battery API (always present on real desktop Chrome)
+    try {
+        if (!navigator.getBattery) {
+            navigator.getBattery = () => Promise.resolve({
+                charging: true,
+                chargingTime: 0,
+                dischargingTime: Infinity,
+                level: 1.0,
+                onchargingchange: null,
+                onchargingtimechange: null,
+                ondischargingtimechange: null,
+                onlevelchange: null,
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                dispatchEvent: () => false
+            });
+        }
+    } catch(e) {}
+
+    // 9. Network Information API
+    try {
+        if (!navigator.connection) {
+            const conn = {
+                rtt: 50,
+                downlink: 10,
+                effectiveType: '4g',
+                saveData: false,
+                onchange: null,
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                dispatchEvent: () => false
+            };
+            Object.defineProperty(navigator, 'connection', { get: () => conn, configurable: true });
+        }
+    } catch(e) {}
+
+    // 10. Speech synthesis voices
+    try {
+        if ('speechSynthesis' in window) {
+            const fakeVoices = [
+                { voiceURI: 'Microsoft David - English (United States)', name: 'Microsoft David - English (United States)', lang: 'en-US', localService: true, default: true },
+                { voiceURI: 'Microsoft Zira - English (United States)', name: 'Microsoft Zira - English (United States)', lang: 'en-US', localService: true, default: false }
+            ];
+            const origGetVoices = window.speechSynthesis.getVoices.bind(window.speechSynthesis);
+            window.speechSynthesis.getVoices = function() {
+                const list = origGetVoices();
+                return list && list.length > 0 ? list : fakeVoices;
+            };
+        }
+    } catch(e) {}
+
+    // 11. Mock WebGL Vendor, Renderer and WEBGL_debug_renderer_info (NVIDIA GeForce Direct3D11 - Windows)
+    try {
+        const spoofParam = function(parameter, orig) {
             if (parameter === 37445) return 'Google Inc. (NVIDIA)';
             if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-            return getParam2.call(this, parameter);
+            return orig.call(this, parameter);
         };
-    }
 
-    // 8. Mask enumerateDevices to show authentic physical camera device without breaking MediaDeviceInfo prototypes
+        const getParam1 = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {
+            return spoofParam.call(this, param, getParam1);
+        };
+        const origExt1 = WebGLRenderingContext.prototype.getExtension;
+        WebGLRenderingContext.prototype.getExtension = function(name) {
+            if (name === 'WEBGL_debug_renderer_info') {
+                return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
+            }
+            return origExt1.call(this, name);
+        };
+
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const getParam2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(param) {
+                return spoofParam.call(this, param, getParam2);
+            };
+            const origExt2 = WebGL2RenderingContext.prototype.getExtension;
+            WebGL2RenderingContext.prototype.getExtension = function(name) {
+                if (name === 'WEBGL_debug_renderer_info') {
+                    return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
+                }
+                return origExt2.call(this, name);
+            };
+        }
+    } catch(e) {}
+
+    // 12. Mask enumerateDevices to show authentic physical camera device
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
         const origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
         navigator.mediaDevices.enumerateDevices = async function() {
@@ -350,13 +456,26 @@ STEALTH_INIT_SCRIPT = """
         };
     }
 
-    // 9. Notification permission mock
+    // 13. Notification permission mock
     if (navigator.permissions && navigator.permissions.query) {
         const origQuery = navigator.permissions.query.bind(navigator.permissions);
         navigator.permissions.query = (p) => (
             p.name === 'notifications' ? Promise.resolve({ state: 'granted' }) : origQuery(p)
         );
     }
+
+    // 14. Clean CDP / automation indicators
+    try {
+        for (const k of Object.keys(window)) {
+            if (/^cdc_[a-zA-Z0-9]+$/.test(k)) {
+                delete window[k];
+            }
+        }
+    } catch(e) {}
+    try {
+        delete window.__playwright;
+        delete window.__pw_manual;
+    } catch(e) {}
 })();
 """
 
@@ -390,6 +509,7 @@ async def _build_context(playwright, headless: bool = True):
                 "useAutomationExtension": False,
             },
         )
+        await context.add_init_script(STEALTH_INIT_SCRIPT)
     else:
         args = [
             "--no-sandbox",

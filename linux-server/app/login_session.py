@@ -381,6 +381,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
         try:
             _log("  Launching Firefox persistent context...", emit)
             context = await pw.firefox.launch_persistent_context(**ff_kwargs)
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
             _log("  ✓ Firefox context launched successfully.", emit)
         except Exception as ff_err:
             _log(f"  ⚠ Firefox ESR failed to launch: {ff_err}", emit)
@@ -406,7 +407,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
             "--no-default-browser-check",
             "--no-first-run",
             "--disable-infobars",
-            "--disable-features=IsolateOrigins,site-per-process",
+            "--lang=en-US,en",
             "--enable-webgl",
             "--enable-webgl2",
             "--use-fake-ui-for-media-stream",
@@ -466,6 +467,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 "--disable-restore-session-state",
                 "--new-window",
                 "--sec-ch-ua-platform=Windows",
+                "--lang=en-US,en",
                 "--disable-features=Translate,OptimizationHints,MediaRouter",
             ]
             if Y4M_FILE.exists():
