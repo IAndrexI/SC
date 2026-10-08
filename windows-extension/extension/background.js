@@ -86,16 +86,13 @@ async function enforceAlwaysCloseOtherTabs() {
   }
 }
 
-// Listen for tab creation: immediately close any other tab that opens in Brave
-chrome.tabs.onCreated.addListener((newTab) => {
-  console.log(`[SnapStreak Background] New tab opened (ID: ${newTab.id}, URL: ${newTab.url || newTab.pendingUrl || 'new'}). Closing other tabs...`);
-  setTimeout(enforceAlwaysCloseOtherTabs, 150);
-});
-
-// Listen for tab updates/navigations: ensure tabs that navigate also get closed if non-primary
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.url || changeInfo.status === 'loading') {
-    setTimeout(enforceAlwaysCloseOtherTabs, 200);
+// Listen for explicit close request from automation flow
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === 'CLOSE_OTHER_TABS') {
+    const keepId = sender?.tab?.id || primarySnapchatTabId;
+    if (keepId) closeAllOtherTabs(keepId);
+    sendResponse({ ok: true });
+    return true;
   }
 });
 
@@ -103,7 +100,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[SnapStreak Background] Extension installed/updated.');
   setupAlarms();
-  enforceAlwaysCloseOtherTabs();
 });
 
 chrome.runtime.onStartup.addListener(() => {

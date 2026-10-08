@@ -262,26 +262,32 @@
 
   function init() {
     if (window.location.hostname.includes('snapchat.com')) {
-      // Ensure UI is initialized once DOM is ready
+      const startHUD = () => {
+        try { window.SnapStreakOverlay?.initUI(); } catch(e) {}
+        try { setupStartupMultiTabHandler(); } catch(e) {}
+        try { checkAutoBootRoutine(); } catch(e) {}
+        try { syncServerConfig(); } catch(e) {}
+      };
+
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-          window.SnapStreakOverlay?.initUI();
-          setupStartupMultiTabHandler();
-          checkAutoBootRoutine();
-          syncServerConfig();
-        });
+        document.addEventListener('DOMContentLoaded', startHUD);
       } else {
-        window.SnapStreakOverlay?.initUI();
-        setupStartupMultiTabHandler();
-        checkAutoBootRoutine();
-        syncServerConfig();
+        startHUD();
       }
+
+      // Re-ensure HUD overlay is present if Snapchat SPA re-mounts body
+      setInterval(() => {
+        if (!document.getElementById('snapstreak-shadow-host')) {
+          try { window.SnapStreakOverlay?.initUI(); } catch(e) {}
+        }
+      }, 2500);
     }
   }
 
   // Listen for custom DOM events / postMessage from page or Python evaluations
   window.addEventListener('SNAPSTREAK_TRIGGER_SEND', (evt) => {
     console.log('[SnapStreak Content] Received SNAPSTREAK_TRIGGER_SEND custom event:', evt.detail);
+    window.postMessage({ type: 'SNAPSTREAK_TRIGGER_ACK' }, '*');
     handleTriggerSend(evt.detail || {});
   });
 
@@ -320,6 +326,7 @@
     if (!evt.data) return;
     if (evt.data.type === 'SNAPSTREAK_TRIGGER_SEND') {
       console.log('[SnapStreak Content] Received SNAPSTREAK_TRIGGER_SEND postMessage:', evt.data);
+      window.postMessage({ type: 'SNAPSTREAK_TRIGGER_ACK' }, '*');
       handleTriggerSend(evt.data.options || {});
     } else if (evt.data.type === 'SNAPSTREAK_PAUSE_TASK') {
       if (window.SnapStreakAutomation && window.SnapStreakAutomation.pause) window.SnapStreakAutomation.pause();

@@ -519,7 +519,10 @@ window.SnapStreakAutomation = (function() {
       return t === 'best friends' || t === 'friends' || t === 'shortcuts';
     });
 
-    if (hasSendInput || hasTabs) {
+    const checkItems = document.querySelectorAll('div[role="checkbox"], input[type="checkbox"]');
+    const hasCheckbox = Array.from(checkItems).some(c => isVisible(c) && isInsideMainCameraArea(c));
+
+    if (hasSendInput || hasTabs || hasCheckbox) {
       // Check if recipients are selected (final send button visible)
       const sendBtn = findFinalSendButton();
       if (sendBtn && isVisible(sendBtn)) {
@@ -544,7 +547,13 @@ window.SnapStreakAutomation = (function() {
       if (shutter && isVisible(shutter) && isInsideMainCameraArea(shutter)) {
         return SCREEN_STATES.CAMERA_READY;
       }
-      if (video && isVisible(video) && isInsideMainCameraArea(video) && video.readyState >= 2) {
+      if (video && isVisible(video) && isInsideMainCameraArea(video)) {
+        return SCREEN_STATES.CAMERA_READY;
+      }
+      if (window.location && window.location.pathname && window.location.pathname.includes('/camera')) {
+        return SCREEN_STATES.CAMERA_READY;
+      }
+      if (document.querySelector('[data-testid="camera-view"]')) {
         return SCREEN_STATES.CAMERA_READY;
       }
     }
@@ -622,7 +631,13 @@ window.SnapStreakAutomation = (function() {
 
   // ── Step 1: Click Snapchat Icon Top Left to Bring to Main Menu ───────────
   async function step0_clickSnapchatHome() {
-    log('Step 1: Bringing Snapchat to main menu (strictly ignoring My AI)...', 'info');
+    log('Step 1: Checking screen state and preparing camera...', 'info');
+
+    // If camera viewfinder is already active, DO NOT click anything or reset!
+    if (detectCurrentScreen() === SCREEN_STATES.CAMERA_READY) {
+      log('  ✓ Camera viewfinder is already active on screen! Skipping home reset.', 'success');
+      return true;
+    }
 
     // Dismiss any popups, cookie alerts, or active overlays
     const dismissButtons = document.querySelectorAll('button, div[role="button"]');
@@ -639,7 +654,7 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    // If a chat is open (including chat with My AI), interact with chat back button '<' to return to main menu
+    // If a chat is open, interact with chat back button '<' to return to main camera area
     const chatBackSelectors = [
       'button[aria-label*="Back" i]',
       'div[role="button"][aria-label*="Back" i]',
@@ -651,7 +666,7 @@ window.SnapStreakAutomation = (function() {
         const btn = document.querySelector(sel);
         if (btn && isVisible(btn) && !isMyAI(btn)) {
           const r = btn.getBoundingClientRect();
-          if (r.top < 120 && r.left > 120 && r.left < 550) {
+          if (r.top < 120 && r.left > 100 && r.left < 550) {
             await humanDwellAndClick(btn, true);
             log('  ✓ Clicked chat back button to return to main menu.', 'success');
             await sleep(800);
@@ -661,42 +676,8 @@ window.SnapStreakAutomation = (function() {
       } catch (e) {}
     }
 
-    // Locate Snapchat top-left icon / ghost logo to bring to main menu
-    const logoSelectors = [
-      'a[href*="/web"][aria-label*="Snapchat" i]',
-      '[data-testid="snapchat-logo"]',
-      'a[aria-label="Snapchat"]',
-      'a[href="/web"]',
-      'header a[href*="/web"]',
-      'nav a[href*="/web"]',
-      '[aria-label*="Snapchat" i]'
-    ];
-
-    let logo = null;
-    for (const sel of logoSelectors) {
-      try {
-        const matches = document.querySelectorAll(sel);
-        for (const el of matches) {
-          if (isVisible(el) && !isMyAI(el)) {
-            const rect = el.getBoundingClientRect();
-            if (rect.left < 220 && rect.top < 90) {
-              logo = el;
-              break;
-            }
-          }
-        }
-        if (logo) break;
-      } catch (e) {}
-    }
-
-    if (logo) {
-      await humanDwellAndClick(logo, true);
-      log('  ✓ Clicked Snapchat icon top-left to bring to main menu.', 'success');
-    } else {
-      log('  Snapchat logo verified or already on main menu.', 'info');
-    }
-
-    await sleep(1200);
+    // Note: We deliberately do NOT click <a href="/web"> as clicking links reloads the SPA and destroys execution!
+    await sleep(500);
     return true;
   }
 
@@ -828,7 +809,7 @@ window.SnapStreakAutomation = (function() {
               if (!el.querySelector('img')) {
                 const r = el.getBoundingClientRect();
                 const dist = Math.abs((r.left + r.width / 2) - cameraCenterX);
-                if (dist <= 35 && dist < minCandidateDist) {
+                if (dist < minCandidateDist) {
                   minCandidateDist = dist;
                   candidateShutter = el;
                 }
@@ -841,7 +822,7 @@ window.SnapStreakAutomation = (function() {
 
     if (candidateShutter) return candidateShutter;
 
-    // 2. Geometric scan: Only buttons strictly centered within 30px of cameraCenterX
+    // 2. Geometric scan: Circular buttons in camera area without images
     const allButtons = scope.querySelectorAll('button, div[role="button"]');
     let bestShutter = null;
     let minDistanceToCenter = Infinity;
@@ -859,17 +840,16 @@ window.SnapStreakAutomation = (function() {
           aria.includes('grid') || aria.includes('flash') || aria.includes('flip')) continue;
 
       const r = btn.getBoundingClientRect();
-      // Shutter button is circular, in lower half of screen, diameter between 40px and 130px
-      const isCircular = Math.abs(r.width - r.height) <= 18;
-      const isLowerHalf = r.top > window.innerHeight * 0.40;
-      const isValidSize = r.width >= 40 && r.width <= 130;
+      // Shutter button is circular, in lower half of screen, diameter between 35px and 140px
+      const isCircular = Math.abs(r.width - r.height) <= 22;
+      const isLowerHalf = r.top > window.innerHeight * 0.35;
+      const isValidSize = r.width >= 35 && r.width <= 140;
 
       if (isCircular && isLowerHalf && isValidSize) {
         const btnCenterX = r.left + r.width / 2;
         const distFromCenter = Math.abs(btnCenterX - cameraCenterX);
 
-        // MUST be strictly within 30px of center! Lenses are 50px+ offset
-        if (distFromCenter <= 30 && distFromCenter < minDistanceToCenter) {
+        if (distFromCenter < minDistanceToCenter) {
           minDistanceToCenter = distFromCenter;
           bestShutter = btn;
         }
@@ -878,7 +858,7 @@ window.SnapStreakAutomation = (function() {
 
     if (bestShutter) return bestShutter;
 
-    // 3. Fallback: Buttons with SVG circle strictly centered in camera area
+    // 3. Fallback: Buttons with SVG circle in camera area
     try {
       const svgCircleButtons = scope.querySelectorAll('button:has(svg circle), button:has(circle), [role="button"]:has(svg circle)');
       for (const btn of svgCircleButtons) {
@@ -887,8 +867,7 @@ window.SnapStreakAutomation = (function() {
         if (aria.includes('lens') || aria.includes('filter') || aria.includes('effect') || aria.includes('by ')) continue;
         if (btn.querySelector('img')) continue;
         const r = btn.getBoundingClientRect();
-        const btnCenterX = r.left + r.width / 2;
-        if (r.top > window.innerHeight * 0.35 && r.width >= 40 && r.width <= 140 && Math.abs(btnCenterX - cameraCenterX) <= 30) {
+        if (r.top > window.innerHeight * 0.35 && r.width >= 35 && r.width <= 140) {
           return btn;
         }
       }
@@ -1502,36 +1481,42 @@ window.SnapStreakAutomation = (function() {
         await sleep(500 + Math.floor(Math.random() * 400));
       }
 
-      // Step 1: Click Snapchat icon top-left to set at home
-      // Expected Screen: HOME or CAMERA_READY
-      const step1Ok = await executeStepWithScreenVerification(
-        0,
-        async () => { await step0_clickSnapchatHome(); },
-        [SCREEN_STATES.HOME, SCREEN_STATES.CAMERA_READY],
-        async () => {
-          // Fallback: re-click chat back button
-          const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
-          if (chatBack && isVisible(chatBack)) chatBack.click();
-          await sleep(500);
-        }
-      );
-      if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
-      await sleep(humanMode ? 800 : 400);
+      // Check current screen state before executing transitions
+      const initialScreen = detectCurrentScreen();
+      log(`🎬 Starting Streak Flow. Current screen state: "${initialScreen}"`, 'info');
 
-      // Step 2: Open Camera Viewfinder
-      // Expected Screen: CAMERA_READY
-      const step2Ok = await executeStepWithScreenVerification(
-        1,
-        async () => { await step1_openCamera(); },
-        [SCREEN_STATES.CAMERA_READY],
-        async () => {
-          // Fallback to previous step: Return Home first, then re-open camera
-          await step0_clickSnapchatHome();
-          await sleep(1000);
+      if (initialScreen !== SCREEN_STATES.CAMERA_READY && initialScreen !== SCREEN_STATES.PHOTO_CAPTURED) {
+        // Step 1: Clean overlays / return to main menu
+        const step1Ok = await executeStepWithScreenVerification(
+          0,
+          async () => { await step0_clickSnapchatHome(); },
+          [SCREEN_STATES.HOME, SCREEN_STATES.CAMERA_READY],
+          async () => {
+            const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
+            if (chatBack && isVisible(chatBack)) chatBack.click();
+            await sleep(500);
+          }
+        );
+        if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
+        await sleep(humanMode ? 800 : 400);
+
+        // Step 2: Open Camera Viewfinder
+        const step2Ok = await executeStepWithScreenVerification(
+          1,
+          async () => { await step1_openCamera(); },
+          [SCREEN_STATES.CAMERA_READY],
+          async () => {
+            await step0_clickSnapchatHome();
+            await sleep(1000);
+          }
+        );
+        if (!step2Ok) {
+          log('  Notice: Soft camera verification, checking camera elements directly...', 'warn');
         }
-      );
-      if (!step2Ok) throw new Error('Camera Viewfinder could not be opened on screen.');
-      await sleep(humanMode ? 1000 : 500);
+      } else {
+        log('  ✓ Camera viewfinder already active on screen! Proceeding directly to capture.', 'success');
+      }
+      await sleep(humanMode ? 800 : 400);
 
       // Step 3: Press White Circle Shutter for photo
       // Expected Screen: PHOTO_CAPTURED or SEND_TO_DRAWER

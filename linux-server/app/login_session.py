@@ -1032,6 +1032,16 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
         _log("Replaying custom recorded macro in active browser...", emit)
         return await replay_macro(page, emit=emit)
 
+    # Ensure browser is currently on web.snapchat.com before triggering
+    try:
+        curr_url = page.url or ""
+        if "web.snapchat.com" not in curr_url:
+            _log("Navigating active browser session to web.snapchat.com...", emit)
+            await page.goto("https://web.snapchat.com/", timeout=25000, wait_until="domcontentloaded")
+            await asyncio.sleep(2.0)
+    except Exception as nav_err:
+        _log(f"  Navigation notice: {nav_err}", emit)
+
     action_label = "Sample Preview (Pause before Send)" if is_preview else "Auto Send"
     _log(f"🚀 Triggering in-page SnapStreak Extension {action_label} (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
 
@@ -1040,21 +1050,55 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
         ext_res = await page.evaluate("""
             async (opts) => {
                 return new Promise((resolve) => {
-                    const timer = setTimeout(() => {
-                        resolve({ success: false, timeout: true, error: 'Extension wait timed out' });
-                    }, 180000);
+                    let resolved = false;
+                    let hasAck = false;
+
+                    // Fast check: If extension is not injected/responsive within 6s, fail fast to driver
+                    const ackTimer = setTimeout(() => {
+                        if (!hasAck && !resolved) {
+                            resolved = true;
+                            cleanup();
+                            resolve({ success: false, timeout: true, fallback: true, error: 'Extension not responding, switching to direct driver' });
+                        }
+                    }, 6000);
+
+                    const maxTimer = setTimeout(() => {
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            resolve({ success: false, timeout: true, error: 'Streak execution timed out' });
+                        }
+                    }, 120000);
 
                     function cleanup() {
-                        clearTimeout(timer);
+                        clearTimeout(ackTimer);
+                        clearTimeout(maxTimer);
                         window.removeEventListener('SNAPSTREAK_RUN_FINISHED', onDone);
+                        window.removeEventListener('message', onMessage);
                     }
 
                     function onDone(e) {
-                        cleanup();
-                        resolve(e.detail || { success: true });
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            resolve(e.detail || { success: true });
+                        }
+                    }
+
+                    function onMessage(e) {
+                        if (!e || !e.data) return;
+                        if (e.data.type === 'SNAPSTREAK_TRIGGER_ACK') {
+                            hasAck = true;
+                        }
+                        if (e.data.type === 'SNAPSTREAK_RUN_FINISHED' && !resolved) {
+                            resolved = true;
+                            cleanup();
+                            resolve(e.data.result || { success: true });
+                        }
                     }
 
                     window.addEventListener('SNAPSTREAK_RUN_FINISHED', onDone);
+                    window.addEventListener('message', onMessage);
 
                     // Dispatch both CustomEvent and postMessage to reach content script in either world
                     window.dispatchEvent(new CustomEvent('SNAPSTREAK_TRIGGER_SEND', { detail: opts }));
@@ -1062,12 +1106,19 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
 
                     // If extension object is in page scope, execute directly
                     if (window.SnapStreakAutomation && typeof window.SnapStreakAutomation.runSendStreaks === 'function') {
+                        hasAck = true;
                         window.SnapStreakAutomation.runSendStreaks(opts).then((res) => {
-                            cleanup();
-                            resolve(res);
+                            if (!resolved) {
+                                resolved = true;
+                                cleanup();
+                                resolve(res);
+                            }
                         }).catch((err) => {
-                            cleanup();
-                            resolve({ success: false, error: err.message });
+                            if (!resolved) {
+                                resolved = true;
+                                cleanup();
+                                resolve({ success: false, error: err.message });
+                            }
                         });
                     }
                 });

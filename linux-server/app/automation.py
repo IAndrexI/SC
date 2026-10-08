@@ -986,6 +986,11 @@ async def send_streaks_flow(
     # Helper Step 0/1: Return Home Action
     async def step0_return_home():
         await _dismiss_banners_and_reset(page, emit)
+        cur = await detect_screen_state(page)
+        if cur in [SCREEN_STATES["CAMERA_READY"], SCREEN_STATES["PHOTO_CAPTURED"]]:
+            _log("  ✓ Already on camera/captured view; skipping home reset to preserve state.", emit)
+            return
+
         # Check if chat back button exists and click it
         for back_sel in ['button[aria-label*="Back" i]', '[data-testid="chat-back-button"]']:
             try:
@@ -998,13 +1003,14 @@ async def send_streaks_flow(
                 pass
 
         try:
-            ghost = page.locator('[aria-label*="Snapchat" i], a[href*="/web"], [data-testid="snapchat-logo"]').first
+            # Avoid clicking a[href*="/web"] which triggers full page reload in Snapchat Web!
+            ghost = page.locator('button[aria-label*="Snapchat" i], [data-testid="snapchat-logo"]').first
             if await ghost.is_visible(timeout=800):
                 await ghost.click()
             else:
-                await page.mouse.click(130, 50)
+                await asyncio.sleep(0.5)
         except Exception:
-            await page.mouse.click(130, 50)
+            await asyncio.sleep(0.5)
 
     # ── Step 1: Return to Home Screen (Top-Left Snapchat Icon) ───────────────
     step1_ok = await execute_step_with_screen_verification(
