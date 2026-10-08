@@ -194,6 +194,67 @@ def current_url() -> str:
     return _state.get("url", "")
 
 
+def get_page() -> Page | None:
+    return _state.get("page")
+
+
+def get_extension_bundle_script() -> str:
+    """Read extension scripts and assemble a self-contained injection bundle."""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "extension",
+        Path(__file__).resolve().parent / "extension",
+        Path("/opt/sc/linux-server/extension"),
+        Path("/opt/sc/extension"),
+        Path("/opt/snapstreak/linux-server/extension"),
+        Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
+    ]
+    ext_dir = None
+    for cand in candidates:
+        if (cand / "manifest.json").exists():
+            ext_dir = cand.resolve()
+            break
+    if not ext_dir:
+        return ""
+
+    parts = []
+    for script_name in ["camera_hook.js", "automation.js", "macro.js", "overlay.js", "content.js"]:
+        f = ext_dir / script_name
+        if f.exists():
+            parts.append(f.read_text(encoding="utf-8", errors="ignore"))
+
+    return "\n\n".join(parts)
+
+
+async def ensure_extension_active(page: Page | None = None, force_toggle: bool = False) -> bool:
+    """Ensure that the SnapStreak Extension HUD is actively running in the page DOM."""
+    p = page or _state.get("page")
+    if not p:
+        return False
+    bundle = get_extension_bundle_script()
+    try:
+        url = p.url or ""
+        if "snapchat.com" in url or not url or url == "about:blank":
+            if bundle:
+                await p.evaluate(bundle)
+            await p.evaluate("""(forceToggle) => {
+                try {
+                    if (window.SnapStreakOverlay && typeof window.SnapStreakOverlay.initUI === 'function') {
+                        window.SnapStreakOverlay.initUI();
+                        if (forceToggle && typeof window.SnapStreakOverlay.toggleWindow === 'function') {
+                            window.SnapStreakOverlay.toggleWindow(true);
+                        }
+                    }
+                } catch(e) {
+                    console.error('[SnapStreak] initUI error:', e);
+                }
+            }""", force_toggle)
+            return True
+        return False
+    except Exception as ex:
+        return False
+
+
+
 async def _fast_frame_loop():
     """Fallback frame loop in case CDP screencast is idle."""
     while _state["active"]:
@@ -382,6 +443,10 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
             _log("  Launching Firefox persistent context...", emit)
             context = await pw.firefox.launch_persistent_context(**ff_kwargs)
             await context.add_init_script(STEALTH_INIT_SCRIPT)
+            ext_script = get_extension_bundle_script()
+            if ext_script:
+                await context.add_init_script(ext_script)
+                _log("  ✓ SnapStreak Extension injected into Firefox context.", emit)
             _log("  ✓ Firefox context launched successfully.", emit)
         except Exception as ff_err:
             _log(f"  ⚠ Firefox ESR failed to launch: {ff_err}", emit)
@@ -502,6 +567,10 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 await context.add_init_script(STEALTH_INIT_SCRIPT)
+                ext_script = get_extension_bundle_script()
+                if ext_script:
+                    await context.add_init_script(ext_script)
+                    _log("  ✓ SnapStreak Extension injected into Chrome CDP context.", emit)
                 _log("  ✓ Connected cleanly to native Chrome without automation flags.", emit)
             else:
                 _log("  ⚠ Native Chrome CDP wait timed out; falling back to persistent context...", emit)
@@ -549,6 +618,10 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                         pass
                 context = await pw.chromium.launch_persistent_context(**kwargs)
             await context.add_init_script(STEALTH_INIT_SCRIPT)
+            ext_script = get_extension_bundle_script()
+            if ext_script:
+                await context.add_init_script(ext_script)
+                _log("  ✓ SnapStreak Extension injected into Chromium context.", emit)
             _log("  ✓ Chromium context launched successfully.", emit)
 
     if SESSION_FILE.exists():
@@ -566,6 +639,9 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
     page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page
     _state["active"] = True
+
+    page.on("domcontentloaded", lambda p: asyncio.create_task(ensure_extension_active(p)))
+    page.on("load", lambda p: asyncio.create_task(ensure_extension_active(p)))
 
     # Start screencast: CDP for Chromium, fast frame loop for Firefox
     if chosen_engine != "firefox":
@@ -615,6 +691,8 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
         try:
             # Short wait for commit/DOM, letting the user watch the load live in noVNC
             await page.goto(target_url, timeout=45_000, wait_until="commit")
+            await asyncio.sleep(1.5)
+            await ensure_extension_active(page, force_toggle=False)
         except Exception as ex:
             _log(f"Navigation notice: {ex}", emit)
 
@@ -627,7 +705,13 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 p = _state.get("page")
                 ctx = _state.get("context")
                 if p and ctx:
-                    u = p.url
+                    u = p.url or ""
+                    # Keep extension overlay attached on Snapchat pages
+                    if "snapchat.com" in u:
+                        has_host = await p.evaluate("() => Boolean(document.getElementById('snapstreak-shadow-host'))")
+                        if not has_host:
+                            await ensure_extension_active(p, force_toggle=False)
+
                     # User completed login if on web.snapchat.com and not on accounts/login page
                     if "web.snapchat.com" in u and "accounts.snapchat.com" not in u and "/login" not in u:
                         cookies = await ctx.cookies()

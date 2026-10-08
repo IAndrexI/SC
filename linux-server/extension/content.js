@@ -12,8 +12,10 @@
       if (!document.getElementById('snapstreak-camera-hook-script')) {
         const script = document.createElement('script');
         script.id = 'snapstreak-camera-hook-script';
-        script.src = chrome.runtime.getURL('camera_hook.js');
-        (document.head || document.documentElement).appendChild(script);
+        if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+          script.src = chrome.runtime.getURL('camera_hook.js');
+          (document.head || document.documentElement).appendChild(script);
+        }
       }
     } catch(e) {}
   }
@@ -341,6 +343,7 @@
   });
 
   // Listen for scheduled automation requests and control signals from background service worker
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'CANCEL_RUNNING_COMMAND' || request.type === 'STOP_TASK') {
       console.log('[SnapStreak Content] Received CANCEL_RUNNING_COMMAND/STOP_TASK.');

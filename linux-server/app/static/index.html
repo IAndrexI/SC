@@ -608,7 +608,7 @@
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://web.snapchat.com/')">👻 Snapchat Web</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://accounts.snapchat.com/v2/login')">🔑 Snapchat Login</button>
           <button class="btn btn-primary" style="padding:2px 10px;font-size:11px;border-radius:12px;background:#fff;color:#000;font-weight:bold" onclick="triggerGoogleLoginFlow()">G Continue with Google</button>
-          <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="browserGo('https://www.google.com')">🔍 Google Search</button>
+          <button class="btn btn-primary" style="padding:2px 10px;font-size:11px;border-radius:12px;background:var(--accent);color:#000;font-weight:bold" onclick="toggleExtensionInActiveBrowser()" title="Toggle or open SnapStreak Extension overlay on browser screen">🧩 Toggle Extension HUD</button>
           <button class="btn btn-primary" style="padding:2px 10px;font-size:11px;border-radius:12px;background:var(--green);color:#000;font-weight:bold" onclick="showCookieImportModal()">📥 Paste Cookies / Sync Session</button>
           <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;border-radius:12px" onclick="clearBrowserData()">🧹 Clear Cookies</button>
         </div>
@@ -1777,6 +1777,21 @@
     await saveFriends();
     appendLog('info', '✓ Saved recipients from Extension view.');
   }
+
+  async function toggleExtensionInActiveBrowser() {
+    appendLog('info', 'Toggling SnapStreak Extension HUD on browser screen...');
+    try {
+      const res = await fetch('/api/browser/toggle-extension', { method: 'POST' }).then(r => r.json());
+      if (res.ok) {
+        appendLog('info', '✓ SnapStreak Extension HUD toggled on browser page.');
+      } else {
+        appendLog('err', '⚠ Failed to toggle extension: ' + (res.error || 'No active browser'));
+      }
+    } catch(e) {
+      appendLog('err', '⚠ Error toggling extension: ' + e.message);
+    }
+  }
+
 
   async function connectBliss() {
     const host = document.getElementById('bliss-host').value.trim();

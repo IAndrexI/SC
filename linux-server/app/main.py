@@ -904,6 +904,20 @@ async def download_extension_zip():
     )
 
 
+@app.post("/api/browser/toggle-extension")
+async def toggle_browser_extension():
+    """Toggle or re-inject the SnapStreak Extension HUD in the active browser session."""
+    p = login_session.get_page()
+    if not p:
+        raise HTTPException(status_code=400, detail="No active browser session")
+    try:
+        ok = await login_session.ensure_extension_active(p, force_toggle=True)
+        return {"ok": ok, "message": "Extension toggled in active browser"}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+
+
 
 @app.post("/api/task/awaiting-confirmation")
 async def task_awaiting_confirmation(request: Request):
