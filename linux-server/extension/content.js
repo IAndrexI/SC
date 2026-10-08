@@ -391,6 +391,7 @@
       return true;
     }
   });
+  }
 
   init();
 })();

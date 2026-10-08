@@ -255,6 +255,7 @@ async def ensure_extension_active(page: Page | None = None, force_toggle: bool =
             return True
         return False
     except Exception as ex:
+        _log(f"  [Extension] In-page bundle injection failed: {ex}")
         return False
 
 
@@ -1133,6 +1134,12 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
     action_label = "Sample Preview (Pause before Send)" if is_preview else "Auto Send"
     _log(f"🚀 Triggering in-page SnapStreak Extension {action_label} (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
 
+    # Ensure in-page extension is injected and ready before triggering
+    try:
+        await ensure_extension_active(page, force_toggle=False)
+    except Exception as ext_init_err:
+        _log(f"  Notice ensuring extension active: {ext_init_err}", emit)
+
     # 1. Ask the in-page SnapStreak Extension to execute the streak sequence natively
     try:
         ext_res = await page.evaluate("""
@@ -1221,6 +1228,9 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
         })
 
         if ext_res and ext_res.get("success"):
+            if ext_res.get("previewOnly"):
+                _log("🧪 In-page SnapStreak Extension sample preview finished (visual demonstrated, paused before send).", emit)
+                return {"preview": True, "ok": True}
             _log("🎉 In-page SnapStreak Extension successfully completed streak send! Delivered. 🔥", emit)
             return {f: "ok" for f in friends}
         elif ext_res and not ext_res.get("timeout") and not ext_res.get("fallback"):

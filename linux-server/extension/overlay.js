@@ -1893,36 +1893,35 @@ textarea {
 
   function updateScheduleUIStatus() {
     if (!shadowRoot) return;
+    const nextRunEl = shadowRoot.getElementById('schedule-next-run');
+    const lastRunEl = shadowRoot.getElementById('schedule-last-run');
+    const syncPill = shadowRoot.getElementById('schedule-sync-pill');
+
+    if (syncPill) {
+      syncPill.textContent = config.scheduleEnabled ? '● Active' : '○ Disabled';
+      syncPill.style.color = config.scheduleEnabled ? 'var(--green)' : 'var(--text-dim)';
+    }
+
+    if (nextRunEl) {
+      nextRunEl.textContent = !config.scheduleEnabled ? 'Next Run: Schedule Disabled' : `Next Run: Daily at ${config.scheduleTime || '09:00'}`;
+    }
+
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
       chrome.storage.local.get(['nextScheduledRunText', 'lastStreakSentDate', 'lastStreakSentTime', 'lastStreakStatus'], (res) => {
-      const nextRunEl = shadowRoot.getElementById('schedule-next-run');
-      const lastRunEl = shadowRoot.getElementById('schedule-last-run');
-      const syncPill = shadowRoot.getElementById('schedule-sync-pill');
-
-      if (syncPill) {
-        syncPill.textContent = config.scheduleEnabled ? '● Active' : '○ Disabled';
-        syncPill.style.color = config.scheduleEnabled ? 'var(--green)' : 'var(--text-dim)';
-      }
-
-      if (nextRunEl) {
-        if (!config.scheduleEnabled) {
-          nextRunEl.textContent = 'Next Run: Schedule Disabled';
-        } else if (res.nextScheduledRunText) {
+        if (!res) return;
+        if (nextRunEl && res.nextScheduledRunText && config.scheduleEnabled) {
           nextRunEl.textContent = `Next Run: ${res.nextScheduledRunText}`;
-        } else {
-          nextRunEl.textContent = `Next Run: Daily at ${config.scheduleTime || '09:00'}`;
         }
-      }
-
-      if (lastRunEl) {
-        if (res.lastStreakSentDate) {
-          const statusIcon = res.lastStreakStatus === 'success' ? '🔥' : '⚠️';
-          lastRunEl.textContent = `Last Run: ${res.lastStreakSentDate} at ${res.lastStreakSentTime || ''} (${statusIcon})`;
-        } else {
-          lastRunEl.textContent = 'Last Run: Not sent yet today';
+        if (lastRunEl) {
+          if (res.lastStreakSentDate) {
+            const statusIcon = res.lastStreakStatus === 'success' ? '🔥' : '⚠️';
+            lastRunEl.textContent = `Last Run: ${res.lastStreakSentDate} at ${res.lastStreakSentTime || ''} (${statusIcon})`;
+          } else {
+            lastRunEl.textContent = 'Last Run: Not sent yet today';
+          }
         }
-      }
-    });
+      });
+    }
   }
 
   let endTaskTimer = null;
@@ -1981,6 +1980,25 @@ textarea {
       statusText.textContent = 'Idle (Ready)';
     }
   }
+
+  // Auto-mount HUD overlay when loaded on Snapchat Web
+  function autoMount() {
+    if (typeof window !== 'undefined' && window.location) {
+      const href = window.location.href || '';
+      const host = window.location.hostname || '';
+      if (host.includes('snapchat.com') || href.includes('snapchat')) {
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', () => initUI());
+        } else {
+          initUI();
+        }
+      }
+    }
+  }
+
+  try {
+    autoMount();
+  } catch(e) {}
 
   return {
     initUI,
