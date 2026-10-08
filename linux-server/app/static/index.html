@@ -25,12 +25,52 @@
       "color: #00f2fe; font-weight: bold;", "color: #f8fafc;",
       "color: #7f00ff; font-weight: bold;", "color: #94a3b8;"
     );
-    try {
-      const savedTheme = localStorage.getItem('protutech_theme_mode') || 'dark';
-      const savedPalette = localStorage.getItem('protutech_theme_palette') || 'protutech-obsidian';
-      document.documentElement.setAttribute('data-theme', savedTheme);
-      document.documentElement.setAttribute('data-palette', savedPalette);
-    } catch (e) {}
+    (function() {
+      const STORAGE_KEY_THEME = 'protutech_theme_mode';
+      const STORAGE_KEY_PALETTE = 'protutech_theme_palette';
+
+      let activeTheme = localStorage.getItem(STORAGE_KEY_THEME) || 'dark';
+      let activePalette = localStorage.getItem(STORAGE_KEY_PALETTE) || 'protutech-obsidian';
+
+      function applyTheme(theme) {
+        activeTheme = theme;
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem(STORAGE_KEY_THEME, theme);
+        updateControls();
+      }
+
+      function applyPalette(palette) {
+        activePalette = palette;
+        document.documentElement.setAttribute('data-palette', palette);
+        localStorage.setItem(STORAGE_KEY_PALETTE, palette);
+        updateControls();
+      }
+
+      function updateControls() {
+        const sel = document.getElementById('pt-palette-select');
+        const icon = document.getElementById('pt-theme-icon');
+        const text = document.getElementById('pt-theme-text');
+        if (sel) sel.value = activePalette;
+        if (icon) icon.textContent = activeTheme === 'dark' ? '☀️' : '🌙';
+        if (text) text.textContent = activeTheme === 'dark' ? 'Light' : 'Dark';
+      }
+
+      applyTheme(activeTheme);
+      applyPalette(activePalette);
+
+      window.addEventListener('storage', (e) => {
+        if (e.key === STORAGE_KEY_THEME && e.newValue) applyTheme(e.newValue);
+        if (e.key === STORAGE_KEY_PALETTE && e.newValue) applyPalette(e.newValue);
+      });
+
+      window.addEventListener('DOMContentLoaded', () => {
+        updateControls();
+        const sel = document.getElementById('pt-palette-select');
+        const btn = document.getElementById('pt-theme-toggle');
+        if (sel) sel.addEventListener('change', (e) => applyPalette(e.target.value));
+        if (btn) btn.addEventListener('click', () => applyTheme(activeTheme === 'dark' ? 'light' : 'dark'));
+      });
+    })();
   </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -163,6 +203,51 @@
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+    }
+
+    .protutech-theme-bar {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-xl);
+      padding: 5px 10px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+      margin-left: auto;
+    }
+    .pt-theme-select {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-sm);
+      padding: 5px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+    }
+    .pt-theme-select option {
+      background: var(--surface2);
+      color: var(--text);
+    }
+    .pt-theme-btn {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-sm);
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s ease;
+    }
+    .pt-theme-btn:hover {
+      background: var(--border-hover);
+      border-color: var(--accent);
     }
 
     .grid {
@@ -378,6 +463,18 @@
   <div class="logo">⚡</div>
   <h1>SC Service Control</h1>
   <span class="badge">v4.1</span>
+  <div class="protutech-theme-bar">
+    <select id="pt-palette-select" class="pt-theme-select" title="Switch Theme Palette">
+      <option value="protutech-obsidian">Obsidian Neon</option>
+      <option value="adobe-classic">Adobe Classic</option>
+      <option value="cyber-emerald">Cyber Emerald</option>
+      <option value="sunset-ember">Sunset Ember</option>
+    </select>
+    <button id="pt-theme-toggle" class="pt-theme-btn" title="Toggle Light / Dark Mode">
+      <span id="pt-theme-icon">☀️</span>
+      <span id="pt-theme-text">Light</span>
+    </button>
+  </div>
 </header>
 
 <div class="grid">
