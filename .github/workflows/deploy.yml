@@ -1,0 +1,24 @@
+name: Deploy SnapStreak to LXC
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Pull and restart SnapStreak in LXC
+        run: |
+          TARGET_DIR="/opt/snapstreak"
+          if [ ! -d "$TARGET_DIR" ]; then
+            TARGET_DIR="$(pwd)"
+          fi
+          cd "$TARGET_DIR"
+          git fetch origin main
+          git reset --hard origin/main
+          if systemctl is-active --quiet snapstreak 2>/dev/null; then
+            systemctl restart snapstreak
+          fi
