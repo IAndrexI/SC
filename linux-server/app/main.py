@@ -27,9 +27,11 @@ log = logging.getLogger("snapstreak")
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import io
+import zipfile
 
 import config
 import automation
@@ -854,6 +856,53 @@ async def extension_status(body: ExtensionStatusInput):
         _state["last_run_results"] = {"error": body.error or "failed"}
         _emit(f"⚠ Extension reported streak error: {body.error}")
     return {"ok": True}
+
+
+@app.get("/api/extension/info")
+async def get_extension_info():
+    """Return manifest and status info for the SnapStreak browser extension."""
+    ext_dir = Path(__file__).resolve().parent.parent / "extension"
+    manifest_path = ext_dir / "manifest.json"
+    manifest_data = {}
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+        except Exception:
+            pass
+
+    return {
+        "installed": ext_dir.exists(),
+        "version": manifest_data.get("version", "4.1.0"),
+        "name": manifest_data.get("name", "SnapStreak Auto"),
+        "description": manifest_data.get("description", "Snapchat Streak Automation Extension"),
+        "active_session": login_session.is_active(),
+        "files": [f.name for f in ext_dir.glob("*.*")] if ext_dir.exists() else []
+    }
+
+
+@app.get("/api/extension/download")
+async def download_extension_zip():
+    """Package the SnapStreak browser extension directory as a downloadable ZIP."""
+    ext_dir = Path(__file__).resolve().parent.parent / "extension"
+    if not ext_dir.exists():
+        raise HTTPException(status_code=404, detail="Extension directory not found")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(ext_dir):
+            for file in files:
+                file_path = Path(root) / file
+                archive_name = file_path.relative_to(ext_dir)
+                zf.write(file_path, arcname=str(archive_name))
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="snapstreak-extension.zip"'}
+    )
+
 
 
 @app.post("/api/task/awaiting-confirmation")

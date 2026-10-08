@@ -212,6 +212,38 @@
 
     .sep { height: 1px; background: var(--border); margin: 14px 0; }
     small { font-size: 11px; color: var(--text-dim); }
+
+    /* Extension HUD Tabs & Preview */
+    .ext-tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+      border-radius: 4px 4px 0 0;
+    }
+    .ext-tab-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .ext-tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      background: rgba(255, 252, 0, 0.08);
+    }
+    .pill-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 800;
+    }
   </style>
 </head>
 <body>
@@ -243,6 +275,7 @@
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-secondary" id="btn-mode-bliss" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('bliss')">🤖 Bliss OS (Android VM)</button>
         <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('web')">🖥️ Web Browser Mode</button>
+        <button class="btn btn-secondary" id="btn-mode-extension" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('extension')">🧩 Browser Extension</button>
         <button class="btn btn-secondary" id="btn-preview" style="padding:6px 14px;font-size:12px;border-color:var(--accent);color:var(--accent)" onclick="doPreview()" title="Test streak sequence up to final Send button with manual review">🧪 Sample Preview</button>
         <button class="btn btn-success" id="btn-send" style="padding:6px 16px;font-size:12px" onclick="doSend()">🔥 Send Streaks Now</button>
         <button class="btn btn-secondary" id="btn-pause-task" style="padding:6px 12px;font-size:12px;display:none" onclick="togglePauseTask()">⏸️ Pause</button>
@@ -304,6 +337,169 @@
             <input type="text" id="termux-input" placeholder="sh command (e.g. pm list packages | grep snap)..." style="font-family:monospace;font-size:12px;flex:1;padding:6px 10px" onkeydown="if(event.key==='Enter')runTermuxCmd()" />
             <button class="btn btn-primary" style="font-size:11px;padding:6px 14px" onclick="runTermuxCmd()">Run ↵</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── BROWSER EXTENSION IN-APP VIEW & CONTROLLER ── -->
+    <div id="extension-view" style="display:none">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">🧩</span>
+              <span style="font-size:15px;font-weight:700;color:var(--text)">SnapStreak In-Page Browser Extension</span>
+              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.1</span>
+              <span id="ext-session-status-badge" class="badge" style="background:rgba(61,220,132,0.15);color:var(--green);border-color:var(--green)">Active in Web Session</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
+              Directly controls Snapchat Web (<code>web.snapchat.com</code>) with human simulation, camera capture, recipient selection &amp; macros.
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <a href="/api/extension/download" download="snapstreak-extension.zip" class="btn btn-secondary" style="font-size:11px;padding:6px 12px;text-decoration:none">
+              📥 Download Extension (.zip)
+            </a>
+            <button class="btn btn-secondary" style="font-size:11px;padding:6px 12px" onclick="switchPlatform('web')">
+              🖥️ Open Web Browser
+            </button>
+            <button class="btn btn-primary" style="font-size:11px;padding:6px 14px;background:var(--green);color:#000;font-weight:bold" onclick="doSend()">
+              🔥 Run Streaks via Extension
+            </button>
+          </div>
+        </div>
+
+        <!-- Interactive SnapStreak Extension HUD Replica / Controller -->
+        <div class="ext-mock-window" style="background:#0e111a;border:1px solid #262c42;border-radius:12px;overflow:hidden;box-shadow:0 12px 36px rgba(0,0,0,0.6);margin-bottom:14px">
+          <!-- Window Header -->
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#141825;border-bottom:1px solid #262c42">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">🔥</span>
+              <span style="font-weight:800;font-size:13px;color:#fff;letter-spacing:0.3px">SnapStreak Controller</span>
+              <span class="pill-badge" id="mock-pill-badge" style="background:var(--green);color:#000;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px">Ready</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="toggleWebcamPreviewExt()">📷 SJSU Cam</button>
+              <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="loadConfig()">↻ Refresh</button>
+            </div>
+          </div>
+
+          <!-- Navigation Tabs -->
+          <div style="display:flex;background:#111420;border-bottom:1px solid #262c42;padding:2px 8px;gap:4px;overflow-x:auto">
+            <button class="ext-tab-btn active" id="ext-tab-btn-streaks" onclick="switchExtTab('streaks')">⚡ Streaks</button>
+            <button class="ext-tab-btn" id="ext-tab-btn-macros" onclick="switchExtTab('macros')">🎬 Macros</button>
+            <button class="ext-tab-btn" id="ext-tab-btn-friends" onclick="switchExtTab('friends')">👥 Friends</button>
+            <button class="ext-tab-btn" id="ext-tab-btn-schedule" onclick="switchExtTab('schedule')">⏰ Schedule</button>
+            <button class="ext-tab-btn" id="ext-tab-btn-logs" onclick="switchExtTab('logs')">📋 Logs</button>
+          </div>
+
+          <!-- HUD Body -->
+          <div style="padding:14px;display:flex;flex-direction:column;gap:12px">
+            <!-- Status Banner -->
+            <div style="display:flex;align-items:center;justify-content:space-between;background:#111524;border:1px solid #262c42;border-radius:8px;padding:8px 12px">
+              <div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600">
+                <div class="dot green" id="mock-status-dot"></div>
+                <span id="mock-status-text">Idle (Ready)</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span id="mock-friends-badge" style="font-size:11px;color:var(--text-dim)">— Friends</span>
+              </div>
+            </div>
+
+            <!-- TAB 1: STREAKS -->
+            <div id="ext-pane-streaks" style="display:flex;flex-direction:column;gap:12px">
+              <div style="background:#151926;border:1px solid var(--accent);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="font-weight:700;color:var(--accent);font-size:13px">🚀 Streak Sending Engine</span>
+                  <span class="pill-badge" style="background:var(--green);color:#000;font-weight:800;font-size:10px;padding:2px 6px;border-radius:10px">DIRECT SCRIPT</span>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:4px">
+                  <button class="btn btn-primary" style="flex:1;font-size:12px;padding:10px;font-weight:700" onclick="doSend()">🔥 Auto Send Streaks</button>
+                  <button class="btn btn-secondary" style="flex:1;font-size:12px;padding:10px;font-weight:700;border-color:var(--accent);color:var(--accent)" onclick="doPreview()">🧪 Sample Preview</button>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:2px">
+                  <button class="btn btn-secondary" id="btn-ext-pause" style="flex:1;font-size:12px;padding:7px;display:none" onclick="togglePauseTask()">⏸️ Pause</button>
+                  <button class="btn btn-danger" id="btn-ext-stop" style="flex:1;font-size:12px;padding:7px;display:none" onclick="stopTask()">⏹️ Stop Task</button>
+                </div>
+              </div>
+
+              <!-- SJSU Live Webcam Card -->
+              <div style="background:#151926;border:1px solid #262c42;border-radius:10px;padding:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <span style="font-size:12px;font-weight:700;color:var(--accent)">📡 Live SJSU Meteorology Webcam</span>
+                  <button class="btn btn-secondary" style="padding:2px 8px;font-size:10px" onclick="refreshSJSUFrameExt()">↻ Refresh Frame</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Snapchat's camera viewfinder displays this live San José State Meteorology visual:</p>
+                <div id="ext-cam-box" style="border-radius:8px;overflow:hidden;background:#000;border:1px solid #262c42">
+                  <img id="ext-sjsu-img" src="https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg" alt="SJSU Cam" style="width:100%;height:150px;object-fit:cover;display:block" />
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 2: MACROS -->
+            <div id="ext-pane-macros" style="display:none;flex-direction:column;gap:12px">
+              <div style="background:#151926;border:1px solid #262c42;border-radius:10px;padding:12px">
+                <div style="font-size:12px;font-weight:700;color:#fff;margin-bottom:6px">🎬 Action Macro Progression</div>
+                <p style="font-size:11px;color:var(--text-dim);margin-bottom:10px">Record your exact clicks on Snapchat Web to replay automatically during streak runs.</p>
+                <div style="display:flex;gap:8px">
+                  <button class="btn btn-danger" style="font-size:12px;padding:6px 12px" onclick="startMacroRec();switchPlatform('web')">🔴 Record New Clicks</button>
+                  <button class="btn btn-primary" style="font-size:12px;padding:6px 12px" onclick="sendStreaksInOpenBrowser()">▶ Replay Saved Macro</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 3: FRIENDS -->
+            <div id="ext-pane-friends" style="display:none;flex-direction:column;gap:12px">
+              <div style="background:#151926;border:1px solid #262c42;border-radius:10px;padding:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <span style="font-size:12px;font-weight:700;color:#fff">👥 Streak Recipients</span>
+                  <span id="ext-friends-count" style="font-size:11px;color:var(--accent)">0 Friends</span>
+                </div>
+                <textarea id="ext-friends-input" rows="3" style="width:100%;font-family:monospace;font-size:12px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:#fff;margin-bottom:8px" placeholder="user_one&#10;user_two" oninput="syncFriendsFromExt(this.value)"></textarea>
+                <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="saveFriendsFromExt()">💾 Save Recipients</button>
+              </div>
+            </div>
+
+            <!-- TAB 4: SCHEDULE -->
+            <div id="ext-pane-schedule" style="display:none;flex-direction:column;gap:12px">
+              <div style="background:#151926;border:1px solid #262c42;border-radius:10px;padding:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <span style="font-size:12px;font-weight:700;color:#fff">⏰ Daily Send Times</span>
+                  <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;color:var(--accent);border-color:var(--accent)" onclick="addWebScheduleTime()">➕ Add Time</button>
+                </div>
+                <div id="ext-schedule-container" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+                <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="saveSchedule()">💾 Save Schedule</button>
+              </div>
+            </div>
+
+            <!-- TAB 5: LOGS -->
+            <div id="ext-pane-logs" style="display:none;flex-direction:column;gap:12px">
+              <div style="background:#151926;border:1px solid #262c42;border-radius:10px;padding:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <span style="font-size:12px;font-weight:700;color:var(--accent)">📋 Live Extension Activity Stream</span>
+                  <button class="btn btn-secondary" style="padding:2px 8px;font-size:10px" onclick="document.getElementById('ext-log-terminal').innerHTML=''">Clear</button>
+                </div>
+                <div id="ext-log-terminal" style="background:#08080c;color:#79f79e;font-family:monospace;font-size:11px;line-height:1.6;padding:10px;border-radius:6px;min-height:140px;max-height:220px;overflow-y:auto;white-space:pre-wrap">Waiting for live extension events...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Extension Desktop Chrome/Brave/Edge Installation Box -->
+        <div style="background:#151926;border:1px dashed #3b4468;border-radius:8px;padding:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+            <span style="font-size:12px;font-weight:700;color:#fff">💻 Install in Your Desktop Chrome / Brave / Edge (Optional)</span>
+            <a href="/api/extension/download" download="snapstreak-extension.zip" class="btn btn-primary" style="font-size:11px;padding:4px 12px;text-decoration:none">
+              📥 Download Extension ZIP
+            </a>
+          </div>
+          <ol style="font-size:12px;color:var(--text-dim);padding-left:18px;line-height:1.7;margin:0">
+            <li>Download the extension ZIP using the button above and extract it into a folder.</li>
+            <li>In Chrome or Brave, navigate to <code>chrome://extensions</code> (or <code>brave://extensions</code> / <code>edge://extensions</code>).</li>
+            <li>Enable <strong>Developer mode</strong> using the toggle switch in the top-right corner.</li>
+            <li>Click <strong>Load unpacked</strong> and select the extracted extension folder.</li>
+            <li>Open <a href="https://web.snapchat.com/" target="_blank" style="color:var(--accent);text-decoration:none">web.snapchat.com</a> — the floating <strong>SnapStreak</strong> HUD pill will automatically appear!</li>
+          </ol>
         </div>
       </div>
     </div>
@@ -701,16 +897,29 @@
   function appendLog(cls, text) {
     appendLaunchLog(text);
     const box = document.getElementById('log-box');
-    if (!box) return;
-    const line = document.createElement('div');
-    if (cls) line.className = cls;
-    line.textContent = text;
-    box.appendChild(line);
-    box.scrollTop = box.scrollHeight;
-    while (box.children.length > 3000) box.removeChild(box.firstChild);
+    if (box) {
+      const line = document.createElement('div');
+      if (cls) line.className = cls;
+      line.textContent = text;
+      box.appendChild(line);
+      box.scrollTop = box.scrollHeight;
+      while (box.children.length > 3000) box.removeChild(box.firstChild);
 
-    const badge = document.getElementById('log-count-badge');
-    if (badge) badge.textContent = `${box.children.length} entries`;
+      const badge = document.getElementById('log-count-badge');
+      if (badge) badge.textContent = `${box.children.length} entries`;
+    }
+
+    const extTerminal = document.getElementById('ext-log-terminal');
+    if (extTerminal) {
+      const extLine = document.createElement('div');
+      if (cls === 'err') extLine.style.color = 'var(--red)';
+      else if (cls === 'info') extLine.style.color = 'var(--accent)';
+      else if (text.includes('✓') || text.includes('🎉')) extLine.style.color = 'var(--green)';
+      extLine.textContent = text;
+      extTerminal.appendChild(extLine);
+      extTerminal.scrollTop = extTerminal.scrollHeight;
+      while (extTerminal.children.length > 500) extTerminal.removeChild(extTerminal.firstChild);
+    }
   }
 
   // ── Poll status ──
@@ -731,6 +940,23 @@
       document.getElementById('txt-next').textContent = s.next_run ? s.next_run.slice(0, 16) : 'Disabled';
       document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
       document.getElementById('btn-send').disabled = s.running;
+
+      // Update in-app extension HUD status
+      const mockDot = document.getElementById('mock-status-dot');
+      const mockTxt = document.getElementById('mock-status-text');
+      const mockPill = document.getElementById('mock-pill-badge');
+      if (mockDot) mockDot.className = 'dot ' + (s.running ? 'yellow' : 'green');
+      if (mockTxt) mockTxt.textContent = s.running ? (s.awaiting_confirmation ? 'Awaiting Confirmation' : 'Executing Streaks…') : 'Idle (Ready)';
+      if (mockPill) {
+        mockPill.textContent = s.running ? 'Busy' : 'Ready';
+        mockPill.style.background = s.running ? 'var(--accent)' : 'var(--green)';
+      }
+      const mockFriends = document.getElementById('mock-friends-badge');
+      if (mockFriends) mockFriends.textContent = `${s.friend_count} Friend${s.friend_count !== 1 ? 's' : ''}`;
+      const btnExtPause = document.getElementById('btn-ext-pause');
+      const btnExtStop = document.getElementById('btn-ext-stop');
+      if (btnExtPause) btnExtPause.style.display = s.running ? 'inline-flex' : 'none';
+      if (btnExtStop) btnExtStop.style.display = s.running ? 'inline-flex' : 'none';
 
       if (s.running && !_sendMonitorLoop) {
         _startSendMonitor();
@@ -846,18 +1072,24 @@
   function renderWebScheduleTimesUI(times) {
     _cachedScheduleTimes = (times && times.length > 0) ? times : ['09:00'];
     const container = document.getElementById('web-schedule-times-container');
-    if (!container) return;
-    container.innerHTML = '';
+    const extSchedContainer = document.getElementById('ext-schedule-container');
 
-    _cachedScheduleTimes.forEach((t, idx) => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;gap:6px;align-items:center';
-      row.innerHTML = `
-        <input type="time" class="web-sched-inp" value="${t}" onchange="saveSchedule()" style="flex:1" />
-        <button type="button" class="btn btn-secondary" onclick="removeWebScheduleTime(${idx})" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red)" title="Remove this time">✕</button>
-      `;
-      container.appendChild(row);
-    });
+    const renderInto = (el) => {
+      if (!el) return;
+      el.innerHTML = '';
+      _cachedScheduleTimes.forEach((t, idx) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;align-items:center';
+        row.innerHTML = `
+          <input type="time" class="web-sched-inp" value="${t}" onchange="saveSchedule()" style="flex:1" />
+          <button type="button" class="btn btn-secondary" onclick="removeWebScheduleTime(${idx})" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red)" title="Remove this time">✕</button>
+        `;
+        el.appendChild(row);
+      });
+    };
+
+    renderInto(container);
+    renderInto(extSchedContainer);
   }
 
   function addWebScheduleTime() {
@@ -880,7 +1112,15 @@
   async function loadConfig() {
     try {
       const cfg = await fetch('/api/config').then(r => r.json());
-      document.getElementById('friends-input').value = (cfg.friends || []).join('\n');
+      const friendsList = cfg.friends || [];
+      document.getElementById('friends-input').value = friendsList.join('\n');
+      const extFriendsInp = document.getElementById('ext-friends-input');
+      if (extFriendsInp) extFriendsInp.value = friendsList.join('\n');
+      const extFriendsCount = document.getElementById('ext-friends-count');
+      if (extFriendsCount) extFriendsCount.textContent = `${friendsList.length} Friends`;
+      const mockFriendsBadge = document.getElementById('mock-friends-badge');
+      if (mockFriendsBadge) mockFriendsBadge.textContent = `${friendsList.length} Friends`;
+
       renderWebScheduleTimesUI(cfg.schedule_times || [cfg.schedule_time || '09:00']);
       document.getElementById('toggle-enabled').checked = Boolean(cfg.enabled);
       if (cfg.selection_method) document.getElementById('selection-method').value = cfg.selection_method;
@@ -889,6 +1129,7 @@
       if (cfg.bliss_port) document.getElementById('bliss-port').value = cfg.bliss_port;
       if (cfg.browser_engine) setBrowserEngine(cfg.browser_engine);
       if (cfg.mode) switchPlatform(cfg.mode);
+      loadExtensionInfo();
     } catch(e) {
       console.error('Config fetch failed:', e);
     }
@@ -1449,7 +1690,12 @@
     currentPlatform = plat;
     document.getElementById('btn-mode-bliss').style.background = plat === 'bliss' ? 'var(--accent)' : 'var(--surface2)';
     document.getElementById('btn-mode-web').style.background = plat === 'web' ? 'var(--accent)' : 'var(--surface2)';
+    const btnExt = document.getElementById('btn-mode-extension');
+    if (btnExt) btnExt.style.background = plat === 'extension' ? 'var(--accent)' : 'var(--surface2)';
+
     document.getElementById('bliss-view').style.display = plat === 'bliss' ? 'block' : 'none';
+    const extView = document.getElementById('extension-view');
+    if (extView) extView.style.display = plat === 'extension' ? 'block' : 'none';
 
     // Persist mode to backend
     fetch('/api/config', {
@@ -1462,10 +1708,74 @@
       document.getElementById('login-idle').style.display = 'none';
       document.getElementById('login-active').style.display = 'block';
       connectBliss();
-    } else {
+    } else if (plat === 'web') {
       document.getElementById('login-idle').style.display = '';
       document.getElementById('login-active').style.display = 'none';
+    } else if (plat === 'extension') {
+      document.getElementById('login-idle').style.display = 'none';
+      document.getElementById('login-active').style.display = 'none';
+      loadExtensionInfo();
     }
+  }
+
+  function switchExtTab(tabId) {
+    const tabs = ['streaks', 'macros', 'friends', 'schedule', 'logs'];
+    tabs.forEach(t => {
+      const btn = document.getElementById('ext-tab-btn-' + t);
+      const pane = document.getElementById('ext-pane-' + t);
+      if (btn) btn.className = 'ext-tab-btn' + (t === tabId ? ' active' : '');
+      if (pane) pane.style.display = (t === tabId) ? 'flex' : 'none';
+    });
+  }
+
+  async function loadExtensionInfo() {
+    try {
+      const info = await fetch('/api/extension/info').then(r => r.json());
+      const vBadge = document.getElementById('ext-version-badge');
+      if (vBadge && info.version) vBadge.textContent = 'v' + info.version;
+      const statusBadge = document.getElementById('ext-session-status-badge');
+      if (statusBadge) {
+        if (info.active_session) {
+          statusBadge.textContent = 'Active in Web Session';
+          statusBadge.style.color = 'var(--green)';
+          statusBadge.style.borderColor = 'var(--green)';
+        } else {
+          statusBadge.textContent = 'Ready (Idle)';
+          statusBadge.style.color = 'var(--accent)';
+          statusBadge.style.borderColor = 'var(--accent)';
+        }
+      }
+    } catch(e) {}
+  }
+
+  function toggleWebcamPreviewExt() {
+    const box = document.getElementById('ext-cam-box');
+    if (box) {
+      box.style.display = (box.style.display === 'none') ? 'block' : 'none';
+    }
+  }
+
+  function refreshSJSUFrameExt() {
+    const img = document.getElementById('ext-sjsu-img');
+    if (img) {
+      img.src = 'https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg?t=' + Date.now();
+      appendLog('info', '✓ Refreshed live SJSU frame in Extension view.');
+    }
+  }
+
+  function syncFriendsFromExt(val) {
+    const mainInp = document.getElementById('friends-input');
+    if (mainInp) mainInp.value = val;
+    const lines = val.split('\n').map(s => s.trim()).filter(Boolean);
+    const countBadge = document.getElementById('ext-friends-count');
+    if (countBadge) countBadge.textContent = `${lines.length} Friends`;
+    const mockBadge = document.getElementById('mock-friends-badge');
+    if (mockBadge) mockBadge.textContent = `${lines.length} Friends`;
+  }
+
+  async function saveFriendsFromExt() {
+    await saveFriends();
+    appendLog('info', '✓ Saved recipients from Extension view.');
   }
 
   async function connectBliss() {
