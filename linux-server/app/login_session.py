@@ -240,8 +240,12 @@ async def ensure_extension_active(page: Page | None = None, force_toggle: bool =
                 try {
                     if (window.SnapStreakOverlay && typeof window.SnapStreakOverlay.initUI === 'function') {
                         window.SnapStreakOverlay.initUI();
-                        if (forceToggle && typeof window.SnapStreakOverlay.toggleWindow === 'function') {
-                            window.SnapStreakOverlay.toggleWindow(true);
+                        if (forceToggle) {
+                            if (typeof window.SnapStreakOverlay.toggleDock === 'function') {
+                                window.SnapStreakOverlay.toggleDock(true);
+                            } else if (typeof window.SnapStreakOverlay.toggleWindow === 'function') {
+                                window.SnapStreakOverlay.toggleWindow(true);
+                            }
                         }
                     }
                 } catch(e) {

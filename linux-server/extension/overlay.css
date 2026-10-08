@@ -99,6 +99,187 @@
   display: none !important;
 }
 
+/* Embedded Dock Mode (Default: Docked to right side of Snapchat Web) */
+#snapstreak-window.embedded-dock {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: 360px !important;
+  max-width: 90vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+  border: none !important;
+  border-left: 2px solid var(--border-active) !important;
+  box-shadow: -10px 0 35px rgba(0, 0, 0, 0.75) !important;
+  transform: translateX(0);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s !important;
+}
+
+#snapstreak-window.embedded-dock.collapsed {
+  transform: translateX(100%) !important;
+  pointer-events: none;
+}
+
+#snapstreak-window.embedded-dock.collapsed #snapstreak-dock-tab {
+  pointer-events: auto;
+}
+
+/* Edge Dock Tab Handle */
+#snapstreak-dock-tab {
+  display: none;
+  position: absolute;
+  left: -36px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 78px;
+  background: #141825;
+  border: 1px solid var(--border-active);
+  border-right: none;
+  border-radius: 12px 0 0 12px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: -6px 0 16px rgba(0, 0, 0, 0.6);
+  transition: background 0.2s, border-color 0.2s, transform 0.2s;
+  user-select: none;
+  z-index: 2147483646;
+}
+
+#snapstreak-window.embedded-dock #snapstreak-dock-tab {
+  display: flex;
+}
+
+#snapstreak-dock-tab:hover {
+  background: #1d2236;
+  border-color: var(--accent);
+}
+
+.dock-tab-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.dock-tab-arrow {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 800;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+#snapstreak-window.embedded-dock.collapsed #snapstreak-dock-tab .dock-tab-arrow {
+  transform: rotate(180deg);
+}
+
+/* Embedded Top Quickbar Ribbon on Snapchat Web */
+#snapstreak-quickbar {
+  position: fixed;
+  top: 10px;
+  right: 380px;
+  z-index: 2147483645;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(14, 17, 26, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 4px 10px;
+  border-radius: 24px;
+  border: 1px solid var(--border-active);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.65), 0 0 12px rgba(255, 252, 0, 0.12);
+  transition: right 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s;
+  user-select: none;
+}
+
+#snapstreak-quickbar.dock-collapsed {
+  right: 48px;
+}
+
+.quickbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+}
+
+.quickbar-title {
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: #fff;
+}
+
+.quickbar-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-dim);
+  padding-right: 4px;
+}
+
+.quickbar-btn {
+  border: none;
+  border-radius: 14px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.quickbar-btn-primary {
+  background: var(--accent);
+  color: #000;
+}
+
+.quickbar-btn-primary:hover {
+  background: #ffe600;
+  transform: translateY(-1px);
+}
+
+.quickbar-btn-test {
+  background: #20273c;
+  color: var(--accent);
+  border: 1px solid var(--border-active);
+}
+
+.quickbar-btn-test:hover {
+  background: #2b3452;
+  border-color: var(--accent);
+}
+
+.quickbar-btn-warn {
+  background: #f59e0b;
+  color: #000;
+}
+
+.quickbar-btn-danger {
+  background: var(--red);
+  color: #fff;
+}
+
+.quickbar-btn-secondary {
+  background: #181c2c;
+  color: #cbd5e1;
+  border: 1px solid var(--border);
+}
+
+.quickbar-btn-secondary:hover {
+  color: #fff;
+  border-color: var(--border-active);
+}
+
 /* Window Header */
 .hud-header {
   display: flex;

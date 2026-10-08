@@ -106,6 +106,187 @@ window.SnapStreakOverlay = (function() {
   display: none !important;
 }
 
+/* Embedded Dock Mode (Default: Docked to right side of Snapchat Web) */
+#snapstreak-window.embedded-dock {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: 360px !important;
+  max-width: 90vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+  border: none !important;
+  border-left: 2px solid var(--border-active) !important;
+  box-shadow: -10px 0 35px rgba(0, 0, 0, 0.75) !important;
+  transform: translateX(0);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s !important;
+}
+
+#snapstreak-window.embedded-dock.collapsed {
+  transform: translateX(100%) !important;
+  pointer-events: none;
+}
+
+#snapstreak-window.embedded-dock.collapsed #snapstreak-dock-tab {
+  pointer-events: auto;
+}
+
+/* Edge Dock Tab Handle */
+#snapstreak-dock-tab {
+  display: none;
+  position: absolute;
+  left: -36px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 78px;
+  background: #141825;
+  border: 1px solid var(--border-active);
+  border-right: none;
+  border-radius: 12px 0 0 12px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: -6px 0 16px rgba(0, 0, 0, 0.6);
+  transition: background 0.2s, border-color 0.2s, transform 0.2s;
+  user-select: none;
+  z-index: 2147483646;
+}
+
+#snapstreak-window.embedded-dock #snapstreak-dock-tab {
+  display: flex;
+}
+
+#snapstreak-dock-tab:hover {
+  background: #1d2236;
+  border-color: var(--accent);
+}
+
+.dock-tab-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.dock-tab-arrow {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 800;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+#snapstreak-window.embedded-dock.collapsed #snapstreak-dock-tab .dock-tab-arrow {
+  transform: rotate(180deg);
+}
+
+/* Embedded Top Quickbar Ribbon on Snapchat Web */
+#snapstreak-quickbar {
+  position: fixed;
+  top: 10px;
+  right: 380px;
+  z-index: 2147483645;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(14, 17, 26, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 4px 10px;
+  border-radius: 24px;
+  border: 1px solid var(--border-active);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.65), 0 0 12px rgba(255, 252, 0, 0.12);
+  transition: right 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s;
+  user-select: none;
+}
+
+#snapstreak-quickbar.dock-collapsed {
+  right: 48px;
+}
+
+.quickbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+}
+
+.quickbar-title {
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: #fff;
+}
+
+.quickbar-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-dim);
+  padding-right: 4px;
+}
+
+.quickbar-btn {
+  border: none;
+  border-radius: 14px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.quickbar-btn-primary {
+  background: var(--accent);
+  color: #000;
+}
+
+.quickbar-btn-primary:hover {
+  background: #ffe600;
+  transform: translateY(-1px);
+}
+
+.quickbar-btn-test {
+  background: #20273c;
+  color: var(--accent);
+  border: 1px solid var(--border-active);
+}
+
+.quickbar-btn-test:hover {
+  background: #2b3452;
+  border-color: var(--accent);
+}
+
+.quickbar-btn-warn {
+  background: #f59e0b;
+  color: #000;
+}
+
+.quickbar-btn-danger {
+  background: var(--red);
+  color: #fff;
+}
+
+.quickbar-btn-secondary {
+  background: #181c2c;
+  color: #cbd5e1;
+  border: 1px solid var(--border);
+}
+
+.quickbar-btn-secondary:hover {
+  color: #fff;
+  border-color: var(--border-active);
+}
+
 /* Window Header */
 .hud-header {
   display: flex;
@@ -526,7 +707,9 @@ textarea {
     scheduleTime: '09:00',
     endTaskOnComplete: true,
     alwaysCloseOtherTabs: true,
-    activeMacro: '⚡ Default Streak Macro'
+    activeMacro: '⚡ Default Streak Macro',
+    isDocked: true,
+    isDockCollapsed: false
   };
 
   const SJSU_WEBCAM_URL = 'https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg';
@@ -573,6 +756,12 @@ textarea {
     const dot = shadowRoot.getElementById('status-dot');
     const label = shadowRoot.getElementById('status-text');
     const pillBadge = shadowRoot.getElementById('pill-badge');
+    const qbSend = shadowRoot.getElementById('qb-btn-send');
+    const qbPrev = shadowRoot.getElementById('qb-btn-preview');
+    const qbPause = shadowRoot.getElementById('qb-btn-pause');
+    const qbStop = shadowRoot.getElementById('qb-btn-stop');
+    const qbDot = shadowRoot.getElementById('quickbar-dot');
+    const qbText = shadowRoot.getElementById('quickbar-text');
 
     if (running) {
       if (autoSendBtn) {
@@ -597,6 +786,12 @@ textarea {
         pillBadge.textContent = isTest ? 'Previewing' : 'Busy';
         pillBadge.style.background = isTest ? 'var(--blue)' : 'var(--green)';
       }
+      if (qbSend) { qbSend.disabled = true; qbSend.textContent = isTest ? '🔥 Send Streaks' : '⏳ Sending...'; }
+      if (qbPrev) { qbPrev.disabled = true; qbPrev.textContent = isTest ? '🧪 Previewing...' : '🧪 Preview'; }
+      if (qbPause) { qbPause.style.display = 'inline-flex'; qbPause.textContent = '⏸️ Pause'; }
+      if (qbStop) { qbStop.style.display = 'inline-flex'; }
+      if (qbDot) { qbDot.className = 'status-dot busy'; }
+      if (qbText) { qbText.textContent = isTest ? 'Previewing' : 'Sending'; }
     } else {
       if (autoSendBtn) {
         autoSendBtn.disabled = false;
@@ -620,6 +815,12 @@ textarea {
         pillBadge.textContent = 'Ready';
         pillBadge.style.background = 'var(--green)';
       }
+      if (qbSend) { qbSend.disabled = false; qbSend.textContent = '🔥 Send Streaks'; }
+      if (qbPrev) { qbPrev.disabled = false; qbPrev.textContent = '🧪 Preview'; }
+      if (qbPause) { qbPause.style.display = 'none'; }
+      if (qbStop) { qbStop.style.display = 'none'; }
+      if (qbDot) { qbDot.className = 'status-dot'; }
+      if (qbText) { qbText.textContent = 'Idle'; }
     }
   }
 
@@ -743,19 +944,53 @@ textarea {
 
     if (window.innerWidth >= 800) {
       isWindowOpen = true;
+      config.isDockCollapsed = false;
     }
 
     const container = document.createElement('div');
     container.innerHTML = `
-      <!-- Launcher Pill Button -->
+      <!-- Launcher Pill Button (Visible in Floating Mode) -->
       <div id="snapstreak-pill" title="Toggle SnapStreak Controls">
         <span class="pill-icon">🔥</span>
         <span class="pill-label">SnapStreak</span>
         <span class="pill-badge" id="pill-badge">Ready</span>
       </div>
 
-      <!-- Main HUD Window -->
-      <div id="snapstreak-window" class="${isWindowOpen ? '' : 'hidden'}">
+      <!-- Embedded Top Quickbar Ribbon on Snapchat Web -->
+      <div id="snapstreak-quickbar" class="${(config.isDocked && config.isDockCollapsed) ? 'dock-collapsed' : ''}" title="SnapStreak Quick Action Ribbon">
+        <div class="quickbar-brand">
+          <span style="font-size: 15px;">🔥</span>
+          <span class="quickbar-title">SnapStreak</span>
+        </div>
+        <div class="quickbar-status">
+          <div class="status-dot" id="quickbar-dot"></div>
+          <span id="quickbar-text">Idle</span>
+        </div>
+        <button class="quickbar-btn quickbar-btn-primary" id="qb-btn-send" title="Auto Send Streaks">
+          🔥 Send Streaks
+        </button>
+        <button class="quickbar-btn quickbar-btn-test" id="qb-btn-preview" title="Preview streak capture without sending">
+          🧪 Preview
+        </button>
+        <button class="quickbar-btn quickbar-btn-warn" id="qb-btn-pause" style="display: none;" title="Pause / Resume">
+          ⏸️ Pause
+        </button>
+        <button class="quickbar-btn quickbar-btn-danger" id="qb-btn-stop" style="display: none;" title="Stop active task">
+          ⏹️ Stop
+        </button>
+        <button class="quickbar-btn quickbar-btn-secondary" id="qb-btn-toggle-dock" title="Toggle SnapStreak Sidebar">
+          📌 Panel
+        </button>
+      </div>
+
+      <!-- Main HUD Window (Embedded Right Dock) -->
+      <div id="snapstreak-window" class="${config.isDocked ? 'embedded-dock' : ''} ${(!isWindowOpen || config.isDockCollapsed) ? (config.isDocked ? 'collapsed' : 'hidden') : ''}">
+        <!-- Edge Dock Tab Handle -->
+        <div id="snapstreak-dock-tab" title="Toggle SnapStreak Embedded Sidebar">
+          <span class="dock-tab-icon">🔥</span>
+          <span class="dock-tab-arrow">◀</span>
+        </div>
+
         <!-- Header -->
         <div class="hud-header" id="hud-header">
           <div class="hud-title-wrap">
@@ -763,6 +998,7 @@ textarea {
             <span class="hud-title">SnapStreak Controller</span>
           </div>
           <div class="hud-header-actions">
+            <button class="hud-btn-icon" id="btn-toggle-dock" title="Switch Docked / Float Window">${config.isDocked ? '📌' : '🪟'}</button>
             <button class="hud-btn-icon" id="btn-minimize" title="Minimize Window">─</button>
             <button class="hud-btn-icon" id="btn-close" title="Close Window">✕</button>
           </div>
@@ -1034,9 +1270,55 @@ textarea {
     log('SnapStreak Overlay HUD initialized with live SJSU Meteorology feed! 📡', 'success');
   }
 
-  function toggleWindow(force) {
-    const win = shadowRoot.getElementById('snapstreak-window');
+  function toggleDock(force) {
+    const win = shadowRoot?.getElementById('snapstreak-window');
+    const qb = shadowRoot?.getElementById('snapstreak-quickbar');
     if (!win) return;
+    const isCurrentlyCollapsed = win.classList.contains('collapsed');
+    const shouldCollapse = (typeof force === 'boolean') ? !force : !isCurrentlyCollapsed;
+
+    if (shouldCollapse) {
+      win.classList.add('collapsed');
+      qb?.classList.add('dock-collapsed');
+      config.isDockCollapsed = true;
+    } else {
+      win.classList.remove('collapsed');
+      win.classList.remove('hidden');
+      qb?.classList.remove('dock-collapsed');
+      config.isDockCollapsed = false;
+    }
+  }
+
+  function setDockedMode(docked) {
+    const win = shadowRoot?.getElementById('snapstreak-window');
+    const btn = shadowRoot?.getElementById('btn-toggle-dock');
+    if (!win) return;
+    config.isDocked = docked;
+    if (docked) {
+      win.classList.add('embedded-dock');
+      win.style.left = '';
+      win.style.top = '';
+      win.style.right = '';
+      if (btn) btn.textContent = '📌';
+      if (btn) btn.title = 'Switch to Floating Window';
+    } else {
+      win.classList.remove('embedded-dock');
+      win.classList.remove('collapsed');
+      win.style.right = '24px';
+      win.style.top = '70px';
+      if (btn) btn.textContent = '🪟';
+      if (btn) btn.title = 'Switch to Embedded Dock';
+    }
+    saveConfig();
+  }
+
+  function toggleWindow(force) {
+    const win = shadowRoot?.getElementById('snapstreak-window');
+    if (!win) return;
+    if (config.isDocked && win.classList.contains('embedded-dock')) {
+      toggleDock(force);
+      return;
+    }
     isWindowOpen = (typeof force === 'boolean') ? force : win.classList.contains('hidden');
     if (isWindowOpen) {
       win.classList.remove('hidden');
@@ -1062,6 +1344,41 @@ textarea {
     shadowRoot.getElementById('btn-close').addEventListener('click', () => toggleWindow(false));
     shadowRoot.getElementById('btn-minimize').addEventListener('click', () => toggleWindow(false));
 
+    // Edge Dock Tab and header toggle
+    const dockTab = shadowRoot.getElementById('snapstreak-dock-tab');
+    if (dockTab) dockTab.addEventListener('click', () => toggleDock());
+
+    const btnToggleDock = shadowRoot.getElementById('btn-toggle-dock');
+    if (btnToggleDock) btnToggleDock.addEventListener('click', () => setDockedMode(!config.isDocked));
+
+    // Top Quickbar Buttons
+    const qbSend = shadowRoot.getElementById('qb-btn-send');
+    if (qbSend) qbSend.addEventListener('click', () => {
+      const autoSendBtn = shadowRoot.getElementById('btn-auto-send-streaks') || shadowRoot.getElementById('btn-send-streaks');
+      autoSendBtn?.click();
+    });
+
+    const qbPrev = shadowRoot.getElementById('qb-btn-preview');
+    if (qbPrev) qbPrev.addEventListener('click', () => {
+      const testBtn = shadowRoot.getElementById('btn-test-streaks');
+      testBtn?.click();
+    });
+
+    const qbPause = shadowRoot.getElementById('qb-btn-pause');
+    if (qbPause) qbPause.addEventListener('click', () => {
+      const pauseBtn = shadowRoot.getElementById('btn-pause-resume');
+      pauseBtn?.click();
+    });
+
+    const qbStop = shadowRoot.getElementById('qb-btn-stop');
+    if (qbStop) qbStop.addEventListener('click', () => {
+      const cancelBtn = shadowRoot.getElementById('btn-cancel-running');
+      cancelBtn?.click();
+    });
+
+    const qbToggle = shadowRoot.getElementById('qb-btn-toggle-dock');
+    if (qbToggle) qbToggle.addEventListener('click', () => toggleDock());
+
     // Tab switching
     const tabButtons = shadowRoot.querySelectorAll('.hud-tab-btn');
     tabButtons.forEach(btn => {
@@ -1070,12 +1387,13 @@ textarea {
       });
     });
 
-    // Drag-and-drop window repositioning
+    // Drag-and-drop window repositioning (only in floating mode)
     const header = shadowRoot.getElementById('hud-header');
     const win = shadowRoot.getElementById('snapstreak-window');
     let isDragging = false, startX, startY, origLeft, origTop;
 
     header.addEventListener('pointerdown', (e) => {
+      if (win.classList.contains('embedded-dock')) return; // Keep cleanly docked
       if (e.target.closest('.hud-header-actions')) return;
       isDragging = true;
       startX = e.clientX;
@@ -1670,6 +1988,9 @@ textarea {
     setRunning,
     updateMacroStepCount,
     toggleWindow,
+    toggleDock,
+    setDockedMode,
+    isDocked: () => config.isDocked,
     getConfig: () => config,
     refreshSJSUFrame,
     triggerEndTaskCountdown,

@@ -629,6 +629,38 @@
           </div>
         </div>
 
+        <!-- Embedded SnapStreak In-Page Action Ribbon -->
+        <div id="embedded-extension-ribbon" style="background:#131622;border-bottom:1px solid var(--border);padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:16px">🧩</span>
+            <div>
+              <span style="font-size:12px;font-weight:700;color:#fff">Embedded SnapStreak Controller</span>
+              <span style="font-size:10px;color:var(--text-dim);margin-left:6px">In-page website extension &amp; dock</span>
+            </div>
+            <span id="ribbon-status-badge" class="pill-badge" style="background:var(--green);color:#000;font-size:10px;font-weight:800;padding:2px 7px;border-radius:10px">Ready</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary" style="font-size:11px;padding:5px 12px;background:var(--accent);color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">
+              🔥 Auto Send Streaks
+            </button>
+            <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px;border-color:var(--accent);color:var(--accent);font-weight:600" onclick="previewStreakInLiveSession()">
+              🧪 Sample Preview
+            </button>
+            <button class="btn btn-secondary" id="ribbon-btn-pause" style="font-size:11px;padding:5px 10px;display:none" onclick="togglePauseTask()">
+              ⏸️ Pause
+            </button>
+            <button class="btn btn-danger" id="ribbon-btn-stop" style="font-size:11px;padding:5px 10px;display:none" onclick="stopTask()">
+              ⏹️ Stop Task
+            </button>
+            <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="toggleExtensionInActiveBrowser()" title="Toggle in-page sidebar dock on web.snapchat.com">
+              📌 Toggle Website Dock
+            </button>
+            <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="refreshSJSUFrameExt()" title="Refresh SJSU live camera feed">
+              📷 SJSU Webcam
+            </button>
+          </div>
+        </div>
+
         <!-- Live Desktop / Browser Viewport -->
         <div style="position:relative">
           <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:750px;border:none;display:block;background:#000"></iframe>
@@ -1014,6 +1046,31 @@
 
       if (confirmBanner) {
         confirmBanner.style.display = (s.awaiting_confirmation) ? 'flex' : 'none';
+      }
+
+      // Update ribbon states
+      const ribPause = document.getElementById('ribbon-btn-pause');
+      const ribStop = document.getElementById('ribbon-btn-stop');
+      const ribBadge = document.getElementById('ribbon-status-badge');
+      if (ribPause) {
+        ribPause.style.display = s.running ? 'inline-flex' : 'none';
+        ribPause.textContent = s.paused ? '▶️ Resume' : '⏸️ Pause';
+      }
+      if (ribStop) ribStop.style.display = s.running ? 'inline-flex' : 'none';
+      if (ribBadge) {
+        if (s.awaiting_confirmation) {
+          ribBadge.textContent = 'Awaiting Confirm';
+          ribBadge.style.background = 'var(--yellow)';
+          ribBadge.style.color = '#000';
+        } else if (s.running) {
+          ribBadge.textContent = s.paused ? 'Paused' : 'Running';
+          ribBadge.style.background = s.paused ? 'var(--yellow)' : 'var(--accent)';
+          ribBadge.style.color = '#000';
+        } else {
+          ribBadge.textContent = 'Ready';
+          ribBadge.style.background = 'var(--green)';
+          ribBadge.style.color = '#000';
+        }
       }
 
       if (s.bliss_connected) {
@@ -2081,6 +2138,15 @@
         statusEl.textContent = '✗ Error: ' + e;
       }
     }
+  }
+
+  async function previewStreakInLiveSession() {
+    const statusEl = document.getElementById('login-status');
+    if (statusEl) {
+      statusEl.style.color = 'var(--accent)';
+      statusEl.textContent = '🧪 Triggering streak sample preview in live browser...';
+    }
+    await doPreview();
   }
 
   function reloadVncFrame() {
