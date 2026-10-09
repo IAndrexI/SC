@@ -488,7 +488,7 @@ async def _build_context(playwright, headless: bool = True):
     fetch_webcam_image()  # ensure Y4M_FILE is ready before launch
 
     cfg = config.load()
-    browser_engine = cfg.get("browser_engine", "firefox").lower()
+    browser_engine = cfg.get("browser_engine", "chromium").lower()
 
     if browser_engine == "firefox":
         ff_profile_dir = DATA_DIR / "firefox_profile"

@@ -289,9 +289,39 @@ async def run_test():
         preview_res = await page.evaluate("() => window.__previewPromise")
         print("Preview Result:", preview_res)
         assert preview_res.get("success"), "Sample preview confirmation failed!"
-        print("✓ TEST 3 PASSED: Sample preview paused and dispatched successfully on approval!")
+        # TEST 4: Camera Hook & Virtual Video Stream Interceptor
+        print("\n--- TEST 4: Camera Hook & Virtual Video Stream Interceptor ---")
+        cam_check = await page.evaluate("""async () => {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            
+            // Test getUserMedia
+            let stream = null;
+            let streamOk = false;
+            let videoTrackLabel = '';
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                if (stream && stream.getVideoTracks().length > 0) {
+                    streamOk = true;
+                    videoTrackLabel = stream.getVideoTracks()[0].label;
+                }
+            } catch (e) {
+                return { error: String(e), hasDevices: videoDevices.length > 0 };
+            }
 
-        print("\n🎉 ALL 3 TEST SUITES PASSED FLAWLESSLY! 🔥")
+            return {
+                videoDevicesCount: videoDevices.length,
+                videoDevicesLabels: videoDevices.map(d => d.label),
+                streamOk: streamOk,
+                videoTrackLabel: videoTrackLabel
+            };
+        }""")
+        print("Test 4 Camera Check:", cam_check)
+        assert cam_check.get("videoDevicesCount", 0) >= 1, "No videoinput devices found by enumerateDevices!"
+        assert cam_check.get("streamOk"), f"getUserMedia failed: {cam_check.get('error')}"
+        print(f"✓ TEST 4 PASSED: Camera hook provided active video stream ({cam_check.get('videoTrackLabel')})!")
+
+        print("\n🎉 ALL 4 TEST SUITES PASSED FLAWLESSLY! 🔥")
 
         await browser.close()
 

@@ -411,7 +411,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
 
     import config
     cfg = config.load()
-    chosen_engine = (engine or cfg.get("browser_engine") or "firefox").lower()
+    chosen_engine = (engine or cfg.get("browser_engine") or "chromium").lower()
 
     context = None
     if chosen_engine == "firefox":

@@ -742,6 +742,23 @@ window.SnapStreakAutomation = (function() {
       log('  Notice: Camera option button not visible, checking for viewfinder directly...', 'info');
     }
 
+    // Dismiss any modal dialogs or "Turn on Camera" / "Allow" / "Try Again" prompts
+    try {
+      const promptButtons = document.querySelectorAll('button, div[role="button"]');
+      for (const b of promptButtons) {
+        if (!isVisible(b) || isMyAI(b)) continue;
+        const t = (b.textContent || '').trim().toLowerCase();
+        const a = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (t.includes('turn on camera') || t.includes('enable camera') || t.includes('allow') || t.includes('try again') ||
+            a.includes('turn on camera') || a.includes('enable camera') || a.includes('allow') || a.includes('try again')) {
+          log(`  ✓ Clicked camera permission/retry prompt: "${t || a}"`, 'info');
+          b.click();
+          await sleep(800);
+          break;
+        }
+      }
+    } catch (e) {}
+
     // Wait for camera viewfinder and white circle shutter button in main area
     const shutter = await findElement([
       'button[aria-label*="Take Snap" i]',
