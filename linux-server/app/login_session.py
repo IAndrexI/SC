@@ -701,7 +701,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
         except Exception as ex:
             _log(f"Navigation notice: {ex}", emit)
 
-    asyncio.create_task(_initial_navigation())
+    _state["nav_task"] = asyncio.create_task(_initial_navigation())
 
     # Background task to monitor for login completion directly inside the browser
     async def _auto_save_watcher():
@@ -1121,15 +1121,59 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
         _log("Replaying custom recorded macro in active browser...", emit)
         return await replay_macro(page, emit=emit)
 
-    # Ensure browser is currently on web.snapchat.com before triggering
-    try:
-        curr_url = page.url or ""
-        if "web.snapchat.com" not in curr_url:
-            _log("Navigating active browser session to web.snapchat.com...", emit)
-            await page.goto("https://web.snapchat.com/", timeout=25000, wait_until="domcontentloaded")
+    # 1. Wait for initial browser navigation task if still running
+    if _state.get("nav_task") and not _state["nav_task"].done():
+        _log("Waiting for browser navigation to settle...", emit)
+        try:
+            await asyncio.wait_for(_state["nav_task"], timeout=15.0)
+        except Exception:
+            pass
+
+    # 2. Check current page state - do not attempt automation if on login screen
+    curr_url = page.url or ""
+    if any(x in curr_url for x in ["accounts.snapchat.com", "/login", "original_referrer"]):
+        _log("❌ Snapchat is currently on the login page. Please sign in first via the embedded browser or Google Login.", emit)
+        return {f: "not_logged_in" for f in friends}
+
+    if "web.snapchat.com" not in curr_url:
+        _log("Navigating active browser session to web.snapchat.com...", emit)
+        try:
+            await page.goto("https://web.snapchat.com/", timeout=30000, wait_until="domcontentloaded")
             await asyncio.sleep(2.0)
-    except Exception as nav_err:
-        _log(f"  Navigation notice: {nav_err}", emit)
+        except Exception as nav_err:
+            _log(f"  Navigation notice: {nav_err}", emit)
+
+    # 3. Check again if redirected to login page
+    curr_url = page.url or ""
+    if any(x in curr_url for x in ["accounts.snapchat.com", "/login"]):
+        _log("❌ Redirected to login page. Session is unauthenticated. Please sign in first.", emit)
+        return {f: "not_logged_in" for f in friends}
+
+    # 4. Wait for Snapchat Web interface to be loaded
+    _log("Waiting for Snapchat Web interface to be ready...", emit)
+    ready = False
+    for _ in range(15):
+        curr_url = page.url or ""
+        if any(x in curr_url for x in ["accounts.snapchat.com", "/login"]):
+            _log("❌ Redirected to login page. Please sign in to Snapchat first.", emit)
+            return {f: "not_logged_in" for f in friends}
+        try:
+            has_ui = await page.evaluate("""() => {
+                const search = document.querySelector('input[placeholder*="Search" i]');
+                const cam = document.querySelector('[data-testid="camera-view"], video, button[aria-label*="Take" i], button[aria-label*="Camera" i]');
+                const chats = document.querySelector('[aria-label*="Chats" i], [data-testid="chat-list-header"]');
+                return Boolean(search || cam || chats);
+            }""")
+            if has_ui:
+                ready = True
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    if not ready:
+        _log(f"❌ Snapchat Web UI not ready (URL: {page.url}). Please ensure the page is loaded and logged in.", emit)
+        return {f: "ui_not_ready" for f in friends}
 
     action_label = "Sample Preview (Pause before Send)" if is_preview else "Auto Send"
     _log(f"🚀 Triggering in-page SnapStreak Extension {action_label} (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
@@ -1235,9 +1279,11 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
             _log("🎉 In-page SnapStreak Extension successfully completed streak send! Delivered. 🔥", emit)
             return {f: "ok" for f in friends}
         elif ext_res and not ext_res.get("timeout") and not ext_res.get("fallback"):
-            _log(f"  Extension report: {ext_res.get('error', 'completed')}", emit)
+            err_msg = ext_res.get("error", "Streak sequence failed")
+            _log(f"  ❌ Extension report: {err_msg}", emit)
             if ext_res.get("success"):
                 return {f: "ok" for f in friends}
+            return {f: err_msg for f in friends}
     except Exception as ex:
         _log(f"  Notice invoking extension: {ex}. Using direct desktop flow...", emit)
 

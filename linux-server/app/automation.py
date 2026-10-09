@@ -1278,16 +1278,45 @@ async def send_streaks_flow(
     # Helper Step 4/5: Click Send Action
     async def step4_click_send():
         send_clicked = False
-        for send_sel in ['button:has-text("Send")', '[aria-label*="Send Snap" i]', '[data-testid="send-button"]', 'button:has-text("Send ▶")']:
+        for send_sel in [
+            'button[data-testid="send-snap"]',
+            'button[data-testid="send-button"]',
+            'button[aria-label*="Send Snap" i]',
+            'button[aria-label="Send" i]',
+            'button[aria-label*="Send to" i]',
+            'button:has-text("Send ▶")',
+            'button:has-text("Send")',
+            '[data-testid="send-snap"]',
+            '[data-testid="send-button"]',
+        ]:
             try:
                 btn = page.locator(send_sel).first
-                if await btn.is_visible(timeout=1000):
+                if await btn.is_visible(timeout=800):
                     await btn.click()
                     send_clicked = True
+                    _log("  ✓ Clicked final Send button via Playwright locator!", emit)
                     break
             except Exception:
                 continue
+
         if not send_clicked:
+            # Check for bottom-right action button in drawer
+            try:
+                btns = await page.query_selector_all('button, div[role="button"]')
+                for b in btns:
+                    box = await b.bounding_box()
+                    if box and box["y"] > 450 and box["x"] > 400:
+                        svg = await b.query_selector("svg")
+                        if svg:
+                            await b.click()
+                            send_clicked = True
+                            _log("  ✓ Clicked bottom-right SVG dispatch button!", emit)
+                            break
+            except Exception:
+                pass
+
+        if not send_clicked:
+            _log("  ⚠ Direct Send button locator not matched, pressing Enter key...", emit)
             await page.keyboard.press("Enter")
 
     # ── Step 5: Click Final Send Button & Verify Delivery ─────────────────────

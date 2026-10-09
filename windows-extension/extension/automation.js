@@ -1320,6 +1320,14 @@ window.SnapStreakAutomation = (function() {
           selectedCount++;
           await sleep(500);
           continue;
+        } else {
+          // If no checkbox element, click the row or its circle/SVG icon directly
+          const rowTarget = existingRow.querySelector('svg, div[class*="check" i], div[class*="circle" i]') || existingRow;
+          await humanDwellAndClick(rowTarget, true);
+          log(`  ✓ Clicked recipient row for "${rawName}" from drawer.`, 'success');
+          selectedCount++;
+          await sleep(500);
+          continue;
         }
       }
 
@@ -1369,6 +1377,33 @@ window.SnapStreakAutomation = (function() {
 
   // ── Helper: Locate Final Send Button in Main Camera Area ─────────────────
   function findFinalSendButton() {
+    // 1. Explicit data-testid & aria-label selectors for Snapchat Web dispatch
+    const selectors = [
+      'button[data-testid="send-snap"]',
+      'button[data-testid="send-button"]',
+      'button[data-testid*="send" i]:not([data-testid*="send-to" i])',
+      'button[aria-label*="Send Snap" i]',
+      'button[aria-label="Send" i]',
+      '[role="button"][data-testid="send-snap"]',
+      '[role="button"][aria-label*="Send Snap" i]',
+      '[role="button"][aria-label="Send" i]',
+    ];
+
+    for (const sel of selectors) {
+      try {
+        const matches = document.querySelectorAll(sel);
+        for (const b of matches) {
+          if (isVisible(b) && isInsideMainCameraArea(b) && !isMyAI(b)) {
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            if (!aria.includes('close') && !aria.includes('clear')) {
+              return b;
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 2. Scan all buttons in main camera area
     const candidates = document.querySelectorAll('button, div[role="button"], a');
     for (const b of candidates) {
       if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
@@ -1377,25 +1412,39 @@ window.SnapStreakAutomation = (function() {
       const aria = (b.getAttribute('aria-label') || '').toLowerCase();
       const testid = (b.getAttribute('data-testid') || '').toLowerCase();
 
-      // Must NOT be "Send To"
-      if (text.includes('send to') || aria.includes('send to')) continue;
+      // Exclude close, cancel, remove, back, search clear
+      if (aria.includes('close') || aria.includes('cancel') || aria.includes('back') || aria.includes('clear')) continue;
 
-      if (text === 'send' || text.startsWith('send ') || text === 'send ▶' ||
-          aria === 'send' || aria.includes('send snap') || testid.includes('send-snap')) {
+      // Match exact send button text/aria
+      if (
+        text === 'send' || text.startsWith('send ') || text === 'send ▶' ||
+        aria === 'send' || aria.includes('send snap') || aria.startsWith('send to ') ||
+        testid.includes('send-snap') || testid === 'send-button'
+      ) {
+        // Exclude the initial photo-preview "Send To" pill if the recipient drawer is not yet open
+        const isDrawerOpen = Boolean(document.querySelector('div[role="dialog"], [data-testid*="drawer" i], input[placeholder*="to:" i], input[placeholder*="send to" i]'));
+        if ((text === 'send to' || aria === 'send to') && !isDrawerOpen) {
+          continue;
+        }
         return b;
       }
     }
 
-    // Circular blue send button with SVG arrow in bottom-right
+    // 3. Scan for bottom-right action button in drawer (blue dispatch button or SVG paper plane icon)
     for (const b of candidates) {
       if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
       const r = b.getBoundingClientRect();
-      if (r.top > window.innerHeight * 0.55 && r.left > window.innerWidth * 0.4) {
-        if (b.querySelector('svg') && Math.abs(r.width - r.height) < 20 && r.width >= 35) {
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      if (aria.includes('close') || aria.includes('cancel') || aria.includes('back')) continue;
+
+      // Located in lower portion of main camera / drawer area
+      if (r.top > window.innerHeight * 0.45 && r.left > getSideMenuRightEdge() + 60) {
+        if (b.querySelector('svg') || b.textContent.toLowerCase().includes('send')) {
           return b;
         }
       }
     }
+
     return null;
   }
 
@@ -1405,24 +1454,28 @@ window.SnapStreakAutomation = (function() {
 
     const startTime = Date.now();
     let sendBtn = null;
-    while (Date.now() - startTime < 4000) {
+    while (Date.now() - startTime < 4500) {
       sendBtn = findFinalSendButton();
       if (sendBtn) break;
-      await sleep(200);
+      await sleep(250);
     }
 
-    if (sendBtn) {
-      await humanDwellAndClick(sendBtn, true);
-      log('  ✓ Clicked final Send button in main camera area!', 'success');
-    } else {
-      log('  Notice: Send button not directly found, trying Enter key...', 'info');
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+    if (!sendBtn) {
+      log('  ❌ Could not find final Send button on screen!', 'err');
+      throw new Error('Final Send button not found in camera drawer.');
     }
 
-    await sleep(2500);
+    await humanDwellAndClick(sendBtn, true);
+    log('  ✓ Clicked final Send button in main camera area!', 'success');
 
-    const isStillOpen = () => {
+    // Also trigger native click and Enter key as extra guarantee
+    try {
+      sendBtn.click();
+    } catch (e) {}
+
+    await sleep(2000);
+
+    const isDrawerStillOpen = () => {
       const inputs = document.querySelectorAll('input');
       for (const inp of inputs) {
         if (isVisible(inp) && isInsideMainCameraArea(inp)) {
@@ -1433,17 +1486,20 @@ window.SnapStreakAutomation = (function() {
       return false;
     };
 
-    if (!isStillOpen()) {
-      log('🎉 Streak sent successfully! Delivery verified. 🔥', 'success');
-      return true;
-    } else {
-      log('  Send drawer still open, retrying Send click...', 'info');
+    if (isDrawerStillOpen()) {
+      log('  Send drawer still open, retrying Send click...', 'warn');
       sendBtn = findFinalSendButton();
-      if (sendBtn) await humanDwellAndClick(sendBtn, false);
-      await sleep(2000);
-      log('🎉 Streak send sequence complete! 🔥', 'success');
-      return true;
+      if (sendBtn) {
+        try { sendBtn.click(); } catch(e) {}
+        await sleep(2000);
+      }
+      if (isDrawerStillOpen()) {
+        throw new Error('Recipient drawer did not close after clicking Send button.');
+      }
     }
+
+    log('🎉 Streak sent successfully! Delivery verified. 🔥', 'success');
+    return true;
   }
 
   // ── Step 5b: Check to Make Sure Snap is Sent to Each User ─────────────────
