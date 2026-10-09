@@ -1201,6 +1201,45 @@ window.SnapStreakAutomation = (function() {
     log(`Step 4b: Selecting recipients in Best Friends tab &/or chosen list (STRICTLY ignoring My AI)...`, 'info');
     let selectedCount = 0;
 
+    // 0. Check for and click Snapchat Shortcut tab/pill if present (✨ / shortcut emoji / [aria-label*="shortcut"])
+    if (selectionMethod === 'shortcut' || selectionMethod === 'auto') {
+      const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
+      let shortcutTab = null;
+      for (const t of tabCandidates) {
+        if (!isVisible(t) || !isInsideMainCameraArea(t) || isMyAI(t)) continue;
+        const text = (t.textContent || '').trim().toLowerCase();
+        const aria = (t.getAttribute('aria-label') || '').toLowerCase();
+        const testid = (t.getAttribute('data-testid') || '').toLowerCase();
+        if (text.includes('shortcut') || aria.includes('shortcut') || testid.includes('shortcut') ||
+            text.includes('✨') || aria.includes('✨') || aria.includes('streak squad')) {
+          shortcutTab = t.closest('button, div[role="tab"], div[role="button"]') || t;
+          break;
+        }
+      }
+
+      if (shortcutTab) {
+        try {
+          await humanDwellAndClick(shortcutTab, true);
+          log('  ✓ Clicked Snapchat Shortcut tab in recipient drawer.', 'success');
+          await sleep(600);
+
+          // Click "Select All" / "Select" button if present
+          const selectAllCandidates = document.querySelectorAll('button, div[role="button"], span');
+          for (const s of selectAllCandidates) {
+            if (!isVisible(s) || !isInsideMainCameraArea(s) || isMyAI(s)) continue;
+            const sText = (s.textContent || '').trim().toLowerCase();
+            const sAria = (s.getAttribute('aria-label') || '').toLowerCase();
+            if (sText === 'select all' || sText === 'select' || sAria.includes('select all') || sText.includes('select all')) {
+              await humanDwellAndClick(s, true);
+              log('  ✓ Clicked "Select All" on Shortcut recipients!', 'success');
+              selectedCount++;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
     // 1. Check for and switch to "Best Friends" tab/pill if present in drawer
     const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
     let bestFriendsTab = null;
@@ -1457,15 +1496,20 @@ window.SnapStreakAutomation = (function() {
     };
   }
 
-  // ── Master Send Runner (with Screen State Verification & Recovery) ─────────
+  // ── Master Send Runner (with Screen State Verification, Recovery & Retries) ──
   async function runSendStreaks(options = {}) {
     resetCancellation();
     const friends = options.friends || ['*//Eric\\\\*', 'Dylan'];
     const selectionMethod = options.selectionMethod || 'auto';
     const stepDelay = options.stepDelay || 3;
     const humanMode = options.humanMode ?? true;
+    const isPreviewOrTest = !!(options.isTest || options.pauseBeforeFinalSend);
+    const maxRetries = isPreviewOrTest ? 1 : (options.maxRetries ?? 3);
 
-    log(`🚀 Starting Verified Streak Send Flow with Screen State Matching (Method: ${selectionMethod.toUpperCase()} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
+    let remainingFriends = [...friends];
+    let lastError = null;
+
+    log(`🚀 Starting Verified Streak Send Flow (Method: ${selectionMethod.toUpperCase()} | Targets: [${friends.join(', ')}] | Retries: ${maxRetries} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
 
     try {
@@ -1477,180 +1521,193 @@ window.SnapStreakAutomation = (function() {
         }
       } catch (e) {}
 
-      if (humanMode) {
-        await sleep(500 + Math.floor(Math.random() * 400));
-      }
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        checkCancelled();
 
-      // Check current screen state before executing transitions
-      const initialScreen = detectCurrentScreen();
-      log(`🎬 Starting Streak Flow. Current screen state: "${initialScreen}"`, 'info');
-
-      if (initialScreen !== SCREEN_STATES.CAMERA_READY && initialScreen !== SCREEN_STATES.PHOTO_CAPTURED) {
-        // Step 1: Clean overlays / return to main menu
-        const step1Ok = await executeStepWithScreenVerification(
-          0,
-          async () => { await step0_clickSnapchatHome(); },
-          [SCREEN_STATES.HOME, SCREEN_STATES.CAMERA_READY],
-          async () => {
-            const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
-            if (chatBack && isVisible(chatBack)) chatBack.click();
-            await sleep(500);
-          }
-        );
-        if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
-        await sleep(humanMode ? 800 : 400);
-
-        // Step 2: Open Camera Viewfinder
-        const step2Ok = await executeStepWithScreenVerification(
-          1,
-          async () => { await step1_openCamera(); },
-          [SCREEN_STATES.CAMERA_READY],
-          async () => {
+        if (attempt > 1) {
+          log(`🔄 [AUTO-RETRY] Attempt ${attempt}/${maxRetries}: Retrying streak dispatch for remaining targets (${remainingFriends.join(', ')})...`, 'warn');
+          try {
             await step0_clickSnapchatHome();
-            await sleep(1000);
-          }
-        );
-        if (!step2Ok) {
-          log('  Notice: Soft camera verification, checking camera elements directly...', 'warn');
-        }
-      } else {
-        log('  ✓ Camera viewfinder already active on screen! Proceeding directly to capture.', 'success');
-      }
-      await sleep(humanMode ? 800 : 400);
-
-      // Step 3: Press White Circle Shutter for photo
-      // Expected Screen: PHOTO_CAPTURED or SEND_TO_DRAWER
-      const step3Ok = await executeStepWithScreenVerification(
-        2,
-        async () => { await step2_pressWhiteCirclePhoto(); },
-        [SCREEN_STATES.PHOTO_CAPTURED, SCREEN_STATES.SEND_TO_DRAWER],
-        async () => {
-          // Fallback to previous step:
-          const cur = detectCurrentScreen();
-          if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.UNKNOWN) {
-            // Camera closed, re-open camera
-            await step1_openCamera();
             await sleep(1200);
-          } else {
-            // Deselect any active filter lens to re-center shutter
-            const removeBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close" i], [data-testid*="remove-lens" i]');
-            if (removeBtn && isVisible(removeBtn)) {
-              try { removeBtn.click(); await sleep(300); } catch (e) {}
-            }
-          }
-        }
-      );
-      if (!step3Ok) throw new Error('Photo capture failed; shutter button did not transition to photo preview.');
-      await sleep(humanMode ? 1000 : 500);
-
-      // Step 4: Open Send-To drawer & select recipients based on visual names
-      // Expected Screen: RECIPIENTS_SELECTED (or SEND_TO_DRAWER if test with 0 friends)
-      const step4Ok = await executeStepWithScreenVerification(
-        3,
-        async () => {
-          await step3_ensureSendToDrawerOpen();
-          await sleep(600);
-          await step3b_selectRecipientsByVisualName(friends, selectionMethod, stepDelay);
-        },
-        [SCREEN_STATES.RECIPIENTS_SELECTED, SCREEN_STATES.SEND_TO_DRAWER],
-        async () => {
-          // Fallback to previous step:
-          const cur = detectCurrentScreen();
-          if (cur === SCREEN_STATES.CAMERA_READY) {
-            // Photo was discarded or missing; re-snap photo
-            await step2_pressWhiteCirclePhoto();
-            await sleep(1500);
-          } else if (cur === SCREEN_STATES.PHOTO_CAPTURED) {
-            // Re-click Send-To button
-            await step3_ensureSendToDrawerOpen();
+            await step1_openCamera();
             await sleep(800);
-          }
+          } catch(e) {}
         }
-      );
-      if (!step4Ok) throw new Error('Failed to open recipient drawer and select friends on screen.');
-      await sleep(humanMode ? 1000 : 500);
-
-      const isPreviewOrTest = !!(options.isTest || options.pauseBeforeFinalSend);
-      if (isPreviewOrTest) {
-        log('🧪 [SAMPLE PREVIEW] Screen verified as RECIPIENTS_SELECTED! Locating final Send button...', 'info');
-        const sendBtn = findFinalSendButton();
-        if (sendBtn) {
-          if (window.SnapStreakMacro && window.SnapStreakMacro.showTestIndicator) {
-            window.SnapStreakMacro.showTestIndicator(sendBtn, 5, 5, 'Final Send Button');
-          }
-          log('  ✓ [PREVIEW PASS] Final Send button located and ready for dispatch.', 'success');
-        } else {
-          log('  ⚠ [PREVIEW WARNING] Send button not yet visible on screen.', 'err');
-        }
-
-        // Show floating in-page confirmation banner
-        showManualConfirmPrompt(friends);
-
-        // Notify server and page listeners
-        window.dispatchEvent(new CustomEvent('SNAPSTREAK_AWAITING_CONFIRMATION', {
-          detail: { friends: friends, selectionMethod: selectionMethod }
-        }));
-        window.postMessage({
-          type: 'SNAPSTREAK_AWAITING_CONFIRMATION',
-          friends: friends,
-          selectionMethod: selectionMethod
-        }, '*');
 
         try {
-          fetch('http://127.0.0.1:8080/api/task/awaiting-confirmation', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ friends: friends, selectionMethod: selectionMethod })
-          }).catch(() => {});
-        } catch(e) {}
-
-        log('⏸️ [SAMPLE PREVIEW] Visual sample ready! Paused before final Send button. Press "🚀 Send Final Snap Now" to complete, or "Cancel" to abort.', 'warn');
-
-        // Wait for manual approval or cancellation
-        const userApproved = await new Promise((resolve) => {
-          pendingConfirmResolver = resolve;
-          const confirmBtn = document.getElementById('snapstreak-btn-confirm-send');
-          if (confirmBtn) {
-            confirmBtn.onclick = () => { resolve(true); };
+          if (humanMode && attempt === 1) {
+            await sleep(500 + Math.floor(Math.random() * 400));
           }
-          const cancelBtn = document.getElementById('snapstreak-btn-cancel-preview');
-          if (cancelBtn) {
-            cancelBtn.onclick = () => { resolve(false); };
+
+          // Check current screen state before executing transitions
+          const initialScreen = detectCurrentScreen();
+          log(`🎬 [Attempt ${attempt}] Current screen state: "${initialScreen}"`, 'info');
+
+          if (initialScreen !== SCREEN_STATES.CAMERA_READY && initialScreen !== SCREEN_STATES.PHOTO_CAPTURED) {
+            // Step 1: Clean overlays / return to main menu
+            const step1Ok = await executeStepWithScreenVerification(
+              0,
+              async () => { await step0_clickSnapchatHome(); },
+              [SCREEN_STATES.HOME, SCREEN_STATES.CAMERA_READY],
+              async () => {
+                const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
+                if (chatBack && isVisible(chatBack)) chatBack.click();
+                await sleep(500);
+              }
+            );
+            if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
+            await sleep(humanMode ? 800 : 400);
+
+            // Step 2: Open Camera Viewfinder
+            const step2Ok = await executeStepWithScreenVerification(
+              1,
+              async () => { await step1_openCamera(); },
+              [SCREEN_STATES.CAMERA_READY],
+              async () => {
+                await step0_clickSnapchatHome();
+                await sleep(1000);
+              }
+            );
+            if (!step2Ok) {
+              log('  Notice: Soft camera verification, checking camera elements directly...', 'warn');
+            }
+          } else {
+            log('  ✓ Camera viewfinder already active on screen! Proceeding directly to capture.', 'success');
           }
-        });
+          await sleep(humanMode ? 800 : 400);
 
-        dismissManualConfirmPrompt();
+          // Step 3: Press White Circle Shutter for photo
+          const step3Ok = await executeStepWithScreenVerification(
+            2,
+            async () => { await step2_pressWhiteCirclePhoto(); },
+            [SCREEN_STATES.PHOTO_CAPTURED, SCREEN_STATES.SEND_TO_DRAWER],
+            async () => {
+              const cur = detectCurrentScreen();
+              if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.UNKNOWN) {
+                await step1_openCamera();
+                await sleep(1200);
+              } else {
+                const removeBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close" i], [data-testid*="remove-lens" i]');
+                if (removeBtn && isVisible(removeBtn)) {
+                  try { removeBtn.click(); await sleep(300); } catch (e) {}
+                }
+              }
+            }
+          );
+          if (!step3Ok) throw new Error('Photo capture failed; shutter button did not transition to photo preview.');
+          await sleep(humanMode ? 1000 : 500);
 
-        if (!userApproved) {
-          log('⏹️ Sample preview dismissed without sending live snap.', 'info');
-          return { success: true, previewOnly: true, confirmed: false };
+          // Step 4: Open Send-To drawer & select recipients based on visual names
+          const step4Ok = await executeStepWithScreenVerification(
+            3,
+            async () => {
+              await step3_ensureSendToDrawerOpen();
+              await sleep(600);
+              await step3b_selectRecipientsByVisualName(remainingFriends, selectionMethod, stepDelay);
+            },
+            [SCREEN_STATES.RECIPIENTS_SELECTED, SCREEN_STATES.SEND_TO_DRAWER],
+            async () => {
+              const cur = detectCurrentScreen();
+              if (cur === SCREEN_STATES.CAMERA_READY) {
+                await step2_pressWhiteCirclePhoto();
+                await sleep(1500);
+              } else if (cur === SCREEN_STATES.PHOTO_CAPTURED) {
+                await step3_ensureSendToDrawerOpen();
+                await sleep(800);
+              }
+            }
+          );
+          if (!step4Ok) throw new Error('Failed to open recipient drawer and select friends on screen.');
+          await sleep(humanMode ? 1000 : 500);
+
+          if (isPreviewOrTest) {
+            log('🧪 [SAMPLE PREVIEW] Screen verified as RECIPIENTS_SELECTED! Locating final Send button...', 'info');
+            const sendBtn = findFinalSendButton();
+            if (sendBtn) {
+              if (window.SnapStreakMacro && window.SnapStreakMacro.showTestIndicator) {
+                window.SnapStreakMacro.showTestIndicator(sendBtn, 5, 5, 'Final Send Button');
+              }
+              log('  ✓ [PREVIEW PASS] Final Send button located and ready for dispatch.', 'success');
+            } else {
+              log('  ⚠ [PREVIEW WARNING] Send button not yet visible on screen.', 'err');
+            }
+
+            showManualConfirmPrompt(remainingFriends);
+
+            window.dispatchEvent(new CustomEvent('SNAPSTREAK_AWAITING_CONFIRMATION', {
+              detail: { friends: remainingFriends, selectionMethod: selectionMethod }
+            }));
+            window.postMessage({
+              type: 'SNAPSTREAK_AWAITING_CONFIRMATION',
+              friends: remainingFriends,
+              selectionMethod: selectionMethod
+            }, '*');
+
+            try {
+              fetch('http://127.0.0.1:8080/api/task/awaiting-confirmation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ friends: remainingFriends, selectionMethod: selectionMethod })
+              }).catch(() => {});
+            } catch(e) {}
+
+            log('⏸️ [SAMPLE PREVIEW] Visual sample ready! Paused before final Send button. Press "🚀 Send Final Snap Now" to complete, or "Cancel" to abort.', 'warn');
+
+            const userApproved = await new Promise((resolve) => {
+              pendingConfirmResolver = resolve;
+              const confirmBtn = document.getElementById('snapstreak-btn-confirm-send');
+              if (confirmBtn) {
+                confirmBtn.onclick = () => { resolve(true); };
+              }
+              const cancelBtn = document.getElementById('snapstreak-btn-cancel-preview');
+              if (cancelBtn) {
+                cancelBtn.onclick = () => { resolve(false); };
+              }
+            });
+
+            dismissManualConfirmPrompt();
+
+            if (!userApproved) {
+              log('⏹️ Sample preview dismissed without sending live snap.', 'info');
+              return { success: true, previewOnly: true, confirmed: false };
+            }
+
+            log('🚀 Manual confirmation approved! Proceeding to execute Step 5 (Final Send)...', 'info');
+          }
+
+          // Step 5: Click the Send button & verify delivery (drawer closed)
+          const step5Ok = await executeStepWithScreenVerification(
+            4,
+            async () => { await step4_sendSnap(); },
+            [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
+            async () => {
+              const sendBtn = findFinalSendButton();
+              if (sendBtn) {
+                sendBtn.click();
+                await sleep(1500);
+              }
+            }
+          );
+
+          if (!step5Ok) throw new Error('Final Send click did not close recipient drawer on screen.');
+
+          // Step 5b: Check to make sure snap was sent to each user
+          const deliveryResult = await step5_verifyDeliveryForEachUser(remainingFriends);
+          log('✅ All streak steps completed! Screen confirmed delivered to specified users. 🔥', 'success');
+          return { success: true, deliveryResult, attempts: attempt };
+        } catch (attemptErr) {
+          lastError = attemptErr;
+          if (attemptErr.message && attemptErr.message.includes('COMMAND_CANCELLED')) {
+            log('⏹️ Streak command cancelled successfully.', 'warn');
+            return { success: false, cancelled: true };
+          }
+          log(`⚠️ Attempt ${attempt}/${maxRetries} encountered issue: ${attemptErr.message}`, 'warn');
+          if (attempt >= maxRetries) {
+            throw attemptErr;
+          }
+          await sleep(1500);
         }
-
-        log('🚀 Manual confirmation approved! Proceeding to execute Step 5 (Final Send)...', 'info');
       }
-
-      // Step 5: Click the Send button & verify delivery (drawer closed)
-      // Expected Screen: CAMERA_READY, HOME, or SEND_COMPLETED
-      const step5Ok = await executeStepWithScreenVerification(
-        4,
-        async () => { await step4_sendSnap(); },
-        [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
-        async () => {
-          // Fallback: Re-click final send button if drawer is still open
-          const sendBtn = findFinalSendButton();
-          if (sendBtn) {
-            sendBtn.click();
-            await sleep(1500);
-          }
-        }
-      );
-
-      if (!step5Ok) throw new Error('Final Send click did not close recipient drawer on screen.');
-
-      // Step 5b: Check to make sure snap was sent to each user
-      const deliveryResult = await step5_verifyDeliveryForEachUser(friends);
-      log('✅ All streak steps completed! Screen confirmed delivered to all specified users. 🔥', 'success');
-      return { success: true, deliveryResult };
     } catch (err) {
       if (err.message && err.message.includes('COMMAND_CANCELLED')) {
         log('⏹️ Streak command cancelled successfully.', 'warn');

@@ -1224,7 +1224,8 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
             "stepDelay": step_delay,
             "humanMode": True,
             "isTest": is_preview,
-            "pauseBeforeFinalSend": is_preview
+            "pauseBeforeFinalSend": is_preview,
+            "maxRetries": 3
         })
 
         if ext_res and ext_res.get("success"):

@@ -82,22 +82,8 @@
       setTimeout(() => observer.disconnect(), 25000);
     }
 
-    // 2. Perform one-time startup refresh to clear stale sessions on initial boot
-    const hasStartupRefreshed = sessionStorage.getItem('snapstreak_startup_refreshed');
-    if (!hasStartupRefreshed) {
-      if (window.location.search.includes('snapstreak_scheduled') || window.location.search.includes('snapstreak_autoboot')) {
-        sessionStorage.setItem('snapstreak_startup_refreshed', 'true');
-      } else {
-        sessionStorage.setItem('snapstreak_startup_refreshed', 'true');
-        console.log('[SnapStreak] New browser session detected. Performing initial refresh in 3s to clear multi-tab lock...');
-        setTimeout(() => {
-          window.SnapStreakOverlay?.log('🔄 Performing initial startup refresh to clear multi-tab session lock...', 'info');
-          setTimeout(() => {
-            window.location.reload();
-          }, 800);
-        }, 3000);
-      }
-    }
+    // Mark startup session active
+    sessionStorage.setItem('snapstreak_startup_refreshed', 'true');
   }
 
   // Auto-Boot Streak Trigger (when launched on startup/reboot)

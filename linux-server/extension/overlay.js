@@ -1623,52 +1623,7 @@ textarea {
     });
 
     // Multi-Schedule Times Management
-    function renderScheduleTimesUI() {
-      const container = shadowRoot.getElementById('schedule-times-container');
-      if (!container) return;
-      container.innerHTML = '';
-
-      const times = (config.scheduleTimes && config.scheduleTimes.length > 0)
-        ? config.scheduleTimes
-        : [config.scheduleTime || '09:00'];
-
-      times.forEach((timeVal, idx) => {
-        const row = document.createElement('div');
-        row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
-        row.innerHTML = `
-          <input type="time" class="inp-sched-item" value="${timeVal}" style="flex: 1;" />
-          <button type="button" class="btn btn-secondary btn-del-time" data-idx="${idx}" style="padding: 4px 8px; font-size: 11px; color: var(--red); border-color: var(--red);" title="Remove this time">✕</button>
-        `;
-        container.appendChild(row);
-      });
-
-      // Bind input changes and delete clicks
-      container.querySelectorAll('.inp-sched-item').forEach((inp, idx) => {
-        inp.addEventListener('change', () => {
-          if (!config.scheduleTimes) config.scheduleTimes = [];
-          config.scheduleTimes[idx] = inp.value || '09:00';
-          config.scheduleTime = config.scheduleTimes[0] || '09:00';
-          saveConfig();
-          updateScheduleUIStatus();
-        });
-      });
-
-      container.querySelectorAll('.btn-del-time').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const idx = parseInt(btn.dataset.idx, 10);
-          if (config.scheduleTimes && config.scheduleTimes.length > 1) {
-            config.scheduleTimes.splice(idx, 1);
-            config.scheduleTime = config.scheduleTimes[0] || '09:00';
-            saveConfig();
-            renderScheduleTimesUI();
-            updateScheduleUIStatus();
-            log(`Removed schedule time slot #${idx + 1}.`, 'info');
-          } else {
-            alert('At least one schedule time must remain.');
-          }
-        });
-      });
-    }
+    renderScheduleTimesUI();
 
     const addTimeBtn = shadowRoot.getElementById('btn-add-schedule-time');
     if (addTimeBtn) {
@@ -1889,6 +1844,54 @@ textarea {
     refreshMacroDropdowns();
     renderScheduleTimesUI();
     updateScheduleUIStatus();
+  }
+
+  function renderScheduleTimesUI() {
+    if (!shadowRoot) return;
+    const container = shadowRoot.getElementById('schedule-times-container');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const times = (config.scheduleTimes && config.scheduleTimes.length > 0)
+      ? config.scheduleTimes
+      : [config.scheduleTime || '09:00'];
+
+    times.forEach((timeVal, idx) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
+      row.innerHTML = `
+        <input type="time" class="inp-sched-item" value="${timeVal}" style="flex: 1;" />
+        <button type="button" class="btn btn-secondary btn-del-time" data-idx="${idx}" style="padding: 4px 8px; font-size: 11px; color: var(--red); border-color: var(--red);" title="Remove this time">✕</button>
+      `;
+      container.appendChild(row);
+    });
+
+    // Bind input changes and delete clicks
+    container.querySelectorAll('.inp-sched-item').forEach((inp, idx) => {
+      inp.addEventListener('change', () => {
+        if (!config.scheduleTimes) config.scheduleTimes = [];
+        config.scheduleTimes[idx] = inp.value || '09:00';
+        config.scheduleTime = config.scheduleTimes[0] || '09:00';
+        saveConfig();
+        updateScheduleUIStatus();
+      });
+    });
+
+    container.querySelectorAll('.btn-del-time').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        if (config.scheduleTimes && config.scheduleTimes.length > 1) {
+          config.scheduleTimes.splice(idx, 1);
+          config.scheduleTime = config.scheduleTimes[0] || '09:00';
+          saveConfig();
+          renderScheduleTimesUI();
+          updateScheduleUIStatus();
+          log(`Removed schedule time slot #${idx + 1}.`, 'info');
+        } else {
+          alert('At least one schedule time must remain.');
+        }
+      });
+    });
   }
 
   function updateScheduleUIStatus() {
