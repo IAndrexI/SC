@@ -64,6 +64,16 @@ MOCK_SNAPCHAT_HTML = """<!DOCTYPE html>
   </div>
 
   <div id="main-camera-container">
+    <div id="chat-conversation-area" style="display: none; width: 100%; height: 100%; flex-direction: column; padding: 20px; box-sizing: border-box;" data-testid="chat-feed">
+      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px;">
+        <button id="btn-chat-back" aria-label="Back" data-testid="chat-back-button" style="background:#333; color:#fff; border:none; padding:8px 12px; border-radius:6px; cursor:pointer;">← Back</button>
+        <div id="chat-title" style="font-weight:bold;">Chat</div>
+      </div>
+      <div id="chat-messages" style="flex:1; padding-top:20px;">
+        <div id="chat-snap-status">Delivered • Just now</div>
+      </div>
+    </div>
+
     <div id="camera-viewfinder">
       <div style="color: #666; margin-bottom: 20px;">Camera Viewfinder Active</div>
       <button class="shutter-btn" id="btn-shutter" aria-label="Take a Snap"></button>
@@ -154,6 +164,27 @@ MOCK_SNAPCHAT_HTML = """<!DOCTYPE html>
       if (document.getElementById('check-dylan').checked) {
         document.getElementById('status-dylan').textContent = 'Delivered just now';
       }
+    };
+
+    // Chat open & close logic
+    const chatConvArea = document.getElementById('chat-conversation-area');
+    const chatBackBtn = document.getElementById('btn-chat-back');
+    const chatTitle = document.getElementById('chat-title');
+
+    function openChat(name) {
+      viewfinder.style.display = 'none';
+      preview.style.display = 'none';
+      drawer.style.display = 'none';
+      chatTitle.textContent = name;
+      chatConvArea.style.display = 'flex';
+    }
+
+    document.getElementById('chat-eric').onclick = () => openChat('*//Eric\\\\*');
+    document.getElementById('chat-dylan').onclick = () => openChat('Dylan');
+
+    chatBackBtn.onclick = () => {
+      chatConvArea.style.display = 'none';
+      viewfinder.style.display = 'flex';
     };
   </script>
 </body>
@@ -321,7 +352,17 @@ async def run_test():
         assert cam_check.get("streamOk"), f"getUserMedia failed: {cam_check.get('error')}"
         print(f"✓ TEST 4 PASSED: Camera hook provided active video stream ({cam_check.get('videoTrackLabel')})!")
 
-        print("\n🎉 ALL 4 TEST SUITES PASSED FLAWLESSLY! 🔥")
+        # TEST 5: Open Chat to Make Sure Snap is Sent to Correct People
+        print("\n--- TEST 5: Open Chat to Verify Delivery Directly ---")
+        chat_verify_res = await page.evaluate("""async () => {
+            return await window.SnapStreakAutomation.step6_openChatAndVerifyDelivery(['*//Eric\\\\*', 'Dylan']);
+        }""")
+        print("Test 5 Chat Verification Result:", chat_verify_res)
+        assert any("Eric" in k and v.get("verified") for k, v in chat_verify_res.items()), "Eric was not verified in chat!"
+        assert chat_verify_res.get("Dylan", {}).get("verified"), "Dylan was not verified in chat!"
+        print("✓ TEST 5 PASSED: Chat opened and delivery confirmed for each recipient!")
+
+        print("\n🎉 ALL 5 TEST SUITES PASSED FLAWLESSLY! 🔥")
 
         await browser.close()
 

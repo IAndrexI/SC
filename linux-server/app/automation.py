@@ -1357,6 +1357,35 @@ async def send_streaks_flow(
         except Exception:
             results[f] = "Delivered"
 
+    # Step 6: Open chat to make sure snap is sent to correct people
+    _log("Step 6: Opening individual chat for each user to visually verify delivery...", emit)
+    for f in friends:
+        clean = f.strip().lstrip("@")
+        try:
+            row = page.locator(f':text-matches("{clean}", "i")').first
+            if await row.is_visible(timeout=1000):
+                _log(f"  Opening chat with {clean}...", emit)
+                await row.click()
+                await asyncio.sleep(1.2)
+                await _take_screenshot(page, f"chat_verified_{clean}")
+
+                # Check inside the chat message feed
+                chat_feed = page.locator('[data-testid="chat-feed"], [data-testid="message-feed"], main').first
+                if await chat_feed.is_visible(timeout=1000):
+                    chat_text = (await chat_feed.text_content() or "").lower()
+                    if "delivered" in chat_text or "received" in chat_text or "just now" in chat_text:
+                        results[f] = "Delivered (Chat Verified)"
+                        _log(f"  ✓ [CHAT VERIFIED] {clean}: Confirmed delivered in chat thread!", emit)
+
+                # Return to main screen by clicking back button
+                back_btn = page.locator('button[aria-label*="Back" i], [data-testid="chat-back-button"]').first
+                if await back_btn.is_visible(timeout=800):
+                    await back_btn.click()
+                    await asyncio.sleep(0.5)
+        except Exception as e:
+            _log(f"  Notice while verifying chat for {clean}: {e}", emit)
+
+    await _dismiss_banners_and_reset(page, emit)
     _log("✅ All streak steps completed! Screen confirmed delivered to each user. 🔥", emit)
     return results
 
