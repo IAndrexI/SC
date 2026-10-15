@@ -227,6 +227,16 @@ async def _take_screenshot(page: Page, label: str = ""):
         pass
 
 
+async def _live_stream_task(page: Page, run_flag: list, interval: float = 2.0):
+    """Refresh SCREENSHOT_FILE periodically so the dashboard can show live progress."""
+    while run_flag[0]:
+        try:
+            await page.screenshot(path=str(SCREENSHOT_FILE), full_page=False)
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+
+
 STEALTH_INIT_SCRIPT = """
 (() => {
     // 1. Strip navigator.webdriver completely

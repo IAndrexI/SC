@@ -12,13 +12,29 @@ jobs:
     steps:
       - name: Pull and restart SnapStreak in LXC
         run: |
-          TARGET_DIR="/opt/snapstreak"
-          if [ ! -d "$TARGET_DIR" ]; then
-            TARGET_DIR="$(pwd)"
+          set -e
+          # Must match install.sh (APP_DIR=/opt/sc, service "sc", user "scbot")
+          APP_DIR="/opt/sc"
+          SERVICE="sc"
+          SUDO=""
+          [ "$(id -u)" -ne 0 ] && SUDO="sudo -n"
+
+          if [ ! -d "$APP_DIR/.git" ]; then
+            echo "::error::$APP_DIR not found - run install.sh in the LXC first"
+            exit 1
           fi
-          cd "$TARGET_DIR"
-          git fetch origin main
-          git reset --hard origin/main
-          if systemctl is-active --quiet snapstreak 2>/dev/null; then
-            systemctl restart snapstreak
+
+          $SUDO git config --global --add safe.directory "$APP_DIR" || true
+          $SUDO git -C "$APP_DIR" fetch origin main
+          $SUDO git -C "$APP_DIR" reset --hard origin/main
+          $SUDO "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/linux-server/requirements.txt"
+          $SUDO chown -R scbot:scbot "$APP_DIR"
+          $SUDO systemctl restart "$SERVICE"
+
+          sleep 5
+          if ! $SUDO systemctl is-active --quiet "$SERVICE"; then
+            echo "::error::$SERVICE failed to start"
+            $SUDO journalctl -u "$SERVICE" -n 40 --no-pager || true
+            exit 1
           fi
+          echo "Deployed $(git -C "$APP_DIR" rev-parse --short HEAD) and $SERVICE is running."

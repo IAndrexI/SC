@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -68,7 +69,7 @@ _state: dict[str, Any] = {
 }
 
 _ws_clients: list[WebSocket] = []
-_scheduler = AsyncIOScheduler()
+_scheduler = AsyncIOScheduler(timezone=os.environ.get("SC_TZ", "America/Los_Angeles"))
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +295,9 @@ async def update_config(body: ConfigUpdate):
         if cfg["enabled"]:
             _reschedule(cfg.get("schedule_times") or cfg.get("schedule_time", "09:00"))
         else:
-            _scheduler.remove_all_jobs()
+            for job in list(_scheduler.get_jobs()):
+                if job.id.startswith("daily_streak"):
+                    _scheduler.remove_job(job.id)
     if body.mode is not None:
         cfg["mode"] = body.mode
     if body.browser_engine is not None:
