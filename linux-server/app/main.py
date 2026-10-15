@@ -87,7 +87,12 @@ async def _do_send():
     _state["running"] = True
     cfg = config.load()
     mode = cfg.get("mode", "web")
-    friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
+    raw_friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
+    friends = []
+    for f in raw_friends:
+        # Normalize double-escaped backslashes e.g. \\\\ -> \\
+        norm = f.replace("\\\\\\\\", "\\\\")
+        friends.append(norm)
     selection_method = cfg.get("selection_method", "auto")
     try:
         # Always fetch fresh webcam frame before sending

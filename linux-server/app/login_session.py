@@ -267,17 +267,17 @@ async def ensure_extension_active(page: Page | None = None, force_toggle: bool =
 
 
 async def _fast_frame_loop():
-    """Fallback frame loop in case CDP screencast is idle."""
+    """Fallback frame loop in case CDP screencast is idle or in Firefox."""
     while _state["active"]:
         try:
-            page: Page = _state["page"]
-            if page and not _state["last_shot_b64"]:
+            page: Page = _state.get("page")
+            if page:
                 img = await page.screenshot(type="jpeg", quality=60, full_page=False)
                 _state["last_shot_b64"] = base64.b64encode(img).decode()
                 _state["url"] = page.url
         except Exception:
             pass
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.6)
 
 
 def _find_chrome_executable() -> str | None:

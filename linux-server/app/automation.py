@@ -803,44 +803,47 @@ async def detect_screen_state(page: Page) -> str:
     - UNKNOWN.
     """
     try:
-        # 1. Check if Send-To drawer or modal is open
+        # 1. Check if Send-To drawer or modal is open (must be in main area, not left sidebar search)
         drawer_selectors = [
+            '[data-testid="send-to-container"]',
+            '[data-testid="send-to-drawer"]',
+            '[data-testid="send-to-search-input"]',
             'input[placeholder*="To:" i]',
             'input[placeholder*="Send to" i]',
-            'input[placeholder*="Search" i]',
-            '[data-testid="send-to-search-input"]',
-            'button:has-text("Best Friends")',
-            'button:has-text("Shortcuts")',
-            'text="Best Friends"',
-            'text="Shortcuts"',
+            'div[role="dialog"] input',
         ]
         has_drawer = False
         for sel in drawer_selectors:
             try:
-                if await page.locator(sel).first.is_visible(timeout=250):
-                    has_drawer = True
-                    break
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=200):
+                    box = await loc.bounding_box()
+                    if box and box["x"] > 340:
+                        has_drawer = True
+                        break
             except Exception:
                 pass
 
         if has_drawer:
             # Check if final Send button is visible (meaning recipients are selected)
             send_btn_selectors = [
-                'button:has-text("Send")',
-                '[aria-label*="Send Snap" i]',
-                '[aria-label="Send" i]',
                 '[data-testid="send-button"]',
                 '[data-testid="send-snap"]',
+                '[aria-label*="Send Snap" i]',
+                '[aria-label="Send" i]',
                 'button:has-text("Send ▶")',
             ]
             for ssel in send_btn_selectors:
                 try:
                     loc = page.locator(ssel).first
                     if await loc.is_visible(timeout=200):
-                        txt = (await loc.text_content() or "").strip().lower()
-                        aria = (await loc.get_attribute("aria-label") or "").strip().lower()
-                        if "send to" not in txt and "send to" not in aria:
-                            return SCREEN_STATES["RECIPIENTS_SELECTED"]
+                        box = await loc.bounding_box()
+                        # Must be inside camera/drawer area, NOT inside SnapStreak HUD (x > 1050 or top dock)
+                        if box and 340 < box["x"] < 1050 and box["y"] > 80:
+                            txt = (await loc.text_content() or "").strip().lower()
+                            aria = (await loc.get_attribute("aria-label") or "").strip().lower()
+                            if "send to" not in txt and "send to" not in aria and "streaks" not in txt:
+                                return SCREEN_STATES["RECIPIENTS_SELECTED"]
                 except Exception:
                     pass
             return SCREEN_STATES["SEND_TO_DRAWER"]
