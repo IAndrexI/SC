@@ -694,6 +694,16 @@ async def macro_record_stop():
 async def macro_info():
     return login_session.get_macro_info()
 
+class MacroSaveRequest(BaseModel):
+    name: str = "Streak Macro"
+    events: list = []
+
+@app.post("/api/macro/save")
+async def macro_save(req: MacroSaveRequest):
+    res = login_session.save_macro(req.events)
+    _emit(f"💾 Macro '{req.name}' saved to server ({res['count']} steps recorded)!")
+    return res
+
 
 # ---------------------------------------------------------------------------
 # Bliss OS Android ADB Routes

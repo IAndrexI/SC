@@ -612,7 +612,7 @@ window.SnapStreakAutomation = (function() {
 
   // ── Self-Healing Step Transition Controller ───────────────────────────────
   // If screen does not match expected state after a step, executes previous steps to recover!
-  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2) {
+  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2, timeoutMs = 7500) {
     checkCancelled();
     const stepNames = [
       'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
@@ -632,7 +632,7 @@ window.SnapStreakAutomation = (function() {
 
       // Settle and verify screen state matches expected state
       const targetStates = Array.isArray(expectedStates) ? expectedStates : [expectedStates];
-      const check = await waitForScreenState(targetStates, 3200);
+      const check = await waitForScreenState(targetStates, timeoutMs);
       checkCancelled();
 
       if (check.success) {
@@ -709,8 +709,148 @@ window.SnapStreakAutomation = (function() {
     return true;
   }
 
+  /**
+   * Understand Macro: Analyzes a recorded macro sequence and extracts semantic
+   * stage guidance so the auto-streak engine knows exactly which elements/coords
+   * worked for each step (Camera Open -> Shutter -> Send-To -> Friends -> Send).
+   */
+  function understandMacro(macroInput) {
+    if (!macroInput) return null;
+    let steps = [];
+    let name = 'Custom Macro';
+
+    if (Array.isArray(macroInput)) {
+      steps = macroInput;
+    } else if (macroInput && Array.isArray(macroInput.steps)) {
+      steps = macroInput.steps;
+      name = macroInput.name || name;
+    } else if (typeof macroInput === 'object' && macroInput.events && Array.isArray(macroInput.events)) {
+      steps = macroInput.events;
+      name = macroInput.name || name;
+    }
+
+    if (!steps || steps.length === 0) return null;
+
+    const guidance = {
+      name: name,
+      stepsCount: steps.length,
+      openCamera: null,
+      shutter: null,
+      sendTo: null,
+      recipients: [],
+      finalSend: null
+    };
+
+    const getText = s => (s.text || '').toLowerCase().trim();
+    const getSel = s => (s.selector || '').toLowerCase().trim();
+    const getAria = s => (s.aria || '').toLowerCase().trim();
+
+    // Pass 1: Identify Shutter step
+    let shutterIndex = -1;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (s.type !== 'click') continue;
+      const t = getText(s);
+      const sel = getSel(s);
+      const a = getAria(s);
+
+      if (
+        t.includes('take a snap') || t.includes('take snap') || t.includes('capture') ||
+        sel.includes('capture') || sel.includes('take-snap') || sel.includes('shutter') ||
+        a.includes('take a snap') || a.includes('take snap') || a.includes('capture') ||
+        sel.includes('camera-capture')
+      ) {
+        shutterIndex = i;
+        guidance.shutter = s;
+        break;
+      }
+    }
+
+    // If no explicit shutter found, check for click in camera bottom area before send/chat
+    if (shutterIndex === -1) {
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i];
+        if (s.type !== 'click') continue;
+        const t = getText(s);
+        if (t.includes('send') || t.includes('search') || t.includes('chat')) continue;
+        if (s.y && s.y > window.innerHeight * 0.40 && s.y < window.innerHeight * 0.95) {
+          shutterIndex = i;
+          guidance.shutter = s;
+          break;
+        }
+      }
+    }
+
+    // Fallback if not yet identified:
+    if (shutterIndex === -1) {
+      if (steps.length >= 2) {
+        shutterIndex = 1;
+        guidance.shutter = steps[1];
+      } else if (steps.length === 1) {
+        shutterIndex = 0;
+        guidance.shutter = steps[0];
+      }
+    }
+
+    // Pass 2: Identify Open Camera step (occurs before shutter)
+    if (shutterIndex > 0) {
+      for (let i = 0; i < shutterIndex; i++) {
+        const s = steps[i];
+        if (s.type !== 'click') continue;
+        const t = getText(s);
+        const sel = getSel(s);
+        if (t.includes('camera') || t.includes('click the camera') || sel.includes('camera') || sel.includes('nav')) {
+          guidance.openCamera = s;
+          break;
+        }
+      }
+      if (!guidance.openCamera && shutterIndex > 0) {
+        guidance.openCamera = steps[0];
+      }
+    }
+
+    // Pass 3: Identify Final Send step (occurs after shutter)
+    let finalSendIndex = -1;
+    for (let i = steps.length - 1; i > shutterIndex; i--) {
+      const s = steps[i];
+      if (s.type !== 'click') continue;
+      const t = getText(s);
+      const sel = getSel(s);
+      const a = getAria(s);
+      if (
+        (t === 'send' || t.startsWith('send ') || t.includes('send snap') || a.includes('send snap') || a === 'send') &&
+        !t.includes('send to') && !a.includes('send to')
+      ) {
+        finalSendIndex = i;
+        guidance.finalSend = s;
+        break;
+      }
+    }
+    if (finalSendIndex === -1 && steps.length - 1 > shutterIndex) {
+      finalSendIndex = steps.length - 1;
+      guidance.finalSend = steps[finalSendIndex];
+    }
+
+    // Pass 4: Identify Send-To drawer step & recipient steps
+    const midStart = shutterIndex >= 0 ? shutterIndex + 1 : 0;
+    const midEnd = finalSendIndex > 0 ? finalSendIndex : steps.length;
+    for (let i = midStart; i < midEnd; i++) {
+      const s = steps[i];
+      const t = getText(s);
+      const sel = getSel(s);
+      const a = getAria(s);
+      if (t.includes('send to') || a.includes('send to') || sel.includes('send-to') || sel.includes('sendto')) {
+        if (!guidance.sendTo) guidance.sendTo = s;
+      } else {
+        guidance.recipients.push(s);
+      }
+    }
+
+    return guidance;
+  }
+
   // ── Step 2: Press Camera Option (if not in already) ──────────────────────
-  async function step1_openCamera() {
+  async function step1_openCamera(macroGuidance = null) {
     log('Step 2: Checking camera state and opening viewfinder if not active...', 'info');
 
     // Helper: verify if camera viewfinder is already active on screen
@@ -738,36 +878,71 @@ window.SnapStreakAutomation = (function() {
       return true;
     }
 
-    // Find camera option button/card in main area or header/nav
-    let camBtn = null;
-    const allClickables = document.querySelectorAll('button, div[role="button"], a');
-    for (const el of allClickables) {
-      if (!isVisible(el) || isMyAI(el)) continue;
-      // Do not click camera buttons inside chat message areas
-      if (el.closest('[data-testid*="chat" i], [class*="message" i]')) continue;
-
-      if (isInsideMainCameraArea(el) || el.closest('header, nav')) {
-        const txt = (el.textContent || '').trim().toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-        const href = (el.getAttribute('href') || '').toLowerCase();
-
-        if (txt.includes('click the camera') || txt === 'camera' ||
-            aria.includes('click the camera') || aria === 'camera' ||
-            testid.includes('camera-open') || testid.includes('navigation-camera') ||
-            href.includes('/camera')) {
-          camBtn = el;
-          break;
-        }
+    // 1. If we have Macro Guidance for camera open, try the learned target!
+    if (macroGuidance && macroGuidance.openCamera) {
+      log(`  🧠 Macro Guidance: Applying learned Camera Open action (target: "${macroGuidance.openCamera.text || macroGuidance.openCamera.selector || `${macroGuidance.openCamera.x},${macroGuidance.openCamera.y}`}")`, 'info');
+      let target = null;
+      if (macroGuidance.openCamera.selector) {
+        try { target = document.querySelector(macroGuidance.openCamera.selector); } catch(e) {}
+      }
+      if (!target && macroGuidance.openCamera.x && macroGuidance.openCamera.y) {
+        target = document.elementFromPoint(macroGuidance.openCamera.x, macroGuidance.openCamera.y);
+      }
+      if (target && isVisible(target) && !isMyAI(target)) {
+        await humanDwellAndClick(target, true);
+        log('  ✓ Clicked learned camera open target from macro!', 'success');
+        await sleep(1000);
       }
     }
 
-    if (camBtn) {
-      await humanDwellAndClick(camBtn, true);
-      log('  ✓ Pressed camera option in main menu!', 'success');
-      await sleep(1000);
-    } else {
-      log('  Notice: Camera option button not visible, checking for viewfinder directly...', 'info');
+    // 2. Find camera option button/card in main area or header/nav
+    if (!isAlreadyOpen()) {
+      let camBtn = null;
+      // Search all elements in DOM for "click the camera" or "send snaps" text (including cards/divs)
+      const allElements = document.querySelectorAll('button, div[role="button"], a, div, span, p, h1, h2');
+      for (const el of allElements) {
+        if (!isVisible(el) || isMyAI(el)) continue;
+        if (el.closest('[data-testid*="chat" i], [class*="message" i]')) continue;
+
+        if (isInsideMainCameraArea(el) || el.closest('header, nav, aside')) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+          const href = (el.getAttribute('href') || '').toLowerCase();
+
+          if (
+            txt.includes('click the camera') || txt === 'camera' ||
+            aria.includes('click the camera') || aria === 'camera' ||
+            testid.includes('camera-open') || testid.includes('navigation-camera') ||
+            href.includes('/camera')
+          ) {
+            camBtn = el.closest('button, div[role="button"], a') || el;
+            break;
+          }
+        }
+      }
+
+      // Check for camera SVG icons in nav/header or main area
+      if (!camBtn) {
+        const svgIcons = document.querySelectorAll('svg');
+        for (const svg of svgIcons) {
+          if (!isVisible(svg) || isMyAI(svg)) continue;
+          const iconName = (svg.getAttribute('data-icon') || '').toLowerCase();
+          const aria = (svg.getAttribute('aria-label') || '').toLowerCase();
+          if (iconName.includes('camera') || aria.includes('camera')) {
+            camBtn = svg.closest('button, div[role="button"], a') || svg;
+            break;
+          }
+        }
+      }
+
+      if (camBtn) {
+        await humanDwellAndClick(camBtn, true);
+        log(`  ✓ Pressed camera option in main menu: "${(camBtn.textContent || '').trim().slice(0, 35)}"`, 'success');
+        await sleep(1000);
+      } else {
+        log('  Notice: Camera option button not visible, checking for viewfinder directly...', 'info');
+      }
     }
 
     // Dismiss any modal dialogs or "Turn on Camera" / "Allow" / "Try Again" prompts
@@ -787,21 +962,21 @@ window.SnapStreakAutomation = (function() {
       }
     } catch (e) {}
 
-    // Wait for camera viewfinder and white circle shutter button in main area
-    const shutter = await findElement([
-      'button[aria-label*="Take Snap" i]',
-      'button.camera-capture-button',
-      '[aria-label*="capture" i]',
-      'button:has(svg circle)',
-      '[data-testid="camera-view"]'
-    ], 5000);
-
-    if (shutter && isInsideMainCameraArea(shutter) && !isMyAI(shutter)) {
-      log('  ✓ Camera viewfinder ready in main area.', 'success');
-      return true;
+    // Poll for camera viewfinder to become ready (up to 8 seconds for virtual webcam initialization)
+    const startTime = Date.now();
+    const timeoutMs = 8000;
+    while (Date.now() - startTime < timeoutMs) {
+      checkCancelled();
+      if (isAlreadyOpen()) {
+        const elapsed = Date.now() - startTime;
+        log(`  ✓ Camera viewfinder ready in main area (${elapsed}ms).`, 'success');
+        return true;
+      }
+      await sleep(250);
     }
 
-    return true;
+    log('  Notice: Camera viewfinder wait completed, proceeding...', 'info');
+    return isAlreadyOpen();
   }
 
   // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
@@ -922,7 +1097,7 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 3: Press Take Picture Button (Quick Press, Zero Swipe) ─────────────
-  async function step2_pressWhiteCirclePhoto() {
+  async function step2_pressWhiteCirclePhoto(macroGuidance = null) {
     log('Step 3: Pressing take picture button (quick press, zero swipe)...', 'info');
 
     // Deselect/close any accidentally active filter lens first to restore center shutter
@@ -947,7 +1122,34 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    let shutter = findShutterButton();
+    let shutter = null;
+
+    // 1. If we have Macro Guidance for shutter, use learned target!
+    if (macroGuidance && macroGuidance.shutter) {
+      log(`  🧠 Macro Guidance: Using learned photo shutter action (selector: "${macroGuidance.shutter.selector || ''}", coords: ${macroGuidance.shutter.x},${macroGuidance.shutter.y})`, 'info');
+      if (macroGuidance.shutter.selector) {
+        try {
+          const match = document.querySelector(macroGuidance.shutter.selector);
+          if (match && isVisible(match) && isInsideMainCameraArea(match) && !isMyAI(match)) {
+            shutter = match;
+          }
+        } catch(e) {}
+      }
+      if (!shutter && macroGuidance.shutter.x && macroGuidance.shutter.y) {
+        const pt = document.elementFromPoint(macroGuidance.shutter.x, macroGuidance.shutter.y);
+        if (pt && isInsideMainCameraArea(pt) && !isMyAI(pt)) {
+          shutter = pt.closest('button, div[role="button"]') || pt;
+        }
+      }
+      if (shutter) {
+        log('  ✓ Matched learned shutter element from macro!', 'success');
+      }
+    }
+
+    // 2. Standard selector locator
+    if (!shutter) {
+      shutter = findShutterButton();
+    }
 
     // Determine camera center coordinates for fallback
     const video = document.querySelector('video');
@@ -969,24 +1171,22 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    if (shutter && !isMyAI(shutter)) {
-      const rect = shutter.getBoundingClientRect();
-      const centerX = Math.round(rect.left + rect.width / 2);
-      const centerY = Math.round(rect.top + rect.height / 2);
+    const clickX = (shutter && shutter.getBoundingClientRect) ? Math.round(shutter.getBoundingClientRect().left + shutter.getBoundingClientRect().width / 2) : (macroGuidance?.shutter?.x || targetX);
+    const clickY = (shutter && shutter.getBoundingClientRect) ? Math.round(shutter.getBoundingClientRect().top + shutter.getBoundingClientRect().height / 2) : (macroGuidance?.shutter?.y || targetY);
 
+    if (shutter && !isMyAI(shutter)) {
       // Focus the button cleanly
       try { shutter.focus(); } catch (e) {}
 
       // Clean instant quick press: 0 delay between down and up, 0 movement (zero swipe!)
-      // No dwell/hold to prevent gesture recognizer from starting a carousel slide or video record
       const eventOpts = {
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: centerX,
-        clientY: centerY,
-        screenX: centerX,
-        screenY: centerY,
+        clientX: clickX,
+        clientY: clickY,
+        screenX: clickX,
+        screenY: clickY,
         button: 0,
         buttons: 1,
         pointerId: 1,
@@ -1005,8 +1205,8 @@ window.SnapStreakAutomation = (function() {
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: centerX,
-        clientY: centerY,
+        clientX: clickX,
+        clientY: clickY,
         button: 0
       }));
 
@@ -1019,20 +1219,30 @@ window.SnapStreakAutomation = (function() {
         shutter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
       } catch (e) {}
 
-      log('  ✓ Quick-pressed center white circle capture button (zero swipe)!', 'success');
+      log(`  ✓ Quick-pressed center white circle capture button at (${clickX}, ${clickY})!`, 'success');
     } else {
       // Direct center element click fallback
-      const pointEl = document.elementFromPoint(targetX, targetY);
+      const pointEl = document.elementFromPoint(clickX, clickY);
       if (pointEl) {
         pointEl.click();
-        log('  ✓ Clicked camera center capture point directly.', 'success');
+        log(`  ✓ Clicked camera capture point (${clickX}, ${clickY}) directly.`, 'success');
       } else {
         log('  Notice: Shutter button element not found at camera center.', 'err');
       }
     }
 
-    // Wait for photo capture transition (shutter disappears, photo preview renders)
-    await sleep(2200);
+    // Wait up to 8s for screen transition to PHOTO_CAPTURED or SEND_TO_DRAWER
+    const startWait = Date.now();
+    while (Date.now() - startWait < 8000) {
+      checkCancelled();
+      const screen = detectCurrentScreen();
+      if (screen === SCREEN_STATES.PHOTO_CAPTURED || screen === SCREEN_STATES.SEND_TO_DRAWER || screen === SCREEN_STATES.RECIPIENTS_SELECTED) {
+        log(`  ✓ Screen transitioned to "${screen}" after shutter capture!`, 'success');
+        return true;
+      }
+      await sleep(200);
+    }
+
     return true;
   }
 
@@ -1092,7 +1302,7 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 4a: Check & Open Send-To Drawer in Main Camera Box ───────────────
-  async function step3_ensureSendToDrawerOpen() {
+  async function step3_ensureSendToDrawerOpen(macroGuidance = null) {
     log('Step 4a: Transitioning from photo preview to Send-To drawer...', 'info');
 
     const isListOpen = () => {
@@ -1117,6 +1327,24 @@ window.SnapStreakAutomation = (function() {
     if (isListOpen()) {
       log('  ✓ Recipient drawer is already open in main camera box.', 'success');
       return true;
+    }
+
+    // 1. Try learned Send-To target from macro
+    if (macroGuidance && macroGuidance.sendTo) {
+      log(`  🧠 Macro Guidance: Targeting learned Send-To action (selector: "${macroGuidance.sendTo.selector || ''}", coords: ${macroGuidance.sendTo.x},${macroGuidance.sendTo.y})`, 'info');
+      let target = null;
+      if (macroGuidance.sendTo.selector) {
+        try { target = document.querySelector(macroGuidance.sendTo.selector); } catch(e) {}
+      }
+      if (!target && macroGuidance.sendTo.x && macroGuidance.sendTo.y) {
+        target = document.elementFromPoint(macroGuidance.sendTo.x, macroGuidance.sendTo.y);
+      }
+      if (target && isVisible(target) && isInsideMainCameraArea(target)) {
+        await humanDwellAndClick(target, true);
+        log('  ✓ Clicked learned Send-To button from macro!', 'success');
+        await sleep(1000);
+        if (isListOpen()) return true;
+      }
     }
 
     log('  Looking for "Send To" button on photo preview...', 'info');
@@ -1477,15 +1705,40 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 5: Click the Send Button (In Main Camera Box Area) ───────────────
-  async function step4_sendSnap() {
+  async function step4_sendSnap(macroGuidance = null) {
     log('Step 5: Clicking final Send button in main camera area...', 'info');
 
-    const startTime = Date.now();
     let sendBtn = null;
-    while (Date.now() - startTime < 4500) {
-      sendBtn = findFinalSendButton();
-      if (sendBtn) break;
-      await sleep(250);
+
+    // 1. If we have Macro Guidance for final send, try learned target first!
+    if (macroGuidance && macroGuidance.finalSend) {
+      log(`  🧠 Macro Guidance: Targeting learned Final Send button (selector: "${macroGuidance.finalSend.selector || ''}", coords: ${macroGuidance.finalSend.x},${macroGuidance.finalSend.y})`, 'info');
+      if (macroGuidance.finalSend.selector) {
+        try {
+          const match = document.querySelector(macroGuidance.finalSend.selector);
+          if (match && isVisible(match) && isInsideMainCameraArea(match) && !isMyAI(match)) {
+            sendBtn = match;
+          }
+        } catch(e) {}
+      }
+      if (!sendBtn && macroGuidance.finalSend.x && macroGuidance.finalSend.y) {
+        const pt = document.elementFromPoint(macroGuidance.finalSend.x, macroGuidance.finalSend.y);
+        if (pt && isInsideMainCameraArea(pt) && !isMyAI(pt)) {
+          sendBtn = pt.closest('button, div[role="button"]') || pt;
+        }
+      }
+      if (sendBtn) {
+        log('  ✓ Matched learned Final Send button from macro!', 'success');
+      }
+    }
+
+    if (!sendBtn) {
+      const startTime = Date.now();
+      while (Date.now() - startTime < 4500) {
+        sendBtn = findFinalSendButton();
+        if (sendBtn) break;
+        await sleep(250);
+      }
     }
 
     if (!sendBtn) {
@@ -1729,6 +1982,32 @@ window.SnapStreakAutomation = (function() {
         }
       } catch (e) {}
 
+      // 🧠 Understand and incorporate Macro Guidance
+      let macroGuidance = null;
+      try {
+        let rawMacro = options.macro || options.macroEvents;
+        if (!rawMacro && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+          const stored = await new Promise(r => chrome.storage.local.get(['snapstreak_macros', 'snapstreak_config'], r));
+          const macros = stored.snapstreak_macros || {};
+          const cfg = stored.snapstreak_config || {};
+          const activeName = options.macroName || cfg.activeMacro;
+          if (activeName && macros[activeName]) {
+            rawMacro = macros[activeName];
+          } else {
+            const customKey = Object.keys(macros).find(k => k !== window.SnapStreakMacro?.DEFAULT_MACRO_NAME && !macros[k].isDefault);
+            if (customKey) rawMacro = macros[customKey];
+          }
+        }
+        if (rawMacro) {
+          macroGuidance = understandMacro(rawMacro);
+          if (macroGuidance) {
+            log(`🧠 [MACRO INTELLIGENCE] Loaded blueprint from "${macroGuidance.name}" (${macroGuidance.stepsCount} steps): Camera[${macroGuidance.openCamera ? '✓' : '—'}] Shutter[${macroGuidance.shutter ? '✓' : '—'}] SendTo[${macroGuidance.sendTo ? '✓' : '—'}] FinalSend[${macroGuidance.finalSend ? '✓' : '—'}]`, 'info');
+          }
+        }
+      } catch (err) {
+        log(`  Notice initializing macro blueprint: ${err.message}`, 'warn');
+      }
+
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         checkCancelled();
 
@@ -1737,7 +2016,7 @@ window.SnapStreakAutomation = (function() {
           try {
             await step0_clickSnapchatHome();
             await sleep(1200);
-            await step1_openCamera();
+            await step1_openCamera(macroGuidance);
             await sleep(800);
           } catch(e) {}
         }
@@ -1761,7 +2040,9 @@ window.SnapStreakAutomation = (function() {
                 const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
                 if (chatBack && isVisible(chatBack)) chatBack.click();
                 await sleep(500);
-              }
+              },
+              2,
+              3500
             );
             if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
             await sleep(humanMode ? 800 : 400);
@@ -1769,12 +2050,14 @@ window.SnapStreakAutomation = (function() {
             // Step 2: Open Camera Viewfinder
             const step2Ok = await executeStepWithScreenVerification(
               1,
-              async () => { await step1_openCamera(); },
+              async () => { await step1_openCamera(macroGuidance); },
               [SCREEN_STATES.CAMERA_READY],
               async () => {
                 await step0_clickSnapchatHome();
                 await sleep(1000);
-              }
+              },
+              2,
+              8000
             );
             if (!step2Ok) {
               log('  Notice: Soft camera verification, checking camera elements directly...', 'warn');
@@ -1787,12 +2070,12 @@ window.SnapStreakAutomation = (function() {
           // Step 3: Press White Circle Shutter for photo
           const step3Ok = await executeStepWithScreenVerification(
             2,
-            async () => { await step2_pressWhiteCirclePhoto(); },
+            async () => { await step2_pressWhiteCirclePhoto(macroGuidance); },
             [SCREEN_STATES.PHOTO_CAPTURED, SCREEN_STATES.SEND_TO_DRAWER],
             async () => {
               const cur = detectCurrentScreen();
               if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.UNKNOWN) {
-                await step1_openCamera();
+                await step1_openCamera(macroGuidance);
                 await sleep(1200);
               } else {
                 const removeBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close" i], [data-testid*="remove-lens" i]');
@@ -1800,7 +2083,9 @@ window.SnapStreakAutomation = (function() {
                   try { removeBtn.click(); await sleep(300); } catch (e) {}
                 }
               }
-            }
+            },
+            2,
+            8000
           );
           if (!step3Ok) throw new Error('Photo capture failed; shutter button did not transition to photo preview.');
           await sleep(humanMode ? 1000 : 500);
@@ -1809,7 +2094,7 @@ window.SnapStreakAutomation = (function() {
           const step4Ok = await executeStepWithScreenVerification(
             3,
             async () => {
-              await step3_ensureSendToDrawerOpen();
+              await step3_ensureSendToDrawerOpen(macroGuidance);
               await sleep(600);
               await step3b_selectRecipientsByVisualName(remainingFriends, selectionMethod, stepDelay);
             },
@@ -1817,13 +2102,15 @@ window.SnapStreakAutomation = (function() {
             async () => {
               const cur = detectCurrentScreen();
               if (cur === SCREEN_STATES.CAMERA_READY) {
-                await step2_pressWhiteCirclePhoto();
+                await step2_pressWhiteCirclePhoto(macroGuidance);
                 await sleep(1500);
               } else if (cur === SCREEN_STATES.PHOTO_CAPTURED) {
-                await step3_ensureSendToDrawerOpen();
+                await step3_ensureSendToDrawerOpen(macroGuidance);
                 await sleep(800);
               }
-            }
+            },
+            2,
+            6000
           );
           if (!step4Ok) throw new Error('Failed to open recipient drawer and select friends on screen.');
           await sleep(humanMode ? 1000 : 500);
@@ -1886,7 +2173,7 @@ window.SnapStreakAutomation = (function() {
           // Step 5: Click the Send button & verify delivery (drawer closed)
           const step5Ok = await executeStepWithScreenVerification(
             4,
-            async () => { await step4_sendSnap(); },
+            async () => { await step4_sendSnap(macroGuidance); },
             [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
             async () => {
               const sendBtn = findFinalSendButton();
@@ -1894,7 +2181,9 @@ window.SnapStreakAutomation = (function() {
                 sendBtn.click();
                 await sleep(1500);
               }
-            }
+            },
+            1,
+            6000
           );
 
           if (!step5Ok) throw new Error('Final Send click did not close recipient drawer on screen.');
@@ -2033,6 +2322,8 @@ window.SnapStreakAutomation = (function() {
     runSendStreaks,
     showManualConfirmPrompt,
     dismissManualConfirmPrompt,
+    // Macro Understanding Engine
+    understandMacro,
     // Screen State Matching & Verification Exports
     SCREEN_STATES,
     detectCurrentScreen,

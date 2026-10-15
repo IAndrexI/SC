@@ -159,6 +159,15 @@ window.SnapStreakMacro = (function() {
       };
       await chrome.storage.local.set({ snapstreak_macros: saved });
       log(`✓ Saved macro "${macroName}" (${events.length} steps).`, 'success');
+
+      // Also persist to backend /api/macro/save for headless auto-runs
+      try {
+        fetch('http://127.0.0.1:8080/api/macro/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: macroName, events: events })
+        }).catch(() => {});
+      } catch(e) {}
     }
 
     return events;
@@ -367,7 +376,22 @@ window.SnapStreakMacro = (function() {
           return true;
         }
       } else {
-        // Custom Recorded Macro Replay
+        // Custom Recorded Macro Replay Guided by SnapStreakAutomation
+        log(`🧠 Macro Intelligence: Parsing "${macro.name}" to guide autonomous steps...`, 'info');
+        if (window.SnapStreakAutomation && typeof window.SnapStreakAutomation.runSendStreaks === 'function') {
+          const runRes = await window.SnapStreakAutomation.runSendStreaks({
+            macro: macro,
+            friends: config.friends || ['*//Eric\\*', 'Dylan'],
+            selectionMethod: config.selectionMethod || 'auto',
+            stepDelay: stepDelay,
+            humanMode: config.humanMode ?? true,
+            isTest: isTest,
+            pauseBeforeFinalSend: isTest
+          });
+          return runRes && runRes.success;
+        }
+
+        // Direct event-by-event replay fallback if SnapStreakAutomation is not loaded
         for (let i = 0; i < macro.steps.length; i++) {
           if (window.SnapStreakAutomation && window.SnapStreakAutomation.checkCancelled) {
             window.SnapStreakAutomation.checkCancelled();
@@ -459,6 +483,7 @@ window.SnapStreakMacro = (function() {
     deleteMacro,
     replayMacro,
     showTestIndicator,
+    understandMacro: (m) => (window.SnapStreakAutomation && window.SnapStreakAutomation.understandMacro ? window.SnapStreakAutomation.understandMacro(m) : null),
     DEFAULT_MACRO_NAME,
     isRecording: () => isRecording
   };

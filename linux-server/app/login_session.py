@@ -67,6 +67,12 @@ def stop_macro_recording() -> dict:
     return {"ok": True, "count": len(events), "events": events}
 
 
+def save_macro(events: list) -> dict:
+    if events:
+        MACRO_FILE.write_text(json.dumps(events, indent=2), encoding="utf-8")
+    return {"ok": True, "count": len(events)}
+
+
 def get_macro_info() -> dict:
     has_macro = MACRO_FILE.exists()
     count = 0
@@ -1117,9 +1123,13 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
     selection_method = cfg.get("selection_method", "auto")
     step_delay = cfg.get("step_delay", 3)
 
-    if MACRO_FILE.exists() and not is_preview:
-        _log("Replaying custom recorded macro in active browser...", emit)
-        return await replay_macro(page, emit=emit)
+    macro_events = None
+    if MACRO_FILE.exists():
+        try:
+            macro_events = json.loads(MACRO_FILE.read_text(encoding="utf-8"))
+            _log(f"🧠 Loaded custom recorded macro blueprint ({len(macro_events)} events) to guide execution.", emit)
+        except Exception as ex:
+            _log(f"  Notice reading macro file: {ex}", emit)
 
     # 1. Wait for initial browser navigation task if still running
     if _state.get("nav_task") and not _state["nav_task"].done():
@@ -1269,7 +1279,8 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
             "humanMode": True,
             "isTest": is_preview,
             "pauseBeforeFinalSend": is_preview,
-            "maxRetries": 3
+            "maxRetries": 3,
+            "macroEvents": macro_events
         })
 
         if ext_res and ext_res.get("success"):
@@ -1291,6 +1302,9 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
         return {"error": "Extension preview requires active extension in browser"}
 
     # 2. Direct desktop driver flow fallback
+    if macro_events:
+        _log(f"Falling back to custom macro replay flow...", emit)
+        return await replay_macro(page, emit=emit)
     _log(f"Starting direct desktop send streak sequence (Targets: {friends})...", emit)
     results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
     return results
