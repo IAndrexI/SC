@@ -117,13 +117,17 @@ window.SnapStreakAutomation = (function() {
     return style.display !== 'none' && style.visibility !== 'hidden';
   }
 
-  // ── Helper: Identify and Strictly Ignore "My AI" Elements ───────────────
-  function isMyAI(el) {
+  // ── Helper: Identify and Strictly Ignore "My AI", "Spotlight", "Stories", & Groups ───────
+  const FORBIDDEN_STRINGS = [
+    'my ai', 'myai', 'spotlight', 'my story', 'mystory', 'stories', 'story',
+    'add to story', 'post to story', 'sexy hot joyful men', 'group'
+  ];
+
+  function isForbiddenRecipient(el) {
     if (!el) return false;
     let cur = el;
     let depth = 0;
     while (cur && cur !== document.body && depth < 5) {
-      // If we've ascended to a container housing multiple items, drawer, or dialog, stop ascending
       if (depth > 0) {
         const testid = (cur.getAttribute('data-testid') || '').toLowerCase();
         const role = cur.getAttribute('role') || '';
@@ -141,25 +145,18 @@ window.SnapStreakAutomation = (function() {
       const title = (cur.getAttribute('title') || '').toLowerCase();
       const alt = (cur.getAttribute('alt') || '').toLowerCase();
 
-      if (
-        aria.includes('my ai') || aria.includes('myai') ||
-        testid.includes('my-ai') || testid.includes('myai') ||
-        title.includes('my ai') || title.includes('myai') ||
-        alt.includes('my ai') || alt.includes('myai')
-      ) {
-        return true;
+      for (const fs of FORBIDDEN_STRINGS) {
+        if (aria.includes(fs) || testid.includes(fs) || title.includes(fs) || alt.includes(fs)) {
+          return true;
+        }
       }
 
-      // Check text only on element itself or row/item with at most one checkbox/control
-      const checksCount = cur.querySelectorAll ? cur.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length : 0;
-      if (checksCount <= 1) {
-        const txt = (cur.innerText || cur.textContent || '').trim().toLowerCase();
-        if (
-          txt === 'my ai' || txt.startsWith('my ai\n') || txt.startsWith('my ai ') ||
-          (txt.includes('my ai') && txt.length < 35) ||
-          txt.replace(/[^a-z]/g, '') === 'myai'
-        ) {
-          return true;
+      const txt = (cur.innerText || cur.textContent || '').trim().toLowerCase();
+      if (txt.length > 0 && txt.length < 80) {
+        for (const fs of FORBIDDEN_STRINGS) {
+          if (txt === fs || txt.startsWith(fs + '\n') || txt.startsWith(fs + ' ') || txt.includes(fs)) {
+            return true;
+          }
         }
       }
 
@@ -167,6 +164,38 @@ window.SnapStreakAutomation = (function() {
       depth++;
     }
     return false;
+  }
+
+  function isMyAI(el) {
+    return isForbiddenRecipient(el);
+  }
+
+  function uncheckUnauthorizedRecipients(friends = ['*//Eric\\\\*', 'Dylan']) {
+    try {
+      const checkedBoxes = document.querySelectorAll('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]');
+      for (const cb of checkedBoxes) {
+        let row = cb.closest('div[role="row"], div[role="listitem"], li, div');
+        let rowTxt = (row ? (row.innerText || row.textContent || '') : '').trim().toLowerCase();
+        let aria = (cb.getAttribute('aria-label') || '').toLowerCase();
+        let targetText = rowTxt + ' ' + aria;
+
+        let isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(row);
+        let matchesAllowed = false;
+        for (const f of friends) {
+          const raw = f.trim().replace(/^@/, '').toLowerCase();
+          const core = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          if ((raw.length >= 2 && targetText.includes(raw)) || (core.length >= 3 && targetText.includes(core))) {
+            matchesAllowed = true;
+            break;
+          }
+        }
+
+        if (isForbidden || (targetText.length > 0 && !matchesAllowed)) {
+          log(`  🛑 Safety Guard: Unchecking unauthorized recipient "${targetText.slice(0, 30)}"!`, 'warn');
+          cb.click();
+        }
+      }
+    } catch(e) {}
   }
 
   // ── Human-Like Pointer & Interaction Simulation ─────────────────────────
@@ -1469,55 +1498,19 @@ window.SnapStreakAutomation = (function() {
     return null;
   }
 
-  // ── Step 4b: Select Recipients (Best Friends Tab &/or Chosen Friends, No My AI) ──
+  // ── Step 4b: Select Recipients (Strict Friend Whitelist, No Spotlight/Stories/Groups) ──
   async function step3b_selectRecipientsByVisualName(friends = ['*//Eric\\\\*', 'Dylan'], selectionMethod = 'auto', stepDelay = 2) {
-    log(`Step 4b: Selecting recipients in Best Friends tab &/or chosen list (STRICTLY ignoring My AI)...`, 'info');
+    log(`Step 4b: Selecting target friends strictly from list (${friends.join(', ')})...`, 'info');
     let selectedCount = 0;
 
-    // 0. Check for and click Snapchat Shortcut tab/pill if present (✨ / shortcut emoji / [aria-label*="shortcut"])
-    if (selectionMethod === 'shortcut' || selectionMethod === 'auto') {
-      const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
-      let shortcutTab = null;
-      for (const t of tabCandidates) {
-        if (!isVisible(t) || !isInsideMainCameraArea(t) || isMyAI(t)) continue;
-        const text = (t.textContent || '').trim().toLowerCase();
-        const aria = (t.getAttribute('aria-label') || '').toLowerCase();
-        const testid = (t.getAttribute('data-testid') || '').toLowerCase();
-        if (text.includes('shortcut') || aria.includes('shortcut') || testid.includes('shortcut') ||
-            text.includes('✨') || aria.includes('✨') || aria.includes('streak squad')) {
-          shortcutTab = t.closest('button, div[role="tab"], div[role="button"]') || t;
-          break;
-        }
-      }
-
-      if (shortcutTab) {
-        try {
-          await humanDwellAndClick(shortcutTab, true);
-          log('  ✓ Clicked Snapchat Shortcut tab in recipient drawer.', 'success');
-          await sleep(600);
-
-          // Click "Select All" / "Select" button if present
-          const selectAllCandidates = document.querySelectorAll('button, div[role="button"], span');
-          for (const s of selectAllCandidates) {
-            if (!isVisible(s) || !isInsideMainCameraArea(s) || isMyAI(s)) continue;
-            const sText = (s.textContent || '').trim().toLowerCase();
-            const sAria = (s.getAttribute('aria-label') || '').toLowerCase();
-            if (sText === 'select all' || sText === 'select' || sAria.includes('select all') || sText.includes('select all')) {
-              await humanDwellAndClick(s, true);
-              log('  ✓ Clicked "Select All" on Shortcut recipients!', 'success');
-              selectedCount++;
-              break;
-            }
-          }
-        } catch (e) {}
-      }
-    }
+    // Safety pass: uncheck any pre-selected Spotlight, Stories, or unauthorized rows
+    uncheckUnauthorizedRecipients(friends);
 
     // 1. Check for and switch to "Best Friends" tab/pill if present in drawer
     const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
     let bestFriendsTab = null;
     for (const t of tabCandidates) {
-      if (!isVisible(t) || !isInsideMainCameraArea(t) || isMyAI(t)) continue;
+      if (!isVisible(t) || !isInsideMainCameraArea(t) || isForbiddenRecipient(t)) continue;
       const text = (t.textContent || '').trim().toLowerCase();
       const aria = (t.getAttribute('aria-label') || '').toLowerCase();
       if (text === 'best friends' || aria === 'best friends' || text.startsWith('best friends') || aria.startsWith('best friends')) {
@@ -1530,14 +1523,14 @@ window.SnapStreakAutomation = (function() {
       try {
         await humanDwellAndClick(bestFriendsTab, true);
         log('  ✓ Switched to "Best Friends" tab in camera drawer.', 'success');
-        await sleep(700);
+        await sleep(600);
       } catch (e) {}
     }
 
-    // 2. Select rows inside Best Friends tab/section (strictly excluding My AI)
+    // 2. Select rows inside Best Friends tab/section (strictly matching target friends)
     const bestFriendsRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li');
     for (const row of bestFriendsRows) {
-      if (!isVisible(row) || !isInsideMainCameraArea(row) || isMyAI(row)) continue;
+      if (!isVisible(row) || !isInsideMainCameraArea(row) || isForbiddenRecipient(row)) continue;
       const rowTxt = (row.textContent || '').trim();
       const checkControl = row.querySelector('input[type="checkbox"], [role="checkbox"]');
       if (checkControl && !checkControl.checked) {
@@ -1548,23 +1541,23 @@ window.SnapStreakAutomation = (function() {
           return (raw.length >= 2 && rLower.includes(raw)) || (core.length >= 3 && rLower.includes(core));
         });
 
-        if (matchesFriend || selectionMethod === 'best_friends') {
+        if (matchesFriend) {
           await humanDwellAndClick(checkControl, true);
-          log(`  ✓ Selected Best Friend: "${rowTxt.slice(0, 25)}" (My AI skipped).`, 'success');
+          log(`  ✓ Selected Target Friend: "${rowTxt.slice(0, 25)}".`, 'success');
           selectedCount++;
           await sleep(500);
         }
       }
     }
 
-    // 3. Ensure all explicitly chosen friends from friends list are selected (search fallback)
+    // 3. Ensure all explicitly chosen friends from friends list are selected via verified search
     for (const friend of friends) {
       const rawName = friend.trim().replace(/^@/, '');
       const coreName = rawName.replace(/[^a-zA-Z0-9]/g, '').trim();
       if (!rawName && !coreName) continue;
 
       const existingRow = findRecipientRow(rawName, coreName);
-      if (existingRow && !isMyAI(existingRow)) {
+      if (existingRow && !isForbiddenRecipient(existingRow)) {
         const check = existingRow.querySelector('input[type="checkbox"], [role="checkbox"]');
         if (check && check.checked) {
           log(`  ✓ "${rawName}" is already selected.`, 'info');
@@ -1577,7 +1570,6 @@ window.SnapStreakAutomation = (function() {
           await sleep(500);
           continue;
         } else {
-          // If no checkbox element, click the row or its circle/SVG icon directly
           const rowTarget = existingRow.querySelector('svg, div[class*="check" i], div[class*="circle" i]') || existingRow;
           await humanDwellAndClick(rowTarget, true);
           log(`  ✓ Clicked recipient row for "${rawName}" from drawer.`, 'success');
@@ -1591,7 +1583,7 @@ window.SnapStreakAutomation = (function() {
       const searchInputs = document.querySelectorAll('input');
       let cameraSearch = null;
       for (const inp of searchInputs) {
-        if (isVisible(inp) && isInsideMainCameraArea(inp) && !isMyAI(inp)) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp) && !isForbiddenRecipient(inp)) {
           cameraSearch = inp;
           break;
         }
@@ -1604,21 +1596,14 @@ window.SnapStreakAutomation = (function() {
         await sleep(1000);
 
         const resultRow = findRecipientRow(rawName, coreName);
-        if (resultRow && !isMyAI(resultRow)) {
+        if (resultRow && !isForbiddenRecipient(resultRow)) {
           const clickable = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]') || resultRow;
           await humanDwellAndClick(clickable, true);
-          log(`  ✓ Selected "${rawName}" from search results!`, 'success');
+          log(`  ✓ Selected "${rawName}" from verified search results!`, 'success');
           selectedCount++;
           await sleep(500);
         } else {
-          // Top search result (STRICTLY SKIPPING MY AI)
-          const firstResult = findFirstSearchResult(cameraSearch);
-          if (firstResult && !isMyAI(firstResult)) {
-            await humanDwellAndClick(firstResult, true);
-            log(`  ✓ Selected top non-AI search result for "${rawName}"!`, 'success');
-            selectedCount++;
-            await sleep(500);
-          }
+          log(`  ⚠ Could not find verified result for "${rawName}" — SKIPPED to avoid wrong recipient.`, 'warn');
         }
 
         simulateTyping(cameraSearch, '');
@@ -1626,8 +1611,11 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
+    // Final safety pass before proceeding
+    uncheckUnauthorizedRecipients(friends);
+
     const success = (selectedCount > 0);
-    log(`  Finished recipient selection (${selectedCount} selected, My AI completely ignored).`, success ? 'success' : 'err');
+    log(`  Finished recipient selection (${selectedCount} selected, Spotlight/Stories/Groups strictly blocked).`, success ? 'success' : 'err');
     return success;
   }
 

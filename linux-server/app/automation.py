@@ -673,8 +673,52 @@ async def check_logged_in(page: Page, emit=None) -> bool:
 # Actively Verified 6-Step Streak Workflow
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Actively Verified Streak Workflow (Shortcuts + Direct Search Alternative)
+# Actively Verified Streak Workflow (Strict Recipient Whitelist & Blacklist)
 # ---------------------------------------------------------------------------
+FORBIDDEN_RECIPIENT_KEYWORDS = [
+    "spotlight", "my story", "mystory", "stories", "add to story", "post to story",
+    "my ai", "myai", "group", "sexy hot joyful men"
+]
+
+def _get_friend_search_terms(friend: str) -> tuple[str, list[str]]:
+    raw = friend.strip().lstrip("@")
+    import re
+    core = re.sub(r'[^a-zA-Z0-9]', '', raw).strip()
+    query = core if len(core) >= 3 else raw
+    patterns = [raw.lower()]
+    if core:
+        patterns.append(core.lower())
+    return query, patterns
+
+async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str], emit: Callable[[str], None] | None = None):
+    """Safety pass: Unchecks Spotlight, My Story, or any contact not in allowed_friends."""
+    try:
+        checked_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
+        for cb in checked_boxes:
+            row_text = ""
+            try:
+                parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
+                if parent:
+                    row_text = ((await parent.as_element().text_content()) or "").strip().lower()
+            except Exception:
+                pass
+
+            is_forbidden = any(k in row_text for k in FORBIDDEN_RECIPIENT_KEYWORDS)
+            matches_allowed = False
+            for f in allowed_friends:
+                _, patterns = _get_friend_search_terms(f)
+                if any(p in row_text for p in patterns):
+                    matches_allowed = True
+                    break
+
+            if is_forbidden or (row_text and not matches_allowed):
+                _log(f"  🛑 Safety Guard: Unchecking unauthorized target: '{row_text[:35]}'", emit)
+                await cb.click()
+                await asyncio.sleep(0.3)
+    except Exception as ex:
+        _log(f"  Notice checking unauthorized recipients: {ex}", emit)
+
+
 async def send_streaks_direct_selection_flow(
     page: Page,
     friends: list[str],
@@ -682,36 +726,52 @@ async def send_streaks_direct_selection_flow(
     emit: Callable[[str], None] | None = None,
 ) -> bool:
     """
-    Alternative selection method:
+    Strict recipient selection:
     Searches for and selects each friend directly on the Send-To modal.
-    Does NOT depend on Snapchat shortcuts!
+    STRICTLY forbids Spotlight, My Story, and non-whitelisted groups/contacts!
     """
-    _log(f"📋 [Alternative Selection] Selecting {len(friends)} friends directly...", emit)
+    _log(f"📋 [Strict Selection] Targeting {len(friends)} friends: {friends}...", emit)
     selected_count = 0
+
+    # Safety pass before selection
+    await uncheck_unauthorized_recipients(page, friends, emit=emit)
 
     search_selectors = [
         'input[placeholder*="To:" i]',
         'input[placeholder*="Send to" i]',
         'input[placeholder*="Search" i]',
         '[data-testid="send-to-search-input"]',
+        'div[role="dialog"] input[type="text"]',
         'input[type="text"]',
     ]
 
     for friend in friends:
-        clean_name = friend.strip().lstrip("@")
-        _log(f"  Targeting friend: '{clean_name}'...", emit)
+        query_term, match_patterns = _get_friend_search_terms(friend)
+        _log(f"  Targeting friend: '{friend}' (Query: '{query_term}')...", emit)
         friend_selected = False
 
         # 1. Check if already visible in Recents / Best Friends on the modal
-        for name_sel in [f'text="{clean_name}"', f':text-matches("{clean_name}", "i")', f'[aria-label*="{clean_name}" i]']:
+        for pat in match_patterns:
+            import re
+            escaped_pat = re.escape(pat)
             try:
-                item = page.locator(name_sel).first
-                if await item.is_visible(timeout=800):
-                    await item.click()
-                    _log(f"  ✓ Clicked visible row for '{clean_name}'.", emit)
-                    friend_selected = True
-                    selected_count += 1
-                    await asyncio.sleep(0.5)
+                candidates = page.locator(f':text-matches("{escaped_pat}", "i")')
+                count = await candidates.count()
+                for i in range(count):
+                    loc = candidates.nth(i)
+                    if await loc.is_visible(timeout=400):
+                        txt = (await loc.text_content() or "").strip().lower()
+                        if any(k in txt for k in FORBIDDEN_RECIPIENT_KEYWORDS):
+                            continue
+                        box = await loc.bounding_box()
+                        if box and box["x"] > 340:
+                            await loc.click()
+                            _log(f"  ✓ Clicked visible row for '{friend}'.", emit)
+                            friend_selected = True
+                            selected_count += 1
+                            await asyncio.sleep(0.5)
+                            break
+                if friend_selected:
                     break
             except Exception:
                 pass
@@ -723,9 +783,16 @@ async def send_streaks_direct_selection_flow(
         search_box = None
         for sel in search_selectors:
             try:
-                box = page.locator(sel).first
-                if await box.is_visible(timeout=800):
-                    search_box = box
+                boxes = page.locator(sel)
+                cnt = await boxes.count()
+                for i in range(cnt):
+                    b = boxes.nth(i)
+                    if await b.is_visible(timeout=300):
+                        bbox = await b.bounding_box()
+                        if bbox and bbox["x"] > 340:  # In main modal area
+                            search_box = b
+                            break
+                if search_box:
                     break
             except Exception:
                 pass
@@ -734,41 +801,53 @@ async def send_streaks_direct_selection_flow(
             try:
                 await search_box.click()
                 await search_box.fill("")
-                await page.keyboard.type(clean_name, delay=50)
+                await page.keyboard.type(query_term, delay=60)
                 await asyncio.sleep(1.0)
 
-                # Look for matching search result row or checkmark
-                result_selectors = [
-                    f'[data-testid*="user-result"]:has-text("{clean_name}")',
-                    f'div[role="button"]:has-text("{clean_name}")',
-                    f'li:has-text("{clean_name}")',
-                    f'div:has-text("{clean_name}")',
-                    '[data-testid*="user-result"]',
-                    '[role="checkbox"]',
-                ]
-                for rsel in result_selectors:
+                # Look for matching search result row containing target patterns
+                for pat in match_patterns:
+                    import re
+                    escaped_pat = re.escape(pat)
                     try:
-                        res = page.locator(rsel).first
-                        if await res.is_visible(timeout=1000):
-                            await res.click()
-                            _log(f"  ✓ Selected '{clean_name}' via search result.", emit)
-                            friend_selected = True
-                            selected_count += 1
-                            await asyncio.sleep(0.5)
+                        results = page.locator(f'div[role="row"]:has-text("{pat}"), div[role="button"]:has-text("{pat}"), li:has-text("{pat}"), div:has-text("{pat}")')
+                        rcnt = await results.count()
+                        for i in range(rcnt):
+                            res = results.nth(i)
+                            if await res.is_visible(timeout=500):
+                                txt = (await res.text_content() or "").strip().lower()
+                                if any(k in txt for k in FORBIDDEN_RECIPIENT_KEYWORDS):
+                                    continue
+                                rbox = await res.bounding_box()
+                                if rbox and rbox["x"] > 340:
+                                    # Target checkbox inside or click the row
+                                    chk = res.locator('input[type="checkbox"], [role="checkbox"]').first
+                                    if await chk.is_visible(timeout=300):
+                                        await chk.click()
+                                    else:
+                                        await res.click()
+                                    _log(f"  ✓ Selected '{friend}' via verified search result.", emit)
+                                    friend_selected = True
+                                    selected_count += 1
+                                    await asyncio.sleep(0.5)
+                                    break
+                        if friend_selected:
                             break
                     except Exception:
                         pass
 
-                # Clear the search box for the next friend
+                # Clear search input for next friend
                 await search_box.fill("")
                 await asyncio.sleep(0.3)
             except Exception as ex:
-                _log(f"  ⚠ Notice searching '{clean_name}': {ex}", emit)
+                _log(f"  ⚠ Notice searching '{friend}': {ex}", emit)
 
         if not friend_selected:
-            _log(f"  ⚠ Could not find '{clean_name}' on Send-To screen.", emit)
+            _log(f"  ⚠ Could not find verified match for '{friend}' — SKIPPING to prevent wrong delivery.", emit)
 
-    _log(f"  Finished direct selection ({selected_count}/{len(friends)} friends chosen).", emit)
+    # Post-selection safety uncheck pass
+    await uncheck_unauthorized_recipients(page, friends, emit=emit)
+
+    _log(f"  Finished direct selection ({selected_count}/{len(friends)} target friends chosen).", emit)
     return selected_count > 0
 
 
@@ -1188,53 +1267,10 @@ async def send_streaks_flow(
             except Exception:
                 pass
 
-        # 2. Recipient Selection
-        selected_ok = False
-        if selection_method in ("shortcut", "auto"):
-            for sel in ['button:has-text("✨")', '[aria-label*="shortcut" i]', '[data-testid="shortcuts-tab"]']:
-                try:
-                    btn = page.locator(sel).first
-                    if await btn.is_visible(timeout=800):
-                        await btn.click()
-                        await asyncio.sleep(1.0)
-                        for sel_btn in ['button:has-text("Select")', '[data-testid="select-all-shortcuts"]']:
-                            try:
-                                loc = page.locator(sel_btn).first
-                                if await loc.is_visible(timeout=1000):
-                                    await loc.click()
-                                    selected_ok = True
-                                    break
-                            except Exception:
-                                pass
-                        break
-                except Exception:
-                    continue
-
-        if not selected_ok:
-            # Switch to Best Friends tab if available
-            for bft in ['button:has-text("Best Friends")', '[role="tab"]:has-text("Best Friends")']:
-                try:
-                    t = page.locator(bft).first
-                    if await t.is_visible(timeout=600):
-                        await t.click()
-                        await asyncio.sleep(0.5)
-                        break
-                except Exception:
-                    pass
-            selected_ok = await send_streaks_direct_selection_flow(page, friends, step_delay=step_delay, emit=emit)
-
-        if not selected_ok:
-            for name in friends:
-                clean = name.strip().lstrip("@")
-                try:
-                    row = page.locator(f':text-matches("{clean}", "i")').first
-                    if await row.is_visible(timeout=800):
-                        txt = (await row.text_content() or "").strip()
-                        if not is_my_ai_locator(txt):
-                            await row.click()
-                            selected_ok = True
-                except Exception:
-                    pass
+        # 2. Strict Recipient Selection
+        # Always use strict selection to guarantee NO Spotlight, Stories, or unintended group chats are chosen!
+        selected_ok = await send_streaks_direct_selection_flow(page, friends, step_delay=step_delay, emit=emit)
+        await uncheck_unauthorized_recipients(page, friends, emit=emit)
 
     # ── Step 4: Open Send-To Drawer & Select Recipients ───────────────────────
     async def step3_fallback():

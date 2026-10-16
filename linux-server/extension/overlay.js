@@ -777,7 +777,10 @@ textarea {
         pauseBtn.style.display = 'inline-flex';
         pauseBtn.textContent = '⏸️ Pause';
       }
-      if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+      if (cancelBtn) {
+        cancelBtn.style.display = 'inline-flex';
+        cancelBtn.textContent = '🛑 STOP RUNNING TASK';
+      }
       if (quickCancelBtn) quickCancelBtn.style.display = 'inline-flex';
       if (macroCancelBtn) macroCancelBtn.style.display = 'block';
       if (dot) dot.className = 'status-dot busy';
@@ -806,8 +809,11 @@ textarea {
         pauseBtn.style.display = 'none';
         pauseBtn.textContent = '⏸️ Pause';
       }
-      if (cancelBtn) cancelBtn.style.display = 'none';
-      if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+      if (cancelBtn) {
+        cancelBtn.style.display = 'inline-flex';
+        cancelBtn.textContent = '🛑 Stop / Cancel Task';
+      }
+      if (quickCancelBtn) quickCancelBtn.style.display = 'inline-flex';
       if (macroCancelBtn) macroCancelBtn.style.display = 'none';
       if (dot) dot.className = 'status-dot';
       if (label) label.textContent = 'Idle (Ready)';
@@ -818,7 +824,7 @@ textarea {
       if (qbSend) { qbSend.disabled = false; qbSend.textContent = '🔥 Send Streaks'; }
       if (qbPrev) { qbPrev.disabled = false; qbPrev.textContent = '🧪 Preview'; }
       if (qbPause) { qbPause.style.display = 'none'; }
-      if (qbStop) { qbStop.style.display = 'none'; }
+      if (qbStop) { qbStop.style.display = 'inline-flex'; }
       if (qbDot) { qbDot.className = 'status-dot'; }
       if (qbText) { qbText.textContent = 'Idle'; }
     }
@@ -975,7 +981,7 @@ textarea {
         <button class="quickbar-btn quickbar-btn-warn" id="qb-btn-pause" style="display: none;" title="Pause / Resume">
           ⏸️ Pause
         </button>
-        <button class="quickbar-btn quickbar-btn-danger" id="qb-btn-stop" style="display: none;" title="Stop active task">
+        <button class="quickbar-btn quickbar-btn-danger" id="qb-btn-stop" style="display: inline-flex;" title="Stop active task">
           ⏹️ Stop
         </button>
         <button class="quickbar-btn quickbar-btn-secondary" id="qb-btn-toggle-dock" title="Toggle SnapStreak Sidebar">
@@ -1080,8 +1086,8 @@ textarea {
                 <button class="btn btn-secondary" id="btn-pause-resume" style="flex: 1; font-size: 12px; padding: 8px; font-weight: 700; display: none;" title="Pause or Resume active automation task">
                   ⏸️ Pause
                 </button>
-                <button class="btn btn-danger" id="btn-cancel-running" style="flex: 1; font-size: 12px; padding: 8px; font-weight: 700; display: none;" title="Abort in-flight streak execution immediately">
-                  ⏹️ Stop Task
+                <button class="btn btn-danger" id="btn-cancel-running" style="flex: 1; font-size: 12px; padding: 8px; font-weight: 700; display: inline-flex;" title="Abort in-flight streak execution immediately">
+                  🛑 Stop / Cancel Task
                 </button>
               </div>
             </div>
@@ -1561,6 +1567,10 @@ textarea {
         if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
           chrome.runtime.sendMessage({ type: 'CANCEL_RUNNING_COMMAND' });
         }
+      } catch (e) {}
+      try {
+        fetch('http://127.0.0.1:8080/api/task/stop', { method: 'POST' }).catch(() => {});
+        fetch('http://127.0.0.1:8080/api/login/cancel', { method: 'POST' }).catch(() => {});
       } catch (e) {}
       setRunning(false);
     };
