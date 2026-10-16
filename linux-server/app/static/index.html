@@ -481,6 +481,9 @@
     </svg>
     <span>GitHub</span>
   </a>
+  <button id="btn-git-update" class="btn btn-secondary" style="font-size:12px; padding:6px 12px; text-decoration:none; margin-left:6px; display:inline-flex; align-items:center; gap:6px; border-color:var(--accent); color:var(--accent);" onclick="doSystemUpdate()" title="Pull latest code from GitHub and restart service">
+    <span>🔄 Pull &amp; Update</span>
+  </button>
 </header>
 
 <div class="grid">
@@ -2487,6 +2490,26 @@
   // ── Register PWA Service Worker (Android Installable APK) ──
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  }
+
+  // ── System Git Auto-Update ──
+  async function doSystemUpdate() {
+    const btn = document.getElementById('btn-git-update');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳ Pulling &amp; Restarting…</span>';
+    }
+    try {
+      const res = await fetch('/api/system/update', { method: 'POST' }).then(r => r.json());
+      alert(res.message || 'System updated! Refreshing page in 3 seconds…');
+      setTimeout(() => location.reload(), 3000);
+    } catch(e) {
+      alert('Update failed: ' + e.message);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<span>🔄 Pull &amp; Update</span>';
+      }
+    }
   }
 
   // ── Initialise ──

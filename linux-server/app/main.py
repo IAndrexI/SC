@@ -53,6 +53,30 @@ try:
 except Exception:
     pass
 
+import subprocess
+import sys
+
+def _find_repo_dir() -> Path:
+    candidates = [
+        Path("/opt/sc"),
+        Path(__file__).resolve().parent.parent.parent,
+        Path(__file__).resolve().parent.parent,
+        Path("."),
+    ]
+    for c in candidates:
+        if (c / ".git").exists():
+            return c.resolve()
+    return Path("/opt/sc")
+
+def get_git_info() -> dict:
+    repo = _find_repo_dir()
+    try:
+        res = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3)
+        commit = res.stdout.strip() or "unknown"
+        return {"commit": commit, "repo": str(repo)}
+    except Exception:
+        return {"commit": "unknown", "repo": str(repo)}
+
 # ---------------------------------------------------------------------------
 # In-memory state
 # ---------------------------------------------------------------------------
@@ -182,8 +206,32 @@ async def lifespan(app: FastAPI):
             id="webcam_refresh_job",
             replace_existing=True,
         )
-        # Fetch initial webcam frame on startup in background
-        asyncio.create_task(asyncio.to_thread(_refresh_cam))
+        # 30-minute Git auto-sync updater: pulls latest code automatically
+        def _poll_git_update():
+            try:
+                repo = _find_repo_dir()
+                if not repo or not (repo / ".git").exists():
+                    return
+                subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=15)
+                local_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
+                remote_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "origin/main"], capture_output=True, text=True, timeout=5).stdout.strip()
+                if local_c and remote_c and local_c != remote_c:
+                    log.info(f"🔄 Auto-update: new commit detected on origin/main ({remote_c[:7]}). Pulling...")
+                    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "origin/main"], capture_output=True, text=True, timeout=15)
+                    try:
+                        subprocess.run(["systemctl", "restart", "sc"], timeout=5)
+                    except Exception:
+                        pass
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception as ex:
+                log.warning(f"Git auto-sync notice: {ex}")
+
+        _scheduler.add_job(
+            _poll_git_update,
+            trigger=CronTrigger(minute="*/30"),
+            id="git_autosync_job",
+            replace_existing=True,
+        )
     except Exception:
         pass
 
@@ -385,6 +433,44 @@ async def get_status(request: Request):
             "bliss_target": "127.0.0.1:5555",
             "selection_method": "auto",
         }
+
+
+@app.get("/api/system/info")
+async def system_info():
+    """Return application version, current git commit, and repository status."""
+    info = get_git_info()
+    return {
+        "version": APP_VERSION,
+        "commit": info.get("commit", "unknown"),
+        "repo": info.get("repo", "unknown"),
+    }
+
+
+@app.post("/api/system/update")
+async def system_update():
+    """Fetch latest commits from GitHub origin/main and restart the service."""
+    repo = _find_repo_dir()
+    try:
+        fetch_res = subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=20)
+        reset_res = subprocess.run(["git", "-C", str(repo), "reset", "--hard", "origin/main"], capture_output=True, text=True, timeout=20)
+        _emit(f"🔄 Git updated: {reset_res.stdout.strip()}")
+
+        async def _restart_service():
+            await asyncio.sleep(1.0)
+            try:
+                subprocess.run(["systemctl", "restart", "sc"], timeout=5)
+            except Exception:
+                pass
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        asyncio.create_task(_restart_service())
+        return {
+            "ok": True,
+            "message": "Updated to latest commit from GitHub! Service is restarting...",
+            "output": reset_res.stdout.strip() or reset_res.stderr.strip(),
+        }
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
 
 
 
