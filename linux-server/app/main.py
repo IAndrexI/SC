@@ -42,8 +42,9 @@ import socket
 
 
 # ---------------------------------------------------------------------------
-# Paths
+# Version & Paths
 # ---------------------------------------------------------------------------
+APP_VERSION = "4.2.0"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -346,6 +347,7 @@ async def get_status(request: Request):
             pass
 
         return {
+            "version":         APP_VERSION,
             "logged_in":       is_logged_in,
             "login_active":    login_session.is_active(),
             "login_starting":  login_session.is_starting(),

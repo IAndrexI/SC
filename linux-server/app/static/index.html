@@ -15,7 +15,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%2300f2fe'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23080c16'>⚡</text></svg>" />
   <script>
     console.log(
-      "%c PROTUTECH SNAPSTREAK %c v2.0 %c",
+      "%c PROTUTECH SNAPSTREAK %c v4.2.0 %c",
       "background: #00f2fe; color: #080c16; font-weight: 800; padding: 4px 8px; border-radius: 4px 0 0 4px;",
       "background: #7f00ff; color: #ffffff; font-weight: 700; padding: 4px 8px; border-radius: 0 4px 4px 0;",
       ""
@@ -462,7 +462,7 @@
 <header>
   <div class="logo">⚡</div>
   <h1>SC Service Control</h1>
-  <span class="badge">v4.1</span>
+  <span id="app-version-badge" class="badge">v4.2.0</span>
   <div class="protutech-theme-bar">
     <select id="pt-palette-select" class="pt-theme-select" title="Switch Theme Palette">
       <option value="protutech-obsidian">Obsidian Neon</option>
@@ -578,7 +578,7 @@
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:18px">🧩</span>
               <span style="font-size:15px;font-weight:700;color:var(--text)">SnapStreak In-Page Browser Extension</span>
-              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.1</span>
+              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.2.0</span>
               <span id="ext-session-status-badge" class="badge" style="background:rgba(61,220,132,0.15);color:var(--green);border-color:var(--green)">Active in Web Session</span>
             </div>
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
@@ -1201,6 +1201,13 @@
       document.getElementById('txt-next').textContent = s.next_run ? s.next_run.slice(0, 16) : 'Disabled';
       document.getElementById('txt-friends').textContent = `${s.friend_count} friend${s.friend_count !== 1 ? 's' : ''}`;
       document.getElementById('btn-send').disabled = s.running;
+
+      if (s.version) {
+        const appBadge = document.getElementById('app-version-badge');
+        if (appBadge) appBadge.textContent = 'v' + s.version;
+        const extBadge = document.getElementById('ext-version-badge');
+        if (extBadge) extBadge.textContent = 'v' + s.version;
+      }
 
       // Update in-app extension HUD status
       const mockDot = document.getElementById('mock-status-dot');
