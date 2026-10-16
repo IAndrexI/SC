@@ -212,12 +212,12 @@ async def lifespan(app: FastAPI):
                 repo = _find_repo_dir()
                 if not repo or not (repo / ".git").exists():
                     return
-                subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=15)
+                subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=20)
                 local_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
-                remote_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "origin/main"], capture_output=True, text=True, timeout=5).stdout.strip()
+                remote_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
                 if local_c and remote_c and local_c != remote_c:
                     log.info(f"🔄 Auto-update: new commit detected on origin/main ({remote_c[:7]}). Pulling...")
-                    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "origin/main"], capture_output=True, text=True, timeout=15)
+                    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "FETCH_HEAD"], capture_output=True, text=True, timeout=15)
                     try:
                         subprocess.run(["systemctl", "restart", "sc"], timeout=5)
                     except Exception:
@@ -451,8 +451,8 @@ async def system_update():
     """Fetch latest commits from GitHub origin/main and restart the service."""
     repo = _find_repo_dir()
     try:
-        fetch_res = subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=20)
-        reset_res = subprocess.run(["git", "-C", str(repo), "reset", "--hard", "origin/main"], capture_output=True, text=True, timeout=20)
+        fetch_res = subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=25)
+        reset_res = subprocess.run(["git", "-C", str(repo), "reset", "--hard", "FETCH_HEAD"], capture_output=True, text=True, timeout=25)
         _emit(f"🔄 Git updated: {reset_res.stdout.strip()}")
 
         async def _restart_service():
