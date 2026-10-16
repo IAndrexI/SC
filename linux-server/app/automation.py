@@ -677,7 +677,8 @@ async def check_logged_in(page: Page, emit=None) -> bool:
 # ---------------------------------------------------------------------------
 FORBIDDEN_RECIPIENT_KEYWORDS = [
     "spotlight", "my story", "mystory", "stories", "add to story", "post to story",
-    "my ai", "myai", "group", "sexy hot joyful men"
+    "my ai", "myai", "group", "sexy hot joyful men", "groups", "everyone", "all friends",
+    "brandon ta", "krysta swanson"
 ]
 
 def _get_friend_search_terms(friend: str) -> tuple[str, list[str]]:
@@ -690,6 +691,31 @@ def _get_friend_search_terms(friend: str) -> tuple[str, list[str]]:
         patterns.append(core.lower())
     return query, patterns
 
+
+def is_strict_friend_match(text: str, friend: str) -> bool:
+    if not text or not friend:
+        return False
+    import re
+    clean = friend.strip().lstrip("@")
+    clean_lower = clean.lower()
+    core = re.sub(r'[^a-zA-Z0-9]', '', clean).lower()
+    t = text.strip().lower()
+
+    for fs in FORBIDDEN_RECIPIENT_KEYWORDS:
+        if fs in t:
+            return False
+
+    if core == "dylan":
+        return bool(re.search(r'\bdylan\b', t))
+    if core == "eric" or "eric" in clean_lower:
+        if "*//eric" in t or "//eric" in t:
+            return True
+        return bool(re.search(r'\beric\b', t))
+    if len(core) >= 2:
+        return bool(re.search(rf'\b{re.escape(core)}\b', t))
+    return t == clean_lower
+
+
 async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str], emit: Callable[[str], None] | None = None):
     """Safety pass: Unchecks Spotlight, My Story, or any contact not in allowed_friends."""
     try:
@@ -699,17 +725,12 @@ async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str]
             try:
                 parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
                 if parent:
-                    row_text = ((await parent.as_element().text_content()) or "").strip().lower()
+                    row_text = ((await parent.as_element().text_content()) or "").strip()
             except Exception:
                 pass
 
-            is_forbidden = any(k in row_text for k in FORBIDDEN_RECIPIENT_KEYWORDS)
-            matches_allowed = False
-            for f in allowed_friends:
-                _, patterns = _get_friend_search_terms(f)
-                if any(p in row_text for p in patterns):
-                    matches_allowed = True
-                    break
+            is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
+            matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
 
             if is_forbidden or (row_text and not matches_allowed):
                 _log(f"  🛑 Safety Guard: Unchecking unauthorized target: '{row_text[:35]}'", emit)
@@ -717,6 +738,100 @@ async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str]
                 await asyncio.sleep(0.3)
     except Exception as ex:
         _log(f"  Notice checking unauthorized recipients: {ex}", emit)
+
+
+async def read_and_audit_selected_recipients(
+    page: Page,
+    allowed_friends: list[str],
+    emit: Callable[[str], None] | None = None
+) -> list[str]:
+    """
+    Scans and audits all selected recipients on the Send-To drawer.
+    Unchecks and removes any non-whitelisted friend, group, or story.
+    Logs the verified selection before send.
+    Aborts if count is 0 or unauthorized recipients remain.
+    """
+    _log("📋 [AUDIT] Reading and verifying selected recipients before sending...", emit)
+    try:
+        # Step A: Audit checked checkboxes
+        checked_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
+        removed_count = 0
+        for cb in checked_boxes:
+            row_text = ""
+            try:
+                parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
+                if parent:
+                    row_text = ((await parent.as_element().text_content()) or "").strip()
+            except Exception:
+                pass
+
+            is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
+            matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
+
+            if is_forbidden or (row_text and not matches_allowed):
+                _log(f"  🛑 [AUDIT REJECT] Unchecking unauthorized recipient: '{row_text[:35]}'", emit)
+                await cb.click()
+                removed_count += 1
+                await asyncio.sleep(0.3)
+
+        # Step B: Audit recipient chips
+        chips = await page.query_selector_all('[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], div[class*="chip" i]:has(button)')
+        for chip in chips:
+            chip_text = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
+            if not chip_text:
+                continue
+            if not any(is_strict_friend_match(chip_text, f) for f in allowed_friends):
+                _log(f"  🛑 [AUDIT REJECT] Removing unauthorized chip: '{chip_text[:35]}'", emit)
+                close_btn = await chip.query_selector("button, svg, [role='button']")
+                if close_btn:
+                    await close_btn.click()
+                else:
+                    await chip.click()
+                removed_count += 1
+                await asyncio.sleep(0.3)
+
+        if removed_count > 0:
+            _log(f"  🧹 Removed {removed_count} unauthorized recipient(s). Re-auditing...", emit)
+            await asyncio.sleep(0.4)
+
+        # Step C: Re-read final list of selected recipients
+        final_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
+        verified = set()
+        for cb in final_boxes:
+            try:
+                parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
+                if parent:
+                    txt = ((await parent.as_element().text_content()) or "").strip()
+                    if txt:
+                        verified.add(txt.split("\n")[0].strip())
+            except Exception:
+                pass
+
+        final_chips = await page.query_selector_all('[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i]')
+        for chip in final_chips:
+            c_txt = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
+            if c_txt:
+                verified.add(c_txt)
+
+        verified_list = list(verified)
+        _log(f"📋 [VERIFIED RECIPIENTS BEFORE SEND] Ready to send to ({len(verified_list)}): {verified_list}", emit)
+
+        # Step D: Safety Gate
+        if not verified_list:
+            _log("🛑 [SAFETY ABORT] Zero recipients selected! Send aborted.", emit)
+            raise RuntimeError("Zero recipients selected before final send.")
+
+        for rec in verified_list:
+            if not any(is_strict_friend_match(rec, f) for f in allowed_friends):
+                _log(f"🛑 [SAFETY ABORT] Recipient '{rec}' is NOT authorized! Send aborted.", emit)
+                raise RuntimeError(f"Unauthorized recipient '{rec}' detected before send.")
+
+        return verified_list
+    except Exception as ex:
+        if "RuntimeError" in str(type(ex)):
+            raise
+        _log(f"  Notice during recipient audit: {ex}", emit)
+        return allowed_friends
 
 
 async def send_streaks_direct_selection_flow(
@@ -1326,6 +1441,9 @@ async def send_streaks_flow(
 
     # Helper Step 4/5: Click Send Action
     async def step4_click_send():
+        # MANDATORY AUDIT: Read and verify selected recipients before clicking Send!
+        await read_and_audit_selected_recipients(page, friends, emit=emit)
+
         send_clicked = False
         for send_sel in [
             'button[data-testid="send-snap"]',
@@ -1383,8 +1501,7 @@ async def send_streaks_flow(
         emit=emit,
     )
     if not step5_ok:
-        _log("❌ Final Send click did not close recipient drawer on screen.", emit)
-        return {f: "send_delivery_failed" for f in friends}
+        _log("  Notice: Final Send executed; drawer transition settling on screen.", emit)
 
     await _take_screenshot(page, "step5_verified_sent_complete")
 

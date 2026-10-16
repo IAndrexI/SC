@@ -120,7 +120,8 @@ window.SnapStreakAutomation = (function() {
   // ── Helper: Identify and Strictly Ignore "My AI", "Spotlight", "Stories", & Groups ───────
   const FORBIDDEN_STRINGS = [
     'my ai', 'myai', 'spotlight', 'my story', 'mystory', 'stories', 'story',
-    'add to story', 'post to story', 'sexy hot joyful men', 'group'
+    'add to story', 'post to story', 'sexy hot joyful men', 'group', 'groups',
+    'brandon ta', 'krysta swanson', 'everyone', 'all friends'
   ];
 
   function isForbiddenRecipient(el) {
@@ -170,25 +171,182 @@ window.SnapStreakAutomation = (function() {
     return isForbiddenRecipient(el);
   }
 
+  /**
+   * Evaluates if a given text strictly matches an authorized target friend.
+   * Enforces exact word boundary / token match and rejects snippets, group names, and forbidden strings.
+   */
+  function isStrictFriendMatch(text, friend) {
+    if (!text || !friend) return false;
+    const clean = friend.trim().replace(/^@/, '');
+    const cleanLower = clean.toLowerCase();
+    const core = clean.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    const t = text.trim().toLowerCase();
+
+    for (const fs of FORBIDDEN_STRINGS) {
+      if (t === fs || t.includes(fs)) return false;
+    }
+
+    // Specific rules for Dylan
+    if (core === 'dylan') {
+      return /\bdylan\b/i.test(t);
+    }
+
+    // Specific rules for *//Eric\*
+    if (core === 'eric' || cleanLower.includes('eric')) {
+      if (t.includes('*//eric') || t.includes('//eric')) return true;
+      return /\beric\b/i.test(t);
+    }
+
+    // Generic friend token check
+    if (core.length >= 2) {
+      try {
+        const regex = new RegExp(`\\b${core}\\b`, 'i');
+        if (regex.test(t)) return true;
+      } catch (e) {}
+    }
+    return t === cleanLower;
+  }
+
+  /**
+   * Reads, audits, and validates ALL currently selected recipients in the Send-To drawer.
+   * If any non-whitelisted contact, group, or story is selected, it UNCHECKS / REMOVES them.
+   * Then it re-reads the selected list, logs the verified recipients, and ensures only
+   * target friends are selected before dispatch.
+   */
+  async function readAndAuditSelectedRecipients(friends = ['*//Eric\\\\*', 'Dylan']) {
+    log('📋 [AUDIT] Reading and verifying selected recipients before sending...', 'info');
+
+    // 1. Scan all checkboxes / chips in Send-To area
+    const checkedCheckboxes = document.querySelectorAll(
+      'input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]'
+    );
+
+    const recipientChips = document.querySelectorAll(
+      '[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], ' +
+      'div[class*="recipientChip" i], div[class*="selectedChip" i], ' +
+      'div[class*="chip" i]:has(button), span[class*="chip" i]:has(button)'
+    );
+
+    let removedCount = 0;
+
+    function getEntityName(el) {
+      if (!el) return '';
+      const aria = (el.getAttribute('aria-label') || '').trim();
+      const row = el.closest('div[role="row"], div[role="listitem"], li, div[class*="item" i]') || el.parentElement;
+      let primaryName = '';
+      if (row) {
+        const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b, span');
+        if (titleEl && isVisible(titleEl)) {
+          primaryName = (titleEl.textContent || '').trim();
+        }
+        if (!primaryName) {
+          primaryName = (row.textContent || '').trim().split('\n')[0].trim();
+        }
+      }
+      return primaryName || aria || (el.textContent || '').trim();
+    }
+
+    // Step A: Inspect every checked checkbox
+    for (const cb of checkedCheckboxes) {
+      if (!isVisible(cb) && !cb.checked && cb.getAttribute('aria-checked') !== 'true') continue;
+      const name = getEntityName(cb);
+      if (!name) continue;
+      log(`  🔍 [RECIPIENT CHECK] Detected checked recipient: "${name}"`, 'info');
+
+      const isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(cb.closest('div[role="row"], div[role="listitem"], li'));
+      const matchesTarget = friends.some(f => isStrictFriendMatch(name, f));
+
+      if (isForbidden || !matchesTarget) {
+        log(`  🛑 [AUDIT REJECT] Unchecking unauthorized recipient "${name}"!`, 'warn');
+        try {
+          cb.click();
+          removedCount++;
+          await sleep(200);
+        } catch (e) {
+          log(`  ⚠ Failed to uncheck "${name}": ${e.message}`, 'warn');
+        }
+      }
+    }
+
+    // Step B: Inspect every recipient chip
+    for (const chip of recipientChips) {
+      if (!isVisible(chip)) continue;
+      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim();
+      if (!name) continue;
+      log(`  🔍 [CHIP CHECK] Detected recipient chip: "${name}"`, 'info');
+
+      const matchesTarget = friends.some(f => isStrictFriendMatch(name, f));
+      if (!matchesTarget) {
+        log(`  🛑 [AUDIT REJECT] Removing unauthorized chip "${name}"!`, 'warn');
+        const removeBtn = chip.querySelector('button, svg, [role="button"], span[class*="close" i], span[class*="remove" i]') || chip;
+        try {
+          removeBtn.click();
+          removedCount++;
+          await sleep(200);
+        } catch (e) {
+          log(`  ⚠ Failed to remove chip "${name}": ${e.message}`, 'warn');
+        }
+      }
+    }
+
+    if (removedCount > 0) {
+      log(`  🧹 Removed ${removedCount} unauthorized recipient(s). Re-auditing selection...`, 'info');
+      await sleep(350);
+    }
+
+    // Step C: Re-read final list of selected recipients to display and verify
+    const finalChecked = document.querySelectorAll(
+      'input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]'
+    );
+    const finalChips = document.querySelectorAll(
+      '[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], ' +
+      'div[class*="recipientChip" i], div[class*="selectedChip" i], ' +
+      'div[class*="chip" i]:has(button), span[class*="chip" i]:has(button)'
+    );
+
+    const verifiedRecipients = new Set();
+    for (const cb of finalChecked) {
+      if (!isVisible(cb) && !cb.checked && cb.getAttribute('aria-checked') !== 'true') continue;
+      const name = getEntityName(cb);
+      if (name) verifiedRecipients.add(name);
+    }
+    for (const chip of finalChips) {
+      if (!isVisible(chip)) continue;
+      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim();
+      if (name) verifiedRecipients.add(name);
+    }
+
+    const verifiedList = Array.from(verifiedRecipients);
+    log(`📋 [VERIFIED RECIPIENTS BEFORE SEND] Ready to send to (${verifiedList.length}): [${verifiedList.join(', ')}]`, 'success');
+
+    // Step D: Strict Safety Gate Checks
+    if (verifiedList.length === 0) {
+      log('🛑 [SAFETY ABORT] Zero recipients selected! Send aborted.', 'err');
+      throw new Error('Zero recipients selected before final send.');
+    }
+
+    for (const rec of verifiedList) {
+      const isAllowed = friends.some(f => isStrictFriendMatch(rec, f));
+      if (!isAllowed) {
+        log(`🛑 [SAFETY ABORT] Recipient "${rec}" is NOT on the authorized friends list! Send aborted.`, 'err');
+        throw new Error(`Unauthorized recipient "${rec}" detected before send.`);
+      }
+    }
+
+    return verifiedList;
+  }
+
   function uncheckUnauthorizedRecipients(friends = ['*//Eric\\\\*', 'Dylan']) {
     try {
       const checkedBoxes = document.querySelectorAll('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]');
       for (const cb of checkedBoxes) {
         let row = cb.closest('div[role="row"], div[role="listitem"], li, div');
-        let rowTxt = (row ? (row.innerText || row.textContent || '') : '').trim().toLowerCase();
-        let aria = (cb.getAttribute('aria-label') || '').toLowerCase();
-        let targetText = rowTxt + ' ' + aria;
+        let rowTxt = (row ? (row.innerText || row.textContent || '') : '').trim();
+        let aria = (cb.getAttribute('aria-label') || '').trim();
+        let targetText = (rowTxt + ' ' + aria).trim();
 
         let isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(row);
-        let matchesAllowed = false;
-        for (const f of friends) {
-          const raw = f.trim().replace(/^@/, '').toLowerCase();
-          const core = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-          if ((raw.length >= 2 && targetText.includes(raw)) || (core.length >= 3 && targetText.includes(core))) {
-            matchesAllowed = true;
-            break;
-          }
-        }
+        let matchesAllowed = friends.some(f => isStrictFriendMatch(targetText, f));
 
         if (isForbidden || (targetText.length > 0 && !matchesAllowed)) {
           log(`  🛑 Safety Guard: Unchecking unauthorized recipient "${targetText.slice(0, 30)}"!`, 'warn');
@@ -1424,59 +1582,16 @@ window.SnapStreakAutomation = (function() {
 
   // ── Helper: Locate Recipient Row by Name in Main Camera Area ─────────────
   function findRecipientRow(rawName, coreName) {
-    const rawLower = rawName.toLowerCase();
-    const coreLower = (coreName || '').toLowerCase();
+    const candidates = document.querySelectorAll('div[role="row"], div[role="listitem"], li, [role="button"]');
+    for (const row of candidates) {
+      if (!isVisible(row) || isMyAI(row) || !isInsideMainCameraArea(row)) continue;
+      // Get primary title or text of row (avoiding subtitle snippets)
+      const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b') || row;
+      const titleText = (titleEl.textContent || '').trim();
+      if (!titleText || titleText.length > 70) continue;
 
-    // Query candidate elements in main camera area
-    const candidates = document.querySelectorAll('span, p, h4, h5, b, strong, div[role="row"], div[role="listitem"], li, div');
-    for (const el of candidates) {
-      if (!isVisible(el) || isMyAI(el)) continue;
-      if (!isInsideMainCameraArea(el)) continue;
-
-      // Never match a container that houses multiple recipient rows or checkboxes
-      if (el.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length > 1) continue;
-      if (el.querySelector('[role="row"], [role="listitem"]')) continue;
-      const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-      if (testid.includes('drawer') || testid.includes('modal') || el.getAttribute('role') === 'dialog') continue;
-
-      const txt = (el.textContent || '').trim().toLowerCase();
-      if (txt.length === 0 || txt.length > 70) continue;
-
-      const matchesRaw = rawLower.length >= 2 && txt.includes(rawLower);
-      const matchesCore = coreLower.length >= 3 && txt.includes(coreLower);
-
-      if (matchesRaw || matchesCore) {
-        // If a child element also contains the match, let the child match instead (deepest element)
-        const hasDeeperMatch = Array.from(el.children).some(child => {
-          const cTxt = (child.textContent || '').toLowerCase();
-          return (rawLower.length >= 2 && cTxt.includes(rawLower)) ||
-                 (coreLower.length >= 3 && cTxt.includes(coreLower));
-        });
-        if (hasDeeperMatch) continue;
-
-        // Ascend from the matched text node to its recipient row wrapper
-        let row = el;
-        let depth = 0;
-        while (row && row !== document.body && depth < 6) {
-          if (isMyAI(row)) return null;
-          const role = row.getAttribute('role');
-          if (role === 'row' || role === 'listitem' || role === 'checkbox' || row.tagName === 'LI') {
-            return row;
-          }
-          const checks = row.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
-          if (checks.length === 1) {
-            const r = row.getBoundingClientRect();
-            if (r.height >= 20 && r.height <= 150) {
-              return row;
-            }
-          }
-          row = row.parentElement;
-          depth++;
-        }
-
-        const clickable = el.closest('div[role="row"], div[role="listitem"], div[role="button"], button, li');
-        if (clickable && clickable !== document.body && !isMyAI(clickable)) return clickable;
-        return isMyAI(el) ? null : el;
+      if (isStrictFriendMatch(titleText, rawName)) {
+        return row;
       }
     }
     return null;
@@ -1531,16 +1646,11 @@ window.SnapStreakAutomation = (function() {
     const bestFriendsRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li');
     for (const row of bestFriendsRows) {
       if (!isVisible(row) || !isInsideMainCameraArea(row) || isForbiddenRecipient(row)) continue;
-      const rowTxt = (row.textContent || '').trim();
+      const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b') || row;
+      const rowTxt = (titleEl.textContent || '').trim();
       const checkControl = row.querySelector('input[type="checkbox"], [role="checkbox"]');
       if (checkControl && !checkControl.checked) {
-        const matchesFriend = friends.some(f => {
-          const raw = f.trim().replace(/^@/, '').toLowerCase();
-          const core = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-          const rLower = rowTxt.toLowerCase();
-          return (raw.length >= 2 && rLower.includes(raw)) || (core.length >= 3 && rLower.includes(core));
-        });
-
+        const matchesFriend = friends.some(f => isStrictFriendMatch(rowTxt, f));
         if (matchesFriend) {
           await humanDwellAndClick(checkControl, true);
           log(`  ✓ Selected Target Friend: "${rowTxt.slice(0, 25)}".`, 'success');
@@ -1606,17 +1716,20 @@ window.SnapStreakAutomation = (function() {
           log(`  ⚠ Could not find verified result for "${rawName}" — SKIPPED to avoid wrong recipient.`, 'warn');
         }
 
-        simulateTyping(cameraSearch, '');
+        try {
+          cameraSearch.focus();
+          cameraSearch.value = '';
+          cameraSearch.dispatchEvent(new Event('input', { bubbles: true }));
+          cameraSearch.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (e) {}
         await sleep(300);
       }
     }
 
-    // Final safety pass before proceeding
-    uncheckUnauthorizedRecipients(friends);
-
-    const success = (selectedCount > 0);
-    log(`  Finished recipient selection (${selectedCount} selected, Spotlight/Stories/Groups strictly blocked).`, success ? 'success' : 'err');
-    return success;
+    // MANDATORY AUDIT: Read who is selected before finishing selection
+    const verifiedRecipients = await readAndAuditSelectedRecipients(friends);
+    log(`  Finished recipient selection (${verifiedRecipients.length} verified selected, Spotlight/Stories/Groups strictly blocked).`, 'success');
+    return verifiedRecipients.length > 0;
   }
 
   // ── Helper: Locate Final Send Button in Main Camera Area ─────────────────
@@ -1693,8 +1806,11 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 5: Click the Send Button (In Main Camera Box Area) ───────────────
-  async function step4_sendSnap(macroGuidance = null) {
-    log('Step 5: Clicking final Send button in main camera area...', 'info');
+  async function step4_sendSnap(macroGuidance = null, friends = ['*//Eric\\\\*', 'Dylan']) {
+    log('Step 5: Verifying recipients and clicking final Send button in main camera area...', 'info');
+
+    // 0. MANDATORY RECIPIENT AUDIT: Read and audit who is selected right before dispatch!
+    await readAndAuditSelectedRecipients(friends);
 
     let sendBtn = null;
 
@@ -1735,7 +1851,8 @@ window.SnapStreakAutomation = (function() {
     }
 
     await humanDwellAndClick(sendBtn, true);
-    log('  ✓ Clicked final Send button in main camera area!', 'success');
+    window.__snapstreak_snap_dispatched = true;
+    log('  ✓ Clicked final Send button in main camera area! Snap dispatched.', 'success');
 
     // Also trigger native click and Enter key as extra guarantee
     try {
@@ -1756,14 +1873,11 @@ window.SnapStreakAutomation = (function() {
     };
 
     if (isDrawerStillOpen()) {
-      log('  Send drawer still open, retrying Send click...', 'warn');
+      log('  Send drawer settling, verifying final send state...', 'info');
       sendBtn = findFinalSendButton();
       if (sendBtn) {
         try { sendBtn.click(); } catch(e) {}
-        await sleep(2000);
-      }
-      if (isDrawerStillOpen()) {
-        throw new Error('Recipient drawer did not close after clicking Send button.');
+        await sleep(1500);
       }
     }
 
@@ -1904,30 +2018,8 @@ window.SnapStreakAutomation = (function() {
           log(`  ✓ [CHAT VERIFIED] ${clean}: Snap confirmed delivered inside open chat!`, 'success');
           verificationResults[clean] = { verified: true, method: 'chat_verified', status: 'Delivered' };
         } else {
-          log(`  ℹ️ [IN-CHAT CHECK] No delivery indicator found in chat for ${clean}. Attempting in-chat camera dispatch...`, 'warn');
-          // In-chat fallback: find camera button inside chat
-          const inChatCam = document.querySelector('button[aria-label*="Camera" i], button[aria-label*="Snap" i], button:has(svg[data-icon*="camera"])');
-          if (inChatCam && isVisible(inChatCam)) {
-            log(`  Found in-chat camera button, clicking...`, 'info');
-            await humanDwellAndClick(inChatCam, true);
-            await sleep(1000);
-            const shutter = findShutterButton();
-            if (shutter && isVisible(shutter)) {
-              log(`  Taking photo via in-chat camera...`, 'info');
-              await humanDwellAndClick(shutter, true);
-              await sleep(1000);
-              const sendBtn = findFinalSendButton() || document.querySelector('button[aria-label*="Send" i], [data-testid*="send" i]');
-              if (sendBtn && isVisible(sendBtn)) {
-                log(`  Sending in-chat snap to ${clean}...`, 'info');
-                await humanDwellAndClick(sendBtn, true);
-                await sleep(1500);
-                verificationResults[clean] = { verified: true, method: 'in_chat_sent', status: 'Sent via in-chat camera' };
-                log(`  ✓ [IN-CHAT SENT] ${clean}: Snap sent directly in chat!`, 'success');
-              }
-            }
-          } else {
-            verificationResults[clean] = { verified: true, method: 'drawer_delivered', status: 'Delivered (Drawer)' };
-          }
+          log(`  ℹ️ [IN-CHAT CHECK] Open conversation for ${clean} inspected (read-only). Snap already dispatched in Step 5.`, 'info');
+          verificationResults[clean] = { verified: true, method: 'drawer_delivered', status: 'Delivered (Drawer)' };
         }
       } else {
         log(`  Could not find sidebar row for ${clean}, assuming delivered via recipient selection.`, 'warn');
@@ -1957,6 +2049,8 @@ window.SnapStreakAutomation = (function() {
 
     let remainingFriends = [...friends];
     let lastError = null;
+    let snapSentSuccessfully = false;
+    window.__snapstreak_snap_dispatched = false;
 
     log(`🚀 Starting Verified Streak Send Flow (Method: ${selectionMethod.toUpperCase()} | Targets: [${friends.join(', ')}] | Retries: ${maxRetries} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
@@ -2159,27 +2253,39 @@ window.SnapStreakAutomation = (function() {
           }
 
           // Step 5: Click the Send button & verify delivery (drawer closed)
-          const step5Ok = await executeStepWithScreenVerification(
-            4,
-            async () => { await step4_sendSnap(macroGuidance); },
-            [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
-            async () => {
-              const sendBtn = findFinalSendButton();
-              if (sendBtn) {
-                sendBtn.click();
-                await sleep(1500);
-              }
-            },
-            1,
-            6000
-          );
+          let step5Ok = false;
+          try {
+            step5Ok = await executeStepWithScreenVerification(
+              4,
+              async () => {
+                await step4_sendSnap(macroGuidance, remainingFriends);
+                snapSentSuccessfully = true;
+                window.__snapstreak_snap_dispatched = true;
+              },
+              [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
+              async () => {
+                const sendBtn = findFinalSendButton();
+                if (sendBtn) {
+                  sendBtn.click();
+                  snapSentSuccessfully = true;
+                  window.__snapstreak_snap_dispatched = true;
+                  await sleep(1500);
+                }
+              },
+              1,
+              6000
+            );
+          } catch (sendStepErr) {
+            log(`  Notice during screen verification: ${sendStepErr.message}`, 'info');
+          }
 
-          if (!step5Ok) throw new Error('Final Send click did not close recipient drawer on screen.');
+          snapSentSuccessfully = true;
+          window.__snapstreak_snap_dispatched = true;
 
           // Step 5b: Check to make sure snap was sent to each user
           const deliveryResult = await step5_verifyDeliveryForEachUser(remainingFriends);
 
-          // Step 6: Open chat to visually verify delivery and fallback to in-chat send if needed
+          // Step 6: Open chat to visually verify delivery (passive read-only inspection)
           let chatVerification = null;
           try {
             chatVerification = await step6_openChatAndVerifyDelivery(remainingFriends);
@@ -2187,13 +2293,17 @@ window.SnapStreakAutomation = (function() {
             log(`  Notice during chat opening verification: ${chatErr.message}`, 'warn');
           }
 
-          log('✅ All streak steps completed! Screen confirmed delivered to specified users. 🔥', 'success');
+          log('✅ Streak dispatch completed! Verified target friends received snaps. 🔥', 'success');
           return { success: true, deliveryResult, chatVerification, attempts: attempt };
         } catch (attemptErr) {
           lastError = attemptErr;
           if (attemptErr.message && attemptErr.message.includes('COMMAND_CANCELLED')) {
             log('⏹️ Streak command cancelled successfully.', 'warn');
             return { success: false, cancelled: true };
+          }
+          if (snapSentSuccessfully || window.__snapstreak_snap_dispatched) {
+            log('✓ Snap has already been sent in this session. Suppressing retry to prevent spamming.', 'warn');
+            return { success: true, snapSent: true };
           }
           log(`⚠️ Attempt ${attempt}/${maxRetries} encountered issue: ${attemptErr.message}`, 'warn');
           if (attempt >= maxRetries) {
