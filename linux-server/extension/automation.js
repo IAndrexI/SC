@@ -235,13 +235,14 @@ window.SnapStreakAutomation = (function() {
       const row = el.closest('div[role="row"], div[role="listitem"], li, div[class*="item" i]') || el.parentElement;
       let primaryName = '';
       if (row) {
-        const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b, span');
+        const titleEl = row.querySelector('[data-testid*="title" i], [class*="title" i], [class*="name" i], h4, h5, strong, b');
         if (titleEl && isVisible(titleEl)) {
           primaryName = (titleEl.textContent || '').trim();
         }
         if (!primaryName) {
           primaryName = (row.textContent || '').trim().split('\n')[0].trim();
         }
+        primaryName = primaryName.split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
       }
       return primaryName || aria || (el.textContent || '').trim();
     }
@@ -1707,20 +1708,35 @@ window.SnapStreakAutomation = (function() {
 
         const resultRow = findRecipientRow(rawName, coreName);
         if (resultRow && !isForbiddenRecipient(resultRow)) {
-          const clickable = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]') || resultRow;
-          await humanDwellAndClick(clickable, true);
-          log(`  ✓ Selected "${rawName}" from verified search results!`, 'success');
-          selectedCount++;
-          await sleep(500);
+          const check = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]');
+          if (check && (check.checked || check.getAttribute('aria-checked') === 'true')) {
+            log(`  ✓ "${rawName}" is already checked in search results.`, 'info');
+            selectedCount++;
+          } else {
+            const clickable = check || resultRow.querySelector('svg, div[class*="check" i], div[class*="circle" i]') || resultRow;
+            await humanDwellAndClick(clickable, true);
+            log(`  ✓ Selected "${rawName}" from verified search results!`, 'success');
+            selectedCount++;
+            await sleep(500);
+          }
         } else {
           log(`  ⚠ Could not find verified result for "${rawName}" — SKIPPED to avoid wrong recipient.`, 'warn');
         }
 
         try {
           cameraSearch.focus();
-          cameraSearch.value = '';
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+          if (nativeSetter) {
+            nativeSetter.call(cameraSearch, '');
+          } else {
+            cameraSearch.value = '';
+          }
           cameraSearch.dispatchEvent(new Event('input', { bubbles: true }));
           cameraSearch.dispatchEvent(new Event('change', { bubbles: true }));
+          const clearBtn = cameraSearch.parentElement?.querySelector('button[aria-label*="clear" i], button[aria-label*="close" i], svg[data-icon*="close" i]');
+          if (clearBtn && isVisible(clearBtn)) {
+            try { clearBtn.click(); } catch (e) {}
+          }
         } catch (e) {}
         await sleep(300);
       }

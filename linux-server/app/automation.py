@@ -937,7 +937,10 @@ async def send_streaks_direct_selection_flow(
                                     # Target checkbox inside or click the row
                                     chk = res.locator('input[type="checkbox"], [role="checkbox"]').first
                                     if await chk.is_visible(timeout=300):
-                                        await chk.click()
+                                        if await chk.is_checked():
+                                            _log(f"  ✓ '{friend}' is already checked in search results.", emit)
+                                        else:
+                                            await chk.click()
                                     else:
                                         await res.click()
                                     _log(f"  ✓ Selected '{friend}' via verified search result.", emit)
