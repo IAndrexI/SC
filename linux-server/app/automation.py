@@ -884,6 +884,16 @@ async def send_streaks_direct_selection_flow(
                             continue
                         box = await loc.bounding_box()
                         if box and box["x"] > 340:
+                            # Avoid clicking row if it is already checked!
+                            chk = loc.locator('input[type="checkbox"], [role="checkbox"]').first
+                            if await chk.count() > 0 and await chk.is_visible(timeout=200):
+                                is_aria_checked = await chk.get_attribute("aria-checked")
+                                is_chk_checked = await chk.is_checked() if await chk.evaluate("el => el.tagName === 'INPUT'") else False
+                                if is_aria_checked == "true" or is_chk_checked:
+                                    _log(f"  ✓ '{friend}' is already checked in visible rows.", emit)
+                                    friend_selected = True
+                                    selected_count += 1
+                                    break
                             await loc.click()
                             _log(f"  ✓ Clicked visible row for '{friend}'.", emit)
                             friend_selected = True

@@ -171,6 +171,16 @@ window.SnapStreakAutomation = (function() {
     return isForbiddenRecipient(el);
   }
 
+  function isElementChecked(el) {
+    if (!el) return false;
+    if (typeof el.checked === 'boolean') return el.checked;
+    const aria = el.getAttribute ? el.getAttribute('aria-checked') : null;
+    if (aria === 'true') return true;
+    if (aria === 'false') return false;
+    const cls = (el.className || '').toString().toLowerCase();
+    return cls.includes('checked') || cls.includes('selected');
+  }
+
   function normalizeFriendToken(str) {
     if (!str) return '';
     return str.toString().trim().replace(/^@/, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
@@ -263,7 +273,7 @@ window.SnapStreakAutomation = (function() {
 
     // Step A: Inspect every checked checkbox
     for (const cb of checkedCheckboxes) {
-      if (!isVisible(cb) && !cb.checked && cb.getAttribute('aria-checked') !== 'true') continue;
+      if (!isVisible(cb) && !isElementChecked(cb)) continue;
       const name = extractCleanEntityTitle(cb);
       if (!name) continue;
       log(`  🔍 [RECIPIENT CHECK] Detected checked recipient: "${name}"`, 'info');
@@ -276,7 +286,7 @@ window.SnapStreakAutomation = (function() {
         try {
           const row = cb.closest('div[role="row"], div[role="listitem"], li') || cb.parentElement;
           cb.click();
-          if (cb.checked || cb.getAttribute('aria-checked') === 'true') {
+          if (isElementChecked(cb)) {
             if (row) row.click();
           }
           removedCount++;
@@ -315,7 +325,7 @@ window.SnapStreakAutomation = (function() {
 
     // Step C: Re-read final list of selected recipients to display and verify
     const finalChecked = document.querySelectorAll(
-      'input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]'
+      'input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"], input[type="checkbox"], [role="checkbox"]'
     );
     const finalChips = document.querySelectorAll(
       '[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], ' +
@@ -325,7 +335,7 @@ window.SnapStreakAutomation = (function() {
 
     const verifiedRecipients = new Set();
     for (const cb of finalChecked) {
-      if (!isVisible(cb) && !cb.checked && cb.getAttribute('aria-checked') !== 'true') continue;
+      if (!isElementChecked(cb)) continue;
       const name = extractCleanEntityTitle(cb);
       if (name) verifiedRecipients.add(name);
     }
@@ -358,8 +368,9 @@ window.SnapStreakAutomation = (function() {
 
   function uncheckUnauthorizedRecipients(friends = ['*//Eric\\*', 'Dylan']) {
     try {
-      const checkedBoxes = document.querySelectorAll('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]');
+      const checkedBoxes = document.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
       for (const cb of checkedBoxes) {
+        if (!isElementChecked(cb)) continue;
         const name = extractCleanEntityTitle(cb);
         const isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(cb.closest('div[role="row"], div[role="listitem"], li'));
         const matchesAllowed = friends.some(f => isStrictFriendMatch(name, f));
@@ -368,7 +379,7 @@ window.SnapStreakAutomation = (function() {
           log(`  🛑 Safety Guard: Unchecking unauthorized recipient "${name}"!`, 'warn');
           cb.click();
           const row = cb.closest('div[role="row"], div[role="listitem"], li');
-          if ((cb.checked || cb.getAttribute('aria-checked') === 'true') && row) {
+          if (isElementChecked(cb) && row) {
             row.click();
           }
         }
@@ -1669,13 +1680,19 @@ window.SnapStreakAutomation = (function() {
       const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b') || row;
       const rowTxt = (titleEl.textContent || '').trim();
       const checkControl = row.querySelector('input[type="checkbox"], [role="checkbox"]');
-      if (checkControl && !checkControl.checked) {
+      if (checkControl && !isElementChecked(checkControl)) {
         const matchesFriend = friends.some(f => isStrictFriendMatch(rowTxt, f));
         if (matchesFriend) {
           await humanDwellAndClick(checkControl, true);
           log(`  ✓ Selected Target Friend: "${rowTxt.slice(0, 25)}".`, 'success');
           selectedCount++;
           await sleep(500);
+        }
+      } else if (checkControl && isElementChecked(checkControl)) {
+        const matchesFriend = friends.some(f => isStrictFriendMatch(rowTxt, f));
+        if (matchesFriend) {
+          log(`  ✓ Target Friend "${rowTxt.slice(0, 25)}" is already checked.`, 'info');
+          selectedCount++;
         }
       }
     }
@@ -1689,7 +1706,7 @@ window.SnapStreakAutomation = (function() {
       const existingRow = findRecipientRow(rawName, coreName);
       if (existingRow && !isForbiddenRecipient(existingRow)) {
         const check = existingRow.querySelector('input[type="checkbox"], [role="checkbox"]');
-        if (check && check.checked) {
+        if (check && isElementChecked(check)) {
           log(`  ✓ "${rawName}" is already selected.`, 'info');
           selectedCount++;
           continue;
@@ -1728,7 +1745,7 @@ window.SnapStreakAutomation = (function() {
         const resultRow = findRecipientRow(rawName, coreName);
         if (resultRow && !isForbiddenRecipient(resultRow)) {
           const check = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]');
-          if (check && (check.checked || check.getAttribute('aria-checked') === 'true')) {
+          if (check && isElementChecked(check)) {
             log(`  ✓ "${rawName}" is already checked in search results.`, 'info');
             selectedCount++;
           } else {
@@ -1773,12 +1790,18 @@ window.SnapStreakAutomation = (function() {
     const selectors = [
       'button[data-testid="send-snap"]',
       'button[data-testid="send-button"]',
-      'button[data-testid*="send" i]:not([data-testid*="send-to" i])',
+      'button[data-testid*="send" i]',
       'button[aria-label*="Send Snap" i]',
+      'button[aria-label*="Send snap" i]',
       'button[aria-label="Send" i]',
+      'button[aria-label*="Send to" i]',
       '[role="button"][data-testid="send-snap"]',
+      '[role="button"][data-testid="send-button"]',
+      '[role="button"][data-testid*="send" i]',
       '[role="button"][aria-label*="Send Snap" i]',
+      '[role="button"][aria-label*="Send snap" i]',
       '[role="button"][aria-label="Send" i]',
+      '[role="button"][aria-label*="Send to" i]',
     ];
 
     for (const sel of selectors) {
@@ -1787,7 +1810,13 @@ window.SnapStreakAutomation = (function() {
         for (const b of matches) {
           if (isVisible(b) && isInsideMainCameraArea(b) && !isMyAI(b)) {
             const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            if (!aria.includes('close') && !aria.includes('clear')) {
+            const text = (b.textContent || '').trim().toLowerCase();
+            if (!aria.includes('close') && !aria.includes('clear') && !aria.includes('cancel')) {
+              // Ensure it's not the initial preview "Send To" before drawer is open
+              const isDrawerOpen = Boolean(document.querySelector('div[role="dialog"], [data-testid*="drawer" i], input[placeholder*="to:" i], input[placeholder*="send to" i]'));
+              if ((text === 'send to' || aria === 'send to') && !isDrawerOpen) {
+                continue;
+              }
               return b;
             }
           }
@@ -1795,7 +1824,7 @@ window.SnapStreakAutomation = (function() {
       } catch (e) {}
     }
 
-    // 2. Scan all buttons in main camera area
+    // 2. Scan all buttons and clickable elements in main camera area
     const candidates = document.querySelectorAll('button, div[role="button"], a');
     for (const b of candidates) {
       if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
@@ -1809,9 +1838,9 @@ window.SnapStreakAutomation = (function() {
 
       // Match exact send button text/aria
       if (
-        text === 'send' || text.startsWith('send ') || text === 'send ▶' ||
-        aria === 'send' || aria.includes('send snap') || aria.startsWith('send to ') ||
-        testid.includes('send-snap') || testid === 'send-button'
+        text === 'send' || text.startsWith('send ') || text.startsWith('send (') || text === 'send ▶' ||
+        aria === 'send' || aria.includes('send snap') || aria.startsWith('send to') ||
+        testid.includes('send-snap') || testid === 'send-button' || testid.includes('send-to-submit') || testid.includes('send-to-send')
       ) {
         // Exclude the initial photo-preview "Send To" pill if the recipient drawer is not yet open
         const isDrawerOpen = Boolean(document.querySelector('div[role="dialog"], [data-testid*="drawer" i], input[placeholder*="to:" i], input[placeholder*="send to" i]'));
@@ -1822,7 +1851,7 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    // 3. Scan for bottom-right action button in drawer (blue dispatch button or SVG paper plane icon)
+    // 3. Scan for bottom-right action button in drawer (blue dispatch button or SVG paper plane / send icon)
     for (const b of candidates) {
       if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
       const r = b.getBoundingClientRect();
@@ -1831,7 +1860,9 @@ window.SnapStreakAutomation = (function() {
 
       // Located in lower portion of main camera / drawer area
       if (r.top > window.innerHeight * 0.45 && r.left > getSideMenuRightEdge() + 60) {
-        if (b.querySelector('svg') || b.textContent.toLowerCase().includes('send')) {
+        const svg = b.querySelector('svg');
+        const text = (b.textContent || '').toLowerCase();
+        if (svg || text.includes('send')) {
           return b;
         }
       }
@@ -1881,6 +1912,24 @@ window.SnapStreakAutomation = (function() {
     }
 
     if (!sendBtn) {
+      log('  Notice: Direct Send button element not detected, dispatching Enter key fallback to trigger send...', 'warn');
+      const drawerInputs = document.querySelectorAll('input');
+      for (const inp of drawerInputs) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp)) {
+          try {
+            inp.focus();
+            inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            inp.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            await sleep(500);
+            break;
+          } catch (e) {}
+        }
+      }
+      // Re-scan for Send button
+      sendBtn = findFinalSendButton();
+    }
+
+    if (!sendBtn) {
       log('  ❌ Could not find final Send button on screen!', 'err');
       throw new Error('Final Send button not found in camera drawer.');
     }
@@ -1892,6 +1941,10 @@ window.SnapStreakAutomation = (function() {
     // Also trigger native click and Enter key as extra guarantee
     try {
       sendBtn.click();
+    } catch (e) {}
+    try {
+      sendBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      sendBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
     } catch (e) {}
 
     await sleep(2000);
@@ -2267,15 +2320,29 @@ window.SnapStreakAutomation = (function() {
             log('⏸️ [SAMPLE PREVIEW] Visual sample ready! Paused before final Send button. Press "🚀 Send Final Snap Now" to complete, or "Cancel" to abort.', 'warn');
 
             const userApproved = await new Promise((resolve) => {
-              pendingConfirmResolver = resolve;
+              let settled = false;
+              const safeResolve = (val) => {
+                if (!settled) {
+                  settled = true;
+                  clearInterval(cancelPoll);
+                  resolve(val);
+                }
+              };
+              pendingConfirmResolver = safeResolve;
               const confirmBtn = document.getElementById('snapstreak-btn-confirm-send');
               if (confirmBtn) {
-                confirmBtn.onclick = () => { resolve(true); };
+                confirmBtn.onclick = () => { safeResolve(true); };
               }
               const cancelBtn = document.getElementById('snapstreak-btn-cancel-preview');
               if (cancelBtn) {
-                cancelBtn.onclick = () => { resolve(false); };
+                cancelBtn.onclick = () => { safeResolve(false); };
               }
+              // Poll for user cancellation while paused
+              const cancelPoll = setInterval(() => {
+                if (isCancellationRequested()) {
+                  safeResolve(false);
+                }
+              }, 250);
             });
 
             dismissManualConfirmPrompt();
