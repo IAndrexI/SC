@@ -696,24 +696,28 @@ def is_strict_friend_match(text: str, friend: str) -> bool:
     if not text or not friend:
         return False
     import re
-    clean = friend.strip().lstrip("@")
-    clean_lower = clean.lower()
-    core = re.sub(r'[^a-zA-Z0-9]', '', clean).lower()
-    t = text.strip().lower()
+    # Clean text: take only primary line before newline, separator, or snippet
+    primary_text = text.strip().split("\n")[0].split("·")[0].split("-")[0].strip()
+    clean_target = re.sub(r'[^a-zA-Z0-9]', '', friend).lower()
+    clean_text = re.sub(r'[^a-zA-Z0-9]', '', primary_text).lower()
 
     for fs in FORBIDDEN_RECIPIENT_KEYWORDS:
-        if fs in t:
+        if fs in primary_text.lower():
             return False
 
-    if core == "dylan":
-        return bool(re.search(r'\bdylan\b', t))
-    if core == "eric" or "eric" in clean_lower:
-        if "*//eric" in t or "//eric" in t:
-            return True
-        return bool(re.search(r'\beric\b', t))
-    if len(core) >= 2:
-        return bool(re.search(rf'\b{re.escape(core)}\b', t))
-    return t == clean_lower
+    if not clean_target or not clean_text:
+        return False
+
+    # Exact normalized token match
+    if clean_text == clean_target:
+        return True
+
+    if clean_target == "dylan":
+        return clean_text == "dylan"
+    if clean_target == "eric":
+        return clean_text == "eric" or "*//eric" in primary_text.lower() or "//eric" in primary_text.lower()
+
+    return clean_text == clean_target
 
 
 async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str], emit: Callable[[str], None] | None = None):
@@ -828,10 +832,10 @@ async def read_and_audit_selected_recipients(
 
         return verified_list
     except Exception as ex:
-        if "RuntimeError" in str(type(ex)):
+        if isinstance(ex, RuntimeError):
             raise
-        _log(f"  Notice during recipient audit: {ex}", emit)
-        return allowed_friends
+        _log(f"  🛑 [SAFETY ABORT] Recipient audit failed: {ex}. Send aborted.", emit)
+        raise RuntimeError(f"Recipient audit failed: {ex}")
 
 
 async def send_streaks_direct_selection_flow(
@@ -1775,8 +1779,6 @@ async def _send_to_friend(page: Page, username: str, emit) -> str:
                 f'[data-testid="user-result-{clean_name}"]',
                 f'[aria-label*="{clean_name}" i]',
                 f'[title*="{clean_name}" i]',
-                '[data-testid="search-result"]:first-child',
-                '[data-testid="user-row"]:first-child',
             ]:
                 try:
                     res = await page.wait_for_selector(sel, timeout=3_000)
@@ -1788,8 +1790,8 @@ async def _send_to_friend(page: Page, username: str, emit) -> str:
                     pass
 
             if not opened_chat:
-                await page.keyboard.press("Enter")
-                opened_chat = True
+                _log(f"  ❌ Friend '{clean_name}' not found in search results. Skipping to prevent sending to wrong recipient.", emit)
+                return "friend_not_found"
 
     await _human_delay(1200, 2000)
     await _take_screenshot(page, f"chat_{clean_name}")

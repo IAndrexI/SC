@@ -94,6 +94,13 @@
 
     if (sessionStorage.getItem('snapstreak_autoboot_done') === 'true') return;
 
+    const todayStr = (new Date()).toISOString().slice(0, 10);
+    if (localStorage.getItem('snapstreak_sent_today') === todayStr) {
+      console.log('[SnapStreak] Auto-boot check: Streaks already sent today. Skipping auto-boot routine.');
+      sessionStorage.setItem('snapstreak_autoboot_done', 'true');
+      return;
+    }
+
     console.log('[SnapStreak] Auto-boot sequence active! Scheduling streak delivery...');
     window.SnapStreakOverlay?.log('🚀 Auto-boot streak routine scheduled on boot...', 'info');
 
@@ -161,6 +168,12 @@
   }
 
   async function handleTriggerSend(customOpts = {}) {
+    if (window.__snapstreak_send_in_progress) {
+      console.log('[SnapStreak] Send sequence already in progress. Ignoring duplicate trigger request.');
+      return { success: false, inProgress: true };
+    }
+    window.__snapstreak_send_in_progress = true;
+
     try {
       // Resolve any multi-tab "Use Here" modal if present
       const modalBtns = document.querySelectorAll('button, div[role="button"], a');
@@ -209,6 +222,8 @@
       }
 
       if (res && res.success) {
+        const todayStr = (new Date()).toISOString().slice(0, 10);
+        localStorage.setItem('snapstreak_sent_today', todayStr);
         window.SnapStreakOverlay?.log('🎉 Streaks sent successfully! All recipients verified delivered.', 'success');
         try {
           chrome.runtime.sendMessage({ type: 'STREAK_SEND_SUCCESS', recipientsCount: friends.length, result: res });
@@ -245,6 +260,8 @@
       window.dispatchEvent(new CustomEvent('SNAPSTREAK_RUN_FINISHED', { detail: { success: false, error: err.message } }));
       window.postMessage({ type: 'SNAPSTREAK_RUN_FINISHED', result: { success: false, error: err.message } }, '*');
       return { success: false, error: err.message };
+    } finally {
+      window.__snapstreak_send_in_progress = false;
     }
   }
 

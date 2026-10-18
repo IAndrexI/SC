@@ -171,40 +171,72 @@ window.SnapStreakAutomation = (function() {
     return isForbiddenRecipient(el);
   }
 
+  function normalizeFriendToken(str) {
+    if (!str) return '';
+    return str.toString().trim().replace(/^@/, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  }
+
+  function extractCleanEntityTitle(el) {
+    if (!el) return '';
+    const row = el.closest('div[role="row"], div[role="listitem"], li, div[class*="item" i]') || el.parentElement;
+    let title = '';
+    if (row) {
+      // Find title element specifically, avoiding subtitle/timestamp/status elements
+      const titleEl = row.querySelector('[data-testid*="title" i], [class*="title" i], [class*="name" i], strong, b, h4, h5');
+      if (titleEl && isVisible(titleEl)) {
+        title = (titleEl.textContent || '').trim();
+      }
+      if (!title) {
+        // Exclude known subtitle/time/status elements
+        const cloned = row.cloneNode(true);
+        const toRemove = cloned.querySelectorAll('[class*="sub" i], [class*="time" i], [class*="status" i], p, small');
+        toRemove.forEach(r => r.remove());
+        title = (cloned.textContent || '').trim();
+      }
+    }
+    if (!title) {
+      title = (el.getAttribute('aria-label') || el.textContent || '').trim();
+    }
+    // Take only primary line before newline, separator (· or -)
+    title = title.split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
+    return title;
+  }
+
   /**
    * Evaluates if a given text strictly matches an authorized target friend.
-   * Enforces exact word boundary / token match and rejects snippets, group names, and forbidden strings.
+   * Strips formatting, handles escaped backslashes, and verifies exact normalized identity.
    */
   function isStrictFriendMatch(text, friend) {
     if (!text || !friend) return false;
-    const clean = friend.trim().replace(/^@/, '');
-    const cleanLower = clean.toLowerCase();
-    const core = clean.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    const t = text.trim().toLowerCase();
+    const cleanFriend = normalizeFriendToken(friend);
+    if (!cleanFriend) return false;
+
+    // Clean primary title from text
+    const cleanTitle = text.toString().trim().split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
+    const tLower = cleanTitle.toLowerCase();
 
     for (const fs of FORBIDDEN_STRINGS) {
-      if (t === fs || t.includes(fs)) return false;
+      if (tLower === fs || tLower.includes(fs)) return false;
     }
 
-    // Specific rules for Dylan
-    if (core === 'dylan') {
-      return /\bdylan\b/i.test(t);
+    const titleToken = normalizeFriendToken(cleanTitle);
+    if (!titleToken) return false;
+
+    // Exact normalized token match
+    if (titleToken === cleanFriend) return true;
+
+    // Dylan special rule
+    if (cleanFriend === 'dylan') {
+      return titleToken === 'dylan';
     }
 
-    // Specific rules for *//Eric\*
-    if (core === 'eric' || cleanLower.includes('eric')) {
-      if (t.includes('*//eric') || t.includes('//eric')) return true;
-      return /\beric\b/i.test(t);
+    // Eric special rules (handles *//Eric\*, *//Eric*, Eric)
+    if (cleanFriend === 'eric') {
+      if (titleToken === 'eric') return true;
+      if (tLower.includes('*//eric') || tLower.includes('//eric')) return true;
     }
 
-    // Generic friend token check
-    if (core.length >= 2) {
-      try {
-        const regex = new RegExp(`\\b${core}\\b`, 'i');
-        if (regex.test(t)) return true;
-      } catch (e) {}
-    }
-    return t === cleanLower;
+    return false;
   }
 
   /**
@@ -213,7 +245,7 @@ window.SnapStreakAutomation = (function() {
    * Then it re-reads the selected list, logs the verified recipients, and ensures only
    * target friends are selected before dispatch.
    */
-  async function readAndAuditSelectedRecipients(friends = ['*//Eric\\\\*', 'Dylan']) {
+  async function readAndAuditSelectedRecipients(friends = ['*//Eric\\*', 'Dylan']) {
     log('📋 [AUDIT] Reading and verifying selected recipients before sending...', 'info');
 
     // 1. Scan all checkboxes / chips in Send-To area
@@ -229,28 +261,10 @@ window.SnapStreakAutomation = (function() {
 
     let removedCount = 0;
 
-    function getEntityName(el) {
-      if (!el) return '';
-      const aria = (el.getAttribute('aria-label') || '').trim();
-      const row = el.closest('div[role="row"], div[role="listitem"], li, div[class*="item" i]') || el.parentElement;
-      let primaryName = '';
-      if (row) {
-        const titleEl = row.querySelector('[data-testid*="title" i], [class*="title" i], [class*="name" i], h4, h5, strong, b');
-        if (titleEl && isVisible(titleEl)) {
-          primaryName = (titleEl.textContent || '').trim();
-        }
-        if (!primaryName) {
-          primaryName = (row.textContent || '').trim().split('\n')[0].trim();
-        }
-        primaryName = primaryName.split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
-      }
-      return primaryName || aria || (el.textContent || '').trim();
-    }
-
     // Step A: Inspect every checked checkbox
     for (const cb of checkedCheckboxes) {
       if (!isVisible(cb) && !cb.checked && cb.getAttribute('aria-checked') !== 'true') continue;
-      const name = getEntityName(cb);
+      const name = extractCleanEntityTitle(cb);
       if (!name) continue;
       log(`  🔍 [RECIPIENT CHECK] Detected checked recipient: "${name}"`, 'info');
 
@@ -260,7 +274,11 @@ window.SnapStreakAutomation = (function() {
       if (isForbidden || !matchesTarget) {
         log(`  🛑 [AUDIT REJECT] Unchecking unauthorized recipient "${name}"!`, 'warn');
         try {
+          const row = cb.closest('div[role="row"], div[role="listitem"], li') || cb.parentElement;
           cb.click();
+          if (cb.checked || cb.getAttribute('aria-checked') === 'true') {
+            if (row) row.click();
+          }
           removedCount++;
           await sleep(200);
         } catch (e) {
@@ -272,7 +290,7 @@ window.SnapStreakAutomation = (function() {
     // Step B: Inspect every recipient chip
     for (const chip of recipientChips) {
       if (!isVisible(chip)) continue;
-      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim();
+      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim().split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
       if (!name) continue;
       log(`  🔍 [CHIP CHECK] Detected recipient chip: "${name}"`, 'info');
 
@@ -308,12 +326,12 @@ window.SnapStreakAutomation = (function() {
     const verifiedRecipients = new Set();
     for (const cb of finalChecked) {
       if (!isVisible(cb) && !cb.checked && cb.getAttribute('aria-checked') !== 'true') continue;
-      const name = getEntityName(cb);
+      const name = extractCleanEntityTitle(cb);
       if (name) verifiedRecipients.add(name);
     }
     for (const chip of finalChips) {
       if (!isVisible(chip)) continue;
-      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim();
+      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim().split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
       if (name) verifiedRecipients.add(name);
     }
 
@@ -329,29 +347,30 @@ window.SnapStreakAutomation = (function() {
     for (const rec of verifiedList) {
       const isAllowed = friends.some(f => isStrictFriendMatch(rec, f));
       if (!isAllowed) {
-        log(`🛑 [SAFETY ABORT] Recipient "${rec}" is NOT on the authorized friends list! Send aborted.`, 'err');
-        throw new Error(`Unauthorized recipient "${rec}" detected before send.`);
+        log(`🛑 [HARD SAFETY ABORT] Recipient "${rec}" is NOT on the authorized whitelist! Halting immediately to protect privacy.`, 'err');
+        window.__snapstreak_unauthorized_detected = true;
+        throw new Error(`HARD_ABORT: Unauthorized recipient "${rec}" detected before send.`);
       }
     }
 
     return verifiedList;
   }
 
-  function uncheckUnauthorizedRecipients(friends = ['*//Eric\\\\*', 'Dylan']) {
+  function uncheckUnauthorizedRecipients(friends = ['*//Eric\\*', 'Dylan']) {
     try {
       const checkedBoxes = document.querySelectorAll('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]');
       for (const cb of checkedBoxes) {
-        let row = cb.closest('div[role="row"], div[role="listitem"], li, div');
-        let rowTxt = (row ? (row.innerText || row.textContent || '') : '').trim();
-        let aria = (cb.getAttribute('aria-label') || '').trim();
-        let targetText = (rowTxt + ' ' + aria).trim();
+        const name = extractCleanEntityTitle(cb);
+        const isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(cb.closest('div[role="row"], div[role="listitem"], li'));
+        const matchesAllowed = friends.some(f => isStrictFriendMatch(name, f));
 
-        let isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(row);
-        let matchesAllowed = friends.some(f => isStrictFriendMatch(targetText, f));
-
-        if (isForbidden || (targetText.length > 0 && !matchesAllowed)) {
-          log(`  🛑 Safety Guard: Unchecking unauthorized recipient "${targetText.slice(0, 30)}"!`, 'warn');
+        if (isForbidden || (name.length > 0 && !matchesAllowed)) {
+          log(`  🛑 Safety Guard: Unchecking unauthorized recipient "${name}"!`, 'warn');
           cb.click();
+          const row = cb.closest('div[role="row"], div[role="listitem"], li');
+          if ((cb.checked || cb.getAttribute('aria-checked') === 'true') && row) {
+            row.click();
+          }
         }
       }
     } catch(e) {}
@@ -1822,7 +1841,7 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 5: Click the Send Button (In Main Camera Box Area) ───────────────
-  async function step4_sendSnap(macroGuidance = null, friends = ['*//Eric\\\\*', 'Dylan']) {
+  async function step4_sendSnap(macroGuidance = null, friends = ['*//Eric\\*', 'Dylan']) {
     log('Step 5: Verifying recipients and clicking final Send button in main camera area...', 'info');
 
     // 0. MANDATORY RECIPIENT AUDIT: Read and audit who is selected right before dispatch!
@@ -2056,7 +2075,7 @@ window.SnapStreakAutomation = (function() {
   // ── Master Send Runner (with Screen State Verification, Recovery & Retries) ──
   async function runSendStreaks(options = {}) {
     resetCancellation();
-    const friends = options.friends || ['*//Eric\\\\*', 'Dylan'];
+    const friends = options.friends || ['*//Eric\\*', 'Dylan'];
     const selectionMethod = options.selectionMethod || 'auto';
     const stepDelay = options.stepDelay || 3;
     const humanMode = options.humanMode ?? true;
@@ -2067,6 +2086,7 @@ window.SnapStreakAutomation = (function() {
     let lastError = null;
     let snapSentSuccessfully = false;
     window.__snapstreak_snap_dispatched = false;
+    window.__snapstreak_unauthorized_detected = false;
 
     log(`🚀 Starting Verified Streak Send Flow (Method: ${selectionMethod.toUpperCase()} | Targets: [${friends.join(', ')}] | Retries: ${maxRetries} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
@@ -2280,12 +2300,19 @@ window.SnapStreakAutomation = (function() {
               },
               [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
               async () => {
-                const sendBtn = findFinalSendButton();
-                if (sendBtn) {
-                  sendBtn.click();
-                  snapSentSuccessfully = true;
-                  window.__snapstreak_snap_dispatched = true;
-                  await sleep(1500);
+                if (window.__snapstreak_unauthorized_detected) {
+                  log('🛑 [SAFETY GUARD] Fallback Send click suppressed because unauthorized recipient was detected.', 'err');
+                  return;
+                }
+                const verified = await readAndAuditSelectedRecipients(remainingFriends);
+                if (verified && verified.length > 0) {
+                  const sendBtn = findFinalSendButton();
+                  if (sendBtn) {
+                    sendBtn.click();
+                    snapSentSuccessfully = true;
+                    window.__snapstreak_snap_dispatched = true;
+                    await sleep(1500);
+                  }
                 }
               },
               1,
@@ -2293,10 +2320,18 @@ window.SnapStreakAutomation = (function() {
             );
           } catch (sendStepErr) {
             log(`  Notice during screen verification: ${sendStepErr.message}`, 'info');
+            if (sendStepErr.message && sendStepErr.message.includes('HARD_ABORT')) {
+              throw sendStepErr;
+            }
           }
 
-          snapSentSuccessfully = true;
-          window.__snapstreak_snap_dispatched = true;
+          if (window.__snapstreak_unauthorized_detected) {
+            throw new Error('HARD_ABORT: Unauthorized recipient detected before send. Dispatch aborted.');
+          }
+
+          if (!snapSentSuccessfully && !window.__snapstreak_snap_dispatched) {
+            throw new Error('Send verification failed: snap was not dispatched.');
+          }
 
           // Step 5b: Check to make sure snap was sent to each user
           const deliveryResult = await step5_verifyDeliveryForEachUser(remainingFriends);

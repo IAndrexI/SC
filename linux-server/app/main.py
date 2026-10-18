@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "4.2.3"
+APP_VERSION = "4.2.4"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -112,11 +112,11 @@ async def _do_send():
     _state["running"] = True
     cfg = config.load()
     mode = cfg.get("mode", "web")
-    raw_friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
+    raw_friends = cfg.get("friends") or ["*//Eric\\*", "Dylan"]
     friends = []
     for f in raw_friends:
         # Normalize double-escaped backslashes e.g. \\\\ -> \\
-        norm = f.replace("\\\\\\\\", "\\\\")
+        norm = f.replace("\\\\\\\\", "\\\\").replace("\\\\*", "\\*")
         friends.append(norm)
     selection_method = cfg.get("selection_method", "auto")
     try:
