@@ -97,6 +97,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+// ── Tab Guards: Instantly close any Spotlight, Story, or unauthorized popups/tabs ──
+chrome.tabs.onCreated.addListener(async (tab) => {
+  try {
+    const url = (tab.url || tab.pendingUrl || '').toLowerCase();
+    if (url.includes('snapchat.com/spotlight') || url.includes('snapchat.com/stories') || url.includes('snapchat.com/story')) {
+      console.log(`[SnapStreak Background] 🛑 Blocked new Spotlight/Story tab (${tab.id}): ${url}`);
+      await chrome.tabs.remove(tab.id);
+      return;
+    }
+    // Also enforce single-tab rule if another tab opened during automation
+    const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
+    const config = { ...DEFAULT_CONFIG, ...(res?.snapstreak_config || {}) };
+    if (config.alwaysCloseOtherTabs !== false) {
+      setTimeout(enforceAlwaysCloseOtherTabs, 200);
+    }
+  } catch (e) {}
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  try {
+    const url = (changeInfo.url || tab.url || '').toLowerCase();
+    if (url.includes('snapchat.com/spotlight') || url.includes('snapchat.com/stories') || url.includes('snapchat.com/story')) {
+      console.log(`[SnapStreak Background] 🛑 Blocked navigation to Spotlight/Story on tab ${tabId}: ${url}`);
+      // Redirect back to main page or close if extra tab
+      const allTabs = await chrome.tabs.query({});
+      if (allTabs.length > 1) {
+        await chrome.tabs.remove(tabId);
+      } else {
+        await chrome.tabs.update(tabId, { url: 'https://web.snapchat.com/' });
+      }
+    }
+  } catch (e) {}
+});
+
 // Initialize alarms & initial tab cleanup on extension install or browser startup
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[SnapStreak Background] Extension installed/updated.');

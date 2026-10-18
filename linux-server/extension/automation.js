@@ -2093,7 +2093,18 @@ window.SnapStreakAutomation = (function() {
 
       if (chatRow && isStrictFriendMatch(extractCleanEntityTitle(chatRow) || chatRow.textContent, friend)) {
         log(`  Clicking conversation row for ${clean}...`, 'info');
-        await humanDwellAndClick(chatRow, true);
+        // CRITICAL: NEVER click the avatar, profile picture, or story ring as it opens the friend's spotlight/story tabs!
+        // Select the text title, conversation snippet, or text container explicitly.
+        const safeClickTarget = chatRow.querySelector('[data-testid*="title" i], [class*="title" i], [class*="name" i], span, strong, p') || chatRow;
+        
+        // Remove or ignore any child anchors pointing to spotlight or stories before clicking
+        const dangerousAnchor = chatRow.querySelector('a[href*="spotlight" i], a[href*="story" i], a[href*="stories" i]');
+        if (dangerousAnchor) {
+          dangerousAnchor.removeAttribute('href');
+          dangerousAnchor.style.pointerEvents = 'none';
+        }
+        
+        await humanDwellAndClick(safeClickTarget, true);
         await sleep(1200);
 
         // 2. Check open conversation area for snap status

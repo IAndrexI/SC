@@ -68,7 +68,35 @@
       }
     } catch (e) {}
 
-    // 2. Active dismissal watchdog for full-screen story / spotlight overlays & popups
+    // 2. Intercept window.open & link clicks to prevent opening spotlight or story tabs
+    try {
+      const origOpen = window.open;
+      window.open = function(url, target, features) {
+        const u = (url || '').toString().toLowerCase();
+        if (u.includes('spotlight') || u.includes('/stories') || u.includes('/story')) {
+          console.warn('[SnapStreak Content] 🛑 Blocked window.open attempt to spotlight/story:', url);
+          return null;
+        }
+        return origOpen.call(window, url, target, features);
+      };
+    } catch(e) {}
+
+    // Global capture listener: prevent click on any spotlight or story anchor
+    document.addEventListener('click', (e) => {
+      const anchor = e.target.closest('a');
+      if (anchor) {
+        const href = (anchor.getAttribute('href') || '').toLowerCase();
+        if (href.includes('/spotlight') || href.includes('/stories') || href.includes('/story')) {
+          console.warn('[SnapStreak Content] 🛑 Blocked click navigation to spotlight/story link:', href);
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          return false;
+        }
+      }
+    }, true);
+
+    // 3. Active dismissal watchdog for full-screen story / spotlight overlays & popups
     function autoDismissPublicMediaPopups() {
       // If currently on /spotlight URL, immediately redirect to /camera or /
       if (window.location && window.location.pathname && window.location.pathname.includes('/spotlight')) {
