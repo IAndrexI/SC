@@ -31,6 +31,86 @@
     return r.width > 0 && r.height > 0;
   }
 
+  // ── Block & Auto-Dismiss Public Stories, Spotlight, and Discover Popups ──
+  function setupSpotlightAndStoryBlocker() {
+    // 1. Inject CSS rules to hide Spotlight feed, Stories carousels, Discover sections & My AI
+    try {
+      if (!document.getElementById('snapstreak-spotlight-blocker-style')) {
+        const style = document.createElement('style');
+        style.id = 'snapstreak-spotlight-blocker-style';
+        style.textContent = `
+          /* Hide Spotlight navigation, feeds, and viewer containers */
+          a[href*="/spotlight" i],
+          button[aria-label*="Spotlight" i],
+          div[data-testid*="spotlight" i],
+          div[class*="spotlight" i]:not([id*="snapstreak"]),
+          section[aria-label*="Spotlight" i],
+          /* Hide Stories carousel and Discover feed recommendations */
+          a[href*="/stories" i],
+          div[data-testid*="story" i]:not([data-testid*="drawer" i]),
+          section[aria-label*="Stories" i],
+          div[aria-label*="Discover" i],
+          div[data-testid*="discover" i],
+          /* Hide My AI pin/chat promo from conversation feeds */
+          div[role="row"]:has([aria-label*="My AI" i]),
+          div[role="listitem"]:has([aria-label*="My AI" i]),
+          li:has([aria-label*="My AI" i]) {
+            display: none !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+            opacity: 0 !important;
+            height: 0px !important;
+            min-height: 0px !important;
+            overflow: hidden !important;
+          }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+      }
+    } catch (e) {}
+
+    // 2. Active dismissal watchdog for full-screen story / spotlight overlays & popups
+    function autoDismissPublicMediaPopups() {
+      // If currently on /spotlight URL, immediately redirect to /camera or /
+      if (window.location && window.location.pathname && window.location.pathname.includes('/spotlight')) {
+        console.warn('[SnapStreak] Detected user on /spotlight route! Redirecting back to main camera/chat...');
+        window.location.replace('https://web.snapchat.com/');
+        return;
+      }
+
+      // Check for story / spotlight viewer close buttons (top-right / top-left '✕' or 'close')
+      const closeButtons = document.querySelectorAll(
+        'button[aria-label*="Close Story" i], ' +
+        'button[aria-label*="Close Spotlight" i], ' +
+        'button[aria-label*="Exit Story" i], ' +
+        'button[aria-label*="Dismiss" i], ' +
+        '[data-testid*="story-close" i], ' +
+        '[data-testid*="spotlight-close" i]'
+      );
+      for (const btn of closeButtons) {
+        if (isVisible(btn)) {
+          console.log('[SnapStreak] Auto-dismissing public story/spotlight viewer popup...', btn);
+          btn.click();
+          return;
+        }
+      }
+
+      // If a full-screen story / spotlight player video overlay is open outside camera area
+      const storyPlayers = document.querySelectorAll('[data-testid*="story-player" i], [data-testid*="spotlight-player" i], div[class*="StoryPlayer" i]');
+      for (const player of storyPlayers) {
+        if (isVisible(player)) {
+          const closeBtn = player.querySelector('button, svg, [role="button"]');
+          if (closeBtn) {
+            console.log('[SnapStreak] Closing public story/spotlight player overlay...', closeBtn);
+            closeBtn.click();
+            return;
+          }
+        }
+      }
+    }
+
+    setInterval(autoDismissPublicMediaPopups, 1000);
+  }
+
   // Startup Auto-Refresh & Multi-Tab Error Resolver
   function setupStartupMultiTabHandler() {
     // 1. Resolve "Use Here" / "Snapchat is open in another window" modals
@@ -267,9 +347,13 @@
 
   function init() {
     if (window.location.hostname.includes('snapchat.com')) {
+      // Proactively enforce spotlight and story blocker immediately
+      try { setupSpotlightAndStoryBlocker(); } catch(e) {}
+
       const startHUD = () => {
         try { window.SnapStreakOverlay?.initUI(); } catch(e) {}
         try { setupStartupMultiTabHandler(); } catch(e) {}
+        try { setupSpotlightAndStoryBlocker(); } catch(e) {}
         try { checkAutoBootRoutine(); } catch(e) {}
         try { syncServerConfig(); } catch(e) {}
       };

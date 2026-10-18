@@ -2056,9 +2056,9 @@ window.SnapStreakAutomation = (function() {
       let chatRow = null;
       const chatRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li, a[href*="/chat/"]');
       for (const row of chatRows) {
-        if (!isVisible(row) || isMyAI(row)) continue;
-        const text = (row.textContent || '').trim().toLowerCase();
-        if (text.includes(cleanLower) || (core.length >= 3 && text.includes(core))) {
+        if (!isVisible(row) || isForbiddenRecipient(row) || isMyAI(row)) continue;
+        const text = extractCleanEntityTitle(row) || (row.textContent || '').trim();
+        if (isStrictFriendMatch(text, friend)) {
           chatRow = row;
           break;
         }
@@ -2081,9 +2081,9 @@ window.SnapStreakAutomation = (function() {
           await sleep(600);
           const searchedRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li, a[href*="/chat/"]');
           for (const row of searchedRows) {
-            if (!isVisible(row) || isMyAI(row)) continue;
-            const text = (row.textContent || '').trim().toLowerCase();
-            if (text.includes(cleanLower) || (core.length >= 3 && text.includes(core))) {
+            if (!isVisible(row) || isForbiddenRecipient(row) || isMyAI(row)) continue;
+            const text = extractCleanEntityTitle(row) || (row.textContent || '').trim();
+            if (isStrictFriendMatch(text, friend)) {
               chatRow = row;
               break;
             }
@@ -2091,7 +2091,7 @@ window.SnapStreakAutomation = (function() {
         }
       }
 
-      if (chatRow) {
+      if (chatRow && isStrictFriendMatch(extractCleanEntityTitle(chatRow) || chatRow.textContent, friend)) {
         log(`  Clicking conversation row for ${clean}...`, 'info');
         await humanDwellAndClick(chatRow, true);
         await sleep(1200);
