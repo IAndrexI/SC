@@ -723,23 +723,37 @@ def is_strict_friend_match(text: str, friend: str) -> bool:
 async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str], emit: Callable[[str], None] | None = None):
     """Safety pass: Unchecks Spotlight, My Story, or any contact not in allowed_friends."""
     try:
+        # Only query checkboxes inside the main camera / send-to area (x > 340, excluding extension HUD)
         checked_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
         for cb in checked_boxes:
-            row_text = ""
             try:
+                # Check bounding box to ensure it's in the Send-To drawer
+                box = await cb.bounding_box()
+                if not box or box["x"] <= 340 or box["x"] > 1050 or box["width"] == 0:
+                    continue
+
+                # Ensure it's not part of the extension HUD
+                is_in_hud = await cb.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
+                if is_in_hud:
+                    continue
+
                 parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
+                row_text = ""
                 if parent:
                     row_text = ((await parent.as_element().text_content()) or "").strip()
+
+                is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
+                matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
+
+                if is_forbidden or (row_text and not matches_allowed):
+                    _log(f"  🛑 Safety Guard: Unchecking unauthorized target: '{row_text[:35]}'", emit)
+                    try:
+                        await cb.evaluate("el => { el.checked = false; el.setAttribute('aria-checked', 'false'); el.dispatchEvent(new Event('change', { bubbles: true })); el.click(); }")
+                    except Exception:
+                        await cb.click(timeout=1500)
+                    await asyncio.sleep(0.3)
             except Exception:
                 pass
-
-            is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
-            matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
-
-            if is_forbidden or (row_text and not matches_allowed):
-                _log(f"  🛑 Safety Guard: Unchecking unauthorized target: '{row_text[:35]}'", emit)
-                await cb.click()
-                await asyncio.sleep(0.3)
     except Exception as ex:
         _log(f"  Notice checking unauthorized recipients: {ex}", emit)
 
@@ -757,42 +771,63 @@ async def read_and_audit_selected_recipients(
     """
     _log("📋 [AUDIT] Reading and verifying selected recipients before sending...", emit)
     try:
-        # Step A: Audit checked checkboxes
+        # Step A: Audit checked checkboxes strictly inside the send drawer
         checked_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
         removed_count = 0
         for cb in checked_boxes:
-            row_text = ""
             try:
+                box = await cb.bounding_box()
+                if not box or box["x"] <= 340 or box["x"] > 1050 or box["width"] == 0:
+                    continue
+
+                is_in_hud = await cb.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
+                if is_in_hud:
+                    continue
+
                 parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
+                row_text = ""
                 if parent:
                     row_text = ((await parent.as_element().text_content()) or "").strip()
+
+                is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
+                matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
+
+                if is_forbidden or (row_text and not matches_allowed):
+                    _log(f"  🛑 [AUDIT REJECT] Unchecking unauthorized recipient: '{row_text[:35]}'", emit)
+                    try:
+                        await cb.evaluate("el => { el.checked = false; el.setAttribute('aria-checked', 'false'); el.dispatchEvent(new Event('change', { bubbles: true })); el.click(); }")
+                    except Exception:
+                        await cb.click(timeout=1500)
+                    removed_count += 1
+                    await asyncio.sleep(0.3)
             except Exception:
                 pass
 
-            is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
-            matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
-
-            if is_forbidden or (row_text and not matches_allowed):
-                _log(f"  🛑 [AUDIT REJECT] Unchecking unauthorized recipient: '{row_text[:35]}'", emit)
-                await cb.click()
-                removed_count += 1
-                await asyncio.sleep(0.3)
-
-        # Step B: Audit recipient chips
+        # Step B: Audit recipient chips strictly inside the send drawer
         chips = await page.query_selector_all('[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], div[class*="chip" i]:has(button)')
         for chip in chips:
-            chip_text = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
-            if not chip_text:
-                continue
-            if not any(is_strict_friend_match(chip_text, f) for f in allowed_friends):
-                _log(f"  🛑 [AUDIT REJECT] Removing unauthorized chip: '{chip_text[:35]}'", emit)
-                close_btn = await chip.query_selector("button, svg, [role='button']")
-                if close_btn:
-                    await close_btn.click()
-                else:
-                    await chip.click()
-                removed_count += 1
-                await asyncio.sleep(0.3)
+            try:
+                box = await chip.bounding_box()
+                if not box or box["x"] <= 340 or box["x"] > 1050:
+                    continue
+                is_in_hud = await chip.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
+                if is_in_hud:
+                    continue
+
+                chip_text = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
+                if not chip_text:
+                    continue
+                if not any(is_strict_friend_match(chip_text, f) for f in allowed_friends):
+                    _log(f"  🛑 [AUDIT REJECT] Removing unauthorized chip: '{chip_text[:35]}'", emit)
+                    close_btn = await chip.query_selector("button, svg, [role='button']")
+                    if close_btn:
+                        await close_btn.click(timeout=1500)
+                    else:
+                        await chip.click(timeout=1500)
+                    removed_count += 1
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
 
         if removed_count > 0:
             _log(f"  🧹 Removed {removed_count} unauthorized recipient(s). Re-auditing...", emit)
@@ -803,19 +838,36 @@ async def read_and_audit_selected_recipients(
         verified = set()
         for cb in final_boxes:
             try:
+                box = await cb.bounding_box()
+                if not box or box["x"] <= 340 or box["x"] > 1050 or box["width"] == 0:
+                    continue
+                is_in_hud = await cb.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
+                if is_in_hud:
+                    continue
                 parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
                 if parent:
                     txt = ((await parent.as_element().text_content()) or "").strip()
                     if txt:
-                        verified.add(txt.split("\n")[0].strip())
+                        clean_line = txt.split("\n")[0].split("·")[0].strip()
+                        if any(is_strict_friend_match(clean_line, f) for f in allowed_friends):
+                            verified.add(clean_line)
             except Exception:
                 pass
 
         final_chips = await page.query_selector_all('[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i]')
         for chip in final_chips:
-            c_txt = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
-            if c_txt:
-                verified.add(c_txt)
+            try:
+                box = await chip.bounding_box()
+                if not box or box["x"] <= 340 or box["x"] > 1050:
+                    continue
+                is_in_hud = await chip.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
+                if is_in_hud:
+                    continue
+                c_txt = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
+                if c_txt and any(is_strict_friend_match(c_txt, f) for f in allowed_friends):
+                    verified.add(c_txt)
+            except Exception:
+                pass
 
         verified_list = list(verified)
         _log(f"📋 [VERIFIED RECIPIENTS BEFORE SEND] Ready to send to ({len(verified_list)}): {verified_list}", emit)
@@ -1472,13 +1524,30 @@ async def send_streaks_flow(
             'button:has-text("Send")',
             '[data-testid="send-snap"]',
             '[data-testid="send-button"]',
+            '[role="button"][aria-label*="Send" i]',
         ]:
             try:
-                btn = page.locator(send_sel).first
-                if await btn.is_visible(timeout=800):
-                    await btn.click()
-                    send_clicked = True
-                    _log("  ✓ Clicked final Send button via Playwright locator!", emit)
+                candidates = page.locator(send_sel)
+                count = await candidates.count()
+                for i in range(count):
+                    btn = candidates.nth(i)
+                    if await btn.is_visible(timeout=400):
+                        box = await btn.bounding_box()
+                        # Ensure inside camera drawer area
+                        if box and 340 < box["x"] < 1150 and box["y"] > 80:
+                            txt = (await btn.text_content() or "").strip().lower()
+                            aria = (await btn.get_attribute("aria-label") or "").strip().lower()
+                            # Skip if it's "send streaks now" extension button
+                            if "streaks" in txt or "macro" in txt:
+                                continue
+                            try:
+                                await btn.evaluate("el => { el.focus(); el.click(); }")
+                            except Exception:
+                                await btn.click(timeout=1500)
+                            send_clicked = True
+                            _log("  ✓ Clicked final Send button in camera drawer!", emit)
+                            break
+                if send_clicked:
                     break
             except Exception:
                 continue
@@ -1489,19 +1558,34 @@ async def send_streaks_flow(
                 btns = await page.query_selector_all('button, div[role="button"]')
                 for b in btns:
                     box = await b.bounding_box()
-                    if box and box["y"] > 450 and box["x"] > 400:
+                    if box and box["y"] > 400 and 340 < box["x"] < 1150:
                         svg = await b.query_selector("svg")
-                        if svg:
-                            await b.click()
+                        txt = (await b.text_content() or "").strip().lower()
+                        aria = (await b.get_attribute("aria-label") or "").strip().lower()
+                        if (svg or "send" in txt or "send" in aria) and "streaks" not in txt:
+                            try:
+                                await b.evaluate("el => { el.focus(); el.click(); }")
+                            except Exception:
+                                await b.click(timeout=1500)
                             send_clicked = True
-                            _log("  ✓ Clicked bottom-right SVG dispatch button!", emit)
+                            _log("  ✓ Clicked bottom-right action dispatch button!", emit)
                             break
             except Exception:
                 pass
 
-        if not send_clicked:
-            _log("  ⚠ Direct Send button locator not matched, pressing Enter key...", emit)
-            await page.keyboard.press("Enter")
+        # Also trigger Enter key on any input in the drawer as extra dispatch guarantee
+        try:
+            drawer_inputs = await page.query_selector_all('input')
+            for inp in drawer_inputs:
+                ibox = await inp.bounding_box()
+                if ibox and ibox["x"] > 340 and ibox["width"] > 0:
+                    await inp.focus()
+                    await page.keyboard.press("Enter")
+                    break
+        except Exception:
+            pass
+
+        await asyncio.sleep(1.5)
 
     # ── Step 5: Click Final Send Button & Verify Delivery ─────────────────────
     async def step4_fallback():
@@ -1548,7 +1632,10 @@ async def send_streaks_flow(
             row = page.locator(f':text-matches("{clean}", "i")').first
             if await row.is_visible(timeout=1000):
                 _log(f"  Opening chat with {clean}...", emit)
-                await row.click()
+                # Ensure we click the text / name title, NOT the avatar or story ring!
+                title_loc = row.locator('[class*="title" i], [class*="name" i], strong, b, span, p').first
+                target_to_click = title_loc if await title_loc.is_visible(timeout=300) else row
+                await target_to_click.click()
                 await asyncio.sleep(1.2)
                 await _take_screenshot(page, f"chat_verified_{clean}")
 

@@ -316,7 +316,10 @@
           selectionMethod: selectionMethod,
           stepDelay: stepDelay,
           humanMode: humanMode,
-          isTest: false
+          isTest: customOpts.isTest || false,
+          pauseBeforeFinalSend: customOpts.pauseBeforeFinalSend || false,
+          macroEvents: customOpts.macroEvents || null,
+          maxRetries: customOpts.maxRetries ?? 3
         });
       } else if (window.SnapStreakMacro) {
         const activeMacro = cfg.activeMacro || window.SnapStreakMacro.DEFAULT_MACRO_NAME || '⚡ Default Streak Macro';

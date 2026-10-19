@@ -1289,12 +1289,9 @@ async def run_streak_in_active_session(friends: list[str] | None = None, is_prev
                 return {"preview": True, "ok": True}
             _log("🎉 In-page SnapStreak Extension successfully completed streak send! Delivered. 🔥", emit)
             return {f: "ok" for f in friends}
-        elif ext_res and not ext_res.get("timeout") and not ext_res.get("fallback"):
+        elif ext_res:
             err_msg = ext_res.get("error", "Streak sequence failed")
-            _log(f"  ❌ Extension report: {err_msg}", emit)
-            if ext_res.get("success"):
-                return {f: "ok" for f in friends}
-            return {f: err_msg for f in friends}
+            _log(f"  Notice from in-page extension: {err_msg}. Falling back to direct desktop driver flow...", emit)
     except Exception as ex:
         _log(f"  Notice invoking extension: {ex}. Using direct desktop flow...", emit)
 
