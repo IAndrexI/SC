@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "4.2.8"
+APP_VERSION = "4.2.9"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -469,6 +469,31 @@ async def system_update():
             "message": "Updated to latest commit from GitHub! Service is restarting...",
             "output": reset_res.stdout.strip() or reset_res.stderr.strip(),
         }
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@app.get("/api/system/diagnostics")
+async def system_diagnostics():
+    """Perform live server, network, session, and browser health diagnostic checks."""
+    try:
+        import diagnostics
+        return diagnostics.run_system_diagnostics(login_session_module=login_session)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+class ResolveInput(BaseModel):
+    fix_type: str = "all"
+
+
+@app.post("/api/system/resolve-issues")
+async def system_resolve_issues(body: ResolveInput | None = None):
+    """Run automated or targeted self-healing resolution for any detected server issues."""
+    try:
+        import diagnostics
+        fix_type = body.fix_type if body else "all"
+        return await diagnostics.resolve_issues(fix_type=fix_type, emit=_emit)
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex))
 
