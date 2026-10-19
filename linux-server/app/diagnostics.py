@@ -179,6 +179,18 @@ def run_system_diagnostics(login_session_module=None) -> dict[str, Any]:
     except Exception:
         results["checks"]["systemd_service"] = {"status": "info", "message": "systemd check not applicable (standalone runtime)"}
 
+    # 9. Schedule Integrity & Deduplication Check
+    raw_times = cfg.get("schedule_times", ["09:00"])
+    cleaned_times = config.clean_schedule_times(raw_times)
+    has_dup_schedule = (len(raw_times) != len(cleaned_times))
+    results["checks"]["schedule_integrity"] = {
+        "status": "warning" if has_dup_schedule else "ok",
+        "message": f"Duplicate schedule times found: {raw_times} (auto-repairable)" if has_dup_schedule else f"{len(cleaned_times)} daily send time(s): {', '.join(cleaned_times)}",
+        "schedule_times": cleaned_times,
+    }
+    if has_dup_schedule:
+        issues.append(f"Duplicate schedule times found in configuration ({len(raw_times)} items, {len(cleaned_times)} unique)")
+
     results["issues_found"] = len(issues)
     results["issues"] = issues
     if len(issues) > 0:
@@ -262,6 +274,24 @@ async def resolve_issues(fix_type: str = "all", emit: Callable[[str], None] | No
                 actions_taken.append(f"Recipient whitelist confirmed healthy ({len(friends)} friends)")
         except Exception as e:
             actions_taken.append(f"Whitelist verification notice: {e}")
+
+    # Resolution D2: Repair & Deduplicate Daily Schedule
+    if fix_type in ("all", "dedup_schedule", "verify_whitelist"):
+        log_func("  ⏰ Auditing daily schedule times...")
+        try:
+            cfg = config.load()
+            raw_sched = cfg.get("schedule_times", ["09:00"])
+            clean_sched = config.clean_schedule_times(raw_sched)
+            if len(raw_sched) != len(clean_sched):
+                cfg["schedule_times"] = clean_sched
+                cfg["schedule_time"] = clean_sched[0]
+                config.save(cfg)
+                actions_taken.append(f"Pruned duplicate schedule times: {raw_sched} -> {clean_sched}")
+                log_func(f"  ✓ Pruned duplicate schedule times: {clean_sched}")
+            else:
+                actions_taken.append(f"Daily schedule confirmed healthy: {clean_sched}")
+        except Exception as e:
+            actions_taken.append(f"Schedule audit notice: {e}")
 
     # Resolution E: Restart systemd service if requested
     if fix_type == "restart_service":

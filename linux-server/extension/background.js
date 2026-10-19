@@ -304,11 +304,12 @@ async function setupAlarms() {
       const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
       const current = { ...(res.snapstreak_config || {}) };
       if (srv.schedule_times && Array.isArray(srv.schedule_times)) {
-        current.scheduleTimes = srv.schedule_times;
-        current.scheduleTime = srv.schedule_times[0] || '09:00';
+        current.scheduleTimes = Array.from(new Set(srv.schedule_times.map(t => (t || '').trim()).filter(Boolean)));
+        if (!current.scheduleTimes.length) current.scheduleTimes = ['09:00'];
+        current.scheduleTime = current.scheduleTimes[0] || '09:00';
       } else if (srv.schedule_time) {
-        current.scheduleTime = srv.schedule_time;
-        current.scheduleTimes = [srv.schedule_time];
+        current.scheduleTime = srv.schedule_time.trim();
+        current.scheduleTimes = [current.scheduleTime];
       }
       if (srv.enabled !== undefined) current.scheduleEnabled = srv.enabled;
       if (srv.friends && srv.friends.length) current.friends = srv.friends;

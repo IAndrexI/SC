@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "4.2.9"
+APP_VERSION = "4.3.0"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -156,12 +156,7 @@ def _reschedule(schedule_times: list[str] | str):
             except Exception:
                 pass
 
-    if isinstance(schedule_times, str):
-        times = [schedule_times]
-    elif isinstance(schedule_times, list):
-        times = schedule_times
-    else:
-        times = ["09:00"]
+    times = config.clean_schedule_times(schedule_times)
 
     for idx, st in enumerate(times):
         try:
@@ -334,16 +329,16 @@ async def update_config(body: ConfigUpdate):
         # Strip whitespace and @ symbols
         cfg["friends"] = [u.strip().lstrip("@") for u in body.friends if u.strip()]
     if body.schedule_times is not None:
-        cfg["schedule_times"] = [t.strip() for t in body.schedule_times if t.strip()]
+        cfg["schedule_times"] = config.clean_schedule_times(body.schedule_times)
         if cfg["schedule_times"]:
             cfg["schedule_time"] = cfg["schedule_times"][0]
         if cfg["enabled"]:
             _reschedule(cfg["schedule_times"])
     elif body.schedule_time is not None:
-        cfg["schedule_time"] = body.schedule_time.strip()
-        cfg["schedule_times"] = [body.schedule_time.strip()]
+        cfg["schedule_times"] = config.clean_schedule_times([body.schedule_time])
+        cfg["schedule_time"] = cfg["schedule_times"][0]
         if cfg["enabled"]:
-            _reschedule(cfg["schedule_time"])
+            _reschedule(cfg["schedule_times"])
     if body.enabled is not None:
         cfg["enabled"] = body.enabled
         if cfg["enabled"]:

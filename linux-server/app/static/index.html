@@ -15,7 +15,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%2300f2fe'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23080c16'>⚡</text></svg>" />
   <script>
     console.log(
-      "%c PROTUTECH SNAPSTREAK %c v4.2.9 %c",
+      "%c PROTUTECH SNAPSTREAK %c v4.3.0 %c",
       "background: #00f2fe; color: #080c16; font-weight: 800; padding: 4px 8px; border-radius: 4px 0 0 4px;",
       "background: #7f00ff; color: #ffffff; font-weight: 700; padding: 4px 8px; border-radius: 0 4px 4px 0;",
       ""
@@ -462,7 +462,7 @@
 <header>
   <div class="logo">⚡</div>
   <h1>SC Service Control</h1>
-  <span id="app-version-badge" class="badge">v4.2.9</span>
+  <span id="app-version-badge" class="badge">v4.3.0</span>
   <div class="protutech-theme-bar">
     <select id="pt-palette-select" class="pt-theme-select" title="Switch Theme Palette">
       <option value="protutech-obsidian">Obsidian Neon</option>
@@ -650,7 +650,7 @@
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:18px">🧩</span>
               <span style="font-size:15px;font-weight:700;color:var(--text)">SnapStreak In-Page Browser Extension</span>
-              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.2.9</span>
+              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.3.0</span>
               <span id="ext-session-status-badge" class="badge" style="background:rgba(61,220,132,0.15);color:var(--green);border-color:var(--green)">Active in Web Session</span>
             </div>
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
@@ -766,10 +766,10 @@
               <div style="background:#151926;border:1px solid #262c42;border-radius:10px;padding:12px">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                   <span style="font-size:12px;font-weight:700;color:#fff">⏰ Daily Send Times</span>
-                  <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;color:var(--accent);border-color:var(--accent)" onclick="addWebScheduleTime()">➕ Add Time</button>
+                  <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;color:var(--accent);border-color:var(--accent)" onclick="addWebScheduleTime('ext')">➕ Add Time</button>
                 </div>
                 <div id="ext-schedule-container" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
-                <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="saveSchedule()">💾 Save Schedule</button>
+                <button class="btn btn-primary" style="font-size:12px;padding:6px 14px" onclick="saveSchedule('ext')">💾 Save Schedule</button>
               </div>
             </div>
 
@@ -1036,13 +1036,13 @@
     <div class="toggle-row" style="margin-bottom:14px">
       <label style="margin:0">Daily Auto-Send</label>
       <label class="toggle">
-        <input type="checkbox" id="toggle-enabled" onchange="saveSchedule()">
+        <input type="checkbox" id="toggle-enabled" onchange="saveSchedule('main')">
         <div class="toggle-slider"></div>
       </label>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
       <label style="margin:0">Daily Send Times (Local Time)</label>
-      <button type="button" class="btn btn-secondary" style="padding:2px 8px;font-size:11px;font-weight:bold;color:var(--accent);border-color:var(--accent)" onclick="addWebScheduleTime()">➕ Add Time</button>
+      <button type="button" class="btn btn-secondary" style="padding:2px 8px;font-size:11px;font-weight:bold;color:var(--accent);border-color:var(--accent)" onclick="addWebScheduleTime('main')">➕ Add Time</button>
     </div>
     <div id="web-schedule-times-container" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
       <!-- Populated dynamically -->
@@ -1443,43 +1443,80 @@
 
   let _cachedScheduleTimes = ['09:00'];
 
+  function deduplicateTimes(times) {
+    if (!times) return ['09:00'];
+    const list = Array.isArray(times) ? times : [times];
+    const seen = new Set();
+    const result = [];
+    list.forEach(t => {
+      const clean = (t || '').trim();
+      if (clean && !seen.has(clean)) {
+        seen.add(clean);
+        result.push(clean);
+      }
+    });
+    return result.length > 0 ? result : ['09:00'];
+  }
+
   function renderWebScheduleTimesUI(times) {
-    _cachedScheduleTimes = (times && times.length > 0) ? times : ['09:00'];
+    _cachedScheduleTimes = deduplicateTimes(times);
     const container = document.getElementById('web-schedule-times-container');
     const extSchedContainer = document.getElementById('ext-schedule-container');
 
-    const renderInto = (el) => {
+    const renderInto = (el, sourceKey) => {
       if (!el) return;
       el.innerHTML = '';
       _cachedScheduleTimes.forEach((t, idx) => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;gap:6px;align-items:center';
         row.innerHTML = `
-          <input type="time" class="web-sched-inp" value="${t}" onchange="saveSchedule()" style="flex:1" />
-          <button type="button" class="btn btn-secondary" onclick="removeWebScheduleTime(${idx})" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red)" title="Remove this time">✕</button>
+          <input type="time" class="${sourceKey}-sched-inp" value="${t}" onchange="saveSchedule('${sourceKey}')" style="flex:1" />
+          <button type="button" class="btn btn-secondary" onclick="removeWebScheduleTime(${idx}, '${sourceKey}')" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red)" title="Remove this time">✕</button>
         `;
         el.appendChild(row);
       });
     };
 
-    renderInto(container);
-    renderInto(extSchedContainer);
+    renderInto(container, 'main');
+    renderInto(extSchedContainer, 'ext');
   }
 
-  function addWebScheduleTime() {
-    _cachedScheduleTimes.push('18:00');
+  function addWebScheduleTime(sourceKey = 'main') {
+    let currentTimes = [];
+    const container = sourceKey === 'ext'
+      ? document.getElementById('ext-schedule-container')
+      : document.getElementById('web-schedule-times-container');
+    const selector = sourceKey === 'ext' ? '.ext-sched-inp' : '.main-sched-inp';
+
+    if (container) {
+      container.querySelectorAll(selector).forEach(inp => {
+        if (inp.value) currentTimes.push(inp.value);
+      });
+    }
+    if (!currentTimes.length) currentTimes = [..._cachedScheduleTimes];
+    currentTimes = deduplicateTimes(currentTimes);
+
+    let candidate = '18:00';
+    if (currentTimes.includes(candidate)) {
+      let h = 12;
+      while (currentTimes.includes(`${String(h).padStart(2, '0')}:00`) && h < 24) h++;
+      candidate = `${String(h % 24).padStart(2, '0')}:00`;
+    }
+    currentTimes.push(candidate);
+    _cachedScheduleTimes = deduplicateTimes(currentTimes);
     renderWebScheduleTimesUI(_cachedScheduleTimes);
-    saveSchedule();
+    saveSchedule(sourceKey);
   }
 
-  function removeWebScheduleTime(idx) {
+  function removeWebScheduleTime(idx, sourceKey = 'main') {
     if (_cachedScheduleTimes.length <= 1) {
       alert('At least one daily send time is required.');
       return;
     }
     _cachedScheduleTimes.splice(idx, 1);
+    _cachedScheduleTimes = deduplicateTimes(_cachedScheduleTimes);
     renderWebScheduleTimesUI(_cachedScheduleTimes);
-    saveSchedule();
+    saveSchedule(sourceKey);
   }
 
   // ── Load config ──
@@ -1523,13 +1560,33 @@
   }
 
   // ── Save schedule ──
-  async function saveSchedule() {
-    const inputs = document.querySelectorAll('.web-sched-inp');
+  async function saveSchedule(sourceKey = 'main') {
+    const targetContainer = sourceKey === 'ext'
+      ? document.getElementById('ext-schedule-container')
+      : document.getElementById('web-schedule-times-container');
+    const selector = sourceKey === 'ext' ? '.ext-sched-inp' : '.main-sched-inp';
+
     let times = [];
-    inputs.forEach(inp => { if (inp.value) times.push(inp.value); });
-    if (!times.length) times = ['09:00'];
+    if (targetContainer) {
+      targetContainer.querySelectorAll(selector).forEach(inp => {
+        if (inp.value) times.push(inp.value);
+      });
+    }
+    if (!times.length) {
+      const anyInputs = document.querySelectorAll('.main-sched-inp');
+      if (anyInputs.length) {
+        anyInputs.forEach(inp => { if (inp.value) times.push(inp.value); });
+      } else {
+        times = _cachedScheduleTimes;
+      }
+    }
+
+    times = deduplicateTimes(times);
     _cachedScheduleTimes = times;
-    const enabled = document.getElementById('toggle-enabled').checked;
+    renderWebScheduleTimesUI(times);
+
+    const toggle = document.getElementById('toggle-enabled');
+    const enabled = toggle ? toggle.checked : true;
     await fetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
@@ -2669,6 +2726,7 @@
           stale_locks: { title: '🧹 Lock Files & Processes', desc: 'Orphan X11 / Browser lock status' },
           live_browser: { title: '🖥️ Live Browser & noVNC', desc: 'Browser worker & port 6080' },
           recipient_whitelist: { title: '👥 Streak Whitelist', desc: 'Recipient targeting integrity' },
+          schedule_integrity: { title: '⏰ Schedule Integrity', desc: 'Daily send time deduplication & sanity' },
           snap_media: { title: '📷 Snap Media Ready', desc: 'Webcam snapshot or image' },
           disk_space: { title: '💾 Filesystem Storage', desc: 'Available disk capacity' },
           systemd_service: { title: '⚡ SC Service Daemon', desc: 'systemd background unit' },

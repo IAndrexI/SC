@@ -1638,12 +1638,22 @@ textarea {
     const addTimeBtn = shadowRoot.getElementById('btn-add-schedule-time');
     if (addTimeBtn) {
       addTimeBtn.addEventListener('click', () => {
-        if (!config.scheduleTimes) config.scheduleTimes = [config.scheduleTime || '09:00'];
-        config.scheduleTimes.push('18:00');
+        let times = (config.scheduleTimes && config.scheduleTimes.length > 0)
+          ? [...config.scheduleTimes]
+          : [config.scheduleTime || '09:00'];
+        let candidate = '18:00';
+        if (times.includes(candidate)) {
+          let h = 12;
+          while (times.includes(`${String(h).padStart(2, '0')}:00`) && h < 24) h++;
+          candidate = `${String(h % 24).padStart(2, '0')}:00`;
+        }
+        times.push(candidate);
+        config.scheduleTimes = Array.from(new Set(times.filter(Boolean)));
+        config.scheduleTime = config.scheduleTimes[0] || '09:00';
         saveConfig();
         renderScheduleTimesUI();
         updateScheduleUIStatus();
-        log('➕ Added new schedule time slot (18:00). Update to desired time.', 'info');
+        log(`➕ Added new schedule time slot (${candidate}). Update to desired time.`, 'info');
       });
     }
 
@@ -1653,10 +1663,12 @@ textarea {
       config.scheduleEnabled = chkSchedule.checked;
       const inputs = shadowRoot.querySelectorAll('.inp-sched-item');
       if (inputs.length > 0) {
-        config.scheduleTimes = Array.from(inputs).map(i => i.value || '09:00');
+        config.scheduleTimes = Array.from(new Set(Array.from(inputs).map(i => (i.value || '').trim()).filter(Boolean)));
+        if (!config.scheduleTimes.length) config.scheduleTimes = ['09:00'];
         config.scheduleTime = config.scheduleTimes[0] || '09:00';
       }
       saveConfig();
+      renderScheduleTimesUI();
       updateScheduleUIStatus();
       log(`⏰ Schedule updated: ${config.scheduleEnabled ? (config.scheduleTimes || [config.scheduleTime]).join(', ') : 'Disabled'}`, 'success');
     };
