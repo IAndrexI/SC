@@ -8,7 +8,7 @@ const ALARM_PREFIX = 'snapstreak_alarm_';
 const HEARTBEAT_ALARM_NAME = 'snapstreak_heartbeat_alarm';
 
 const DEFAULT_CONFIG = {
-  friends: ['*//Eric\\\\*', 'Dylan'],
+  friends: ['*//Eric\\*', 'Dylan'],
   sendingEngine: 'direct',
   selectionMethod: 'auto',
   stepDelay: 3,
@@ -17,7 +17,7 @@ const DEFAULT_CONFIG = {
   scheduleEnabled: true,
   scheduleTime: '09:00',
   scheduleTimes: ['09:00'],
-  endTaskOnComplete: true,
+  endTaskOnComplete: false,
   alwaysCloseOtherTabs: true,
   activeMacro: '⚡ Default Streak Macro'
 };
@@ -36,6 +36,7 @@ function sleep(ms) {
 
 // Track primary Snapchat tab ID
 let primarySnapchatTabId = null;
+let isStreakRunActive = false;
 
 // Close all other tabs so that only current active run is on
 async function closeAllOtherTabs(keepTabId) {
@@ -96,6 +97,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+// ── Tab Guards: Instantly close any Spotlight, Story, or unauthorized popups/tabs ──
+chrome.tabs.onCreated.addListener(async (tab) => {
+  try {
+    const url = (tab.url || tab.pendingUrl || '').toLowerCase();
+    if (url.includes('snapchat.com/spotlight') || url.includes('snapchat.com/stories') || url.includes('snapchat.com/story')) {
+      console.log(`[SnapStreak Background] 🛑 Blocked new Spotlight/Story tab (${tab.id}): ${url}`);
+      await chrome.tabs.remove(tab.id);
+      return;
+    }
+    // Also enforce single-tab rule if another tab opened during automation
+    const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
+    const config = { ...DEFAULT_CONFIG, ...(res?.snapstreak_config || {}) };
+    if (config.alwaysCloseOtherTabs !== false) {
+      setTimeout(enforceAlwaysCloseOtherTabs, 200);
+    }
+  } catch (e) {}
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  try {
+    const url = (changeInfo.url || tab.url || '').toLowerCase();
+    if (url.includes('snapchat.com/spotlight') || url.includes('snapchat.com/stories') || url.includes('snapchat.com/story')) {
+      console.log(`[SnapStreak Background] 🛑 Blocked navigation to Spotlight/Story on tab ${tabId}: ${url}`);
+      // Redirect back to main page or close if extra tab
+      const allTabs = await chrome.tabs.query({});
+      if (allTabs.length > 1) {
+        await chrome.tabs.remove(tabId);
+      } else {
+        await chrome.tabs.update(tabId, { url: 'https://web.snapchat.com/' });
+      }
+    }
+  } catch (e) {}
+});
+
 // Initialize alarms & initial tab cleanup on extension install or browser startup
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[SnapStreak Background] Extension installed/updated.');
@@ -126,12 +161,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // async sendResponse
   } else if (message.type === 'STREAK_SEND_SUCCESS') {
+    isStreakRunActive = false;
     const todayStr = getTodayDateString();
     const timeStr = new Date().toLocaleTimeString();
     chrome.storage.local.set({
       lastStreakSentDate: todayStr,
       lastStreakSentTime: timeStr,
-      lastStreakStatus: 'success'
+      lastStreakStatus: 'success',
+      autoRecoveryFailedCount: 0
     });
     showNotification('SnapStreak Sent! 🔥', `Daily streaks were sent successfully at ${timeStr}!`);
     try {
@@ -162,9 +199,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
   } else if (message.type === 'STREAK_SEND_FAILURE') {
+    isStreakRunActive = false;
     chrome.storage.local.set({
       lastStreakStatus: 'error',
-      lastStreakError: message.error || 'Unknown error'
+      lastStreakError: message.error || 'Unknown error',
+      lastStreakAttemptTime: Date.now()
     });
     try {
       fetch('http://127.0.0.1:8080/api/extension/status', {
@@ -176,6 +215,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     showNotification('SnapStreak Alert ⚠️', `Scheduled streak send failed: ${message.error || 'Unknown error'}`);
     sendResponse({ ok: true });
   } else if (message.type === 'CANCEL_RUNNING_COMMAND' || message.type === 'STOP_TASK') {
+    isStreakRunActive = false;
     console.log('[SnapStreak Background] Broadcast stop/cancel running command.');
     chrome.tabs.query({ url: '*://web.snapchat.com/*' }, (tabs) => {
       if (tabs && tabs.length > 0) {
@@ -264,11 +304,12 @@ async function setupAlarms() {
       const res = await new Promise(r => chrome.storage.local.get(['snapstreak_config'], r));
       const current = { ...(res.snapstreak_config || {}) };
       if (srv.schedule_times && Array.isArray(srv.schedule_times)) {
-        current.scheduleTimes = srv.schedule_times;
-        current.scheduleTime = srv.schedule_times[0] || '09:00';
+        current.scheduleTimes = Array.from(new Set(srv.schedule_times.map(t => (t || '').trim()).filter(Boolean)));
+        if (!current.scheduleTimes.length) current.scheduleTimes = ['09:00'];
+        current.scheduleTime = current.scheduleTimes[0] || '09:00';
       } else if (srv.schedule_time) {
-        current.scheduleTime = srv.schedule_time;
-        current.scheduleTimes = [srv.schedule_time];
+        current.scheduleTime = srv.schedule_time.trim();
+        current.scheduleTimes = [current.scheduleTime];
       }
       if (srv.enabled !== undefined) current.scheduleEnabled = srv.enabled;
       if (srv.friends && srv.friends.length) current.friends = srv.friends;
@@ -364,13 +405,33 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Auto-recovery: If system was sleeping or browser was closed at schedule time
 async function checkMissedSchedule() {
-  chrome.storage.local.get(['snapstreak_config', 'lastStreakSentDate'], (res) => {
+  chrome.storage.local.get([
+    'snapstreak_config',
+    'lastStreakSentDate',
+    'lastStreakAttemptTime',
+    'lastStreakAttemptDate',
+    'autoRecoveryFailedCount'
+  ], (res) => {
     const config = { ...DEFAULT_CONFIG, ...(res.snapstreak_config || {}) };
     if (!config.scheduleEnabled) return;
 
     const todayStr = getTodayDateString();
     if (res.lastStreakSentDate === todayStr) {
       // Already sent today
+      return;
+    }
+
+    // Rate-limiting / anti-spam guards:
+    // 1. Never retry more than 2 failed attempts per day automatically
+    if (res.lastStreakAttemptDate === todayStr && (res.autoRecoveryFailedCount || 0) >= 2) {
+      console.log('[SnapStreak Background] 🛡️ Auto-recovery limit reached for today (2 attempts failed). Halting automatic retries to prevent looping.');
+      return;
+    }
+
+    // 2. Enforce 30-minute cooldown between recovery attempts
+    const nowTime = Date.now();
+    if (res.lastStreakAttemptTime && (nowTime - res.lastStreakAttemptTime < 30 * 60 * 1000)) {
+      console.log('[SnapStreak Background] ⏳ In 30-minute recovery cooldown window. Skipping heartbeat run.');
       return;
     }
 
@@ -386,6 +447,11 @@ async function checkMissedSchedule() {
     // If scheduled time for today has passed and streaks were not sent yet today:
     if (now.getTime() >= scheduledToday.getTime()) {
       console.log(`[SnapStreak Background] ⚠️ Missed scheduled time detected! (Target was ${scheduleTime}, now is ${now.toLocaleTimeString()}). Auto-recovering now...`);
+      chrome.storage.local.set({
+        lastStreakAttemptTime: nowTime,
+        lastStreakAttemptDate: todayStr,
+        autoRecoveryFailedCount: ((res.lastStreakAttemptDate === todayStr ? res.autoRecoveryFailedCount : 0) || 0) + 1
+      });
       triggerStreakRun(false);
     }
   });
@@ -398,12 +464,19 @@ async function checkMissedSchedule() {
 async function triggerStreakRun(force = false) {
   const todayStr = getTodayDateString();
 
+  if (isStreakRunActive && !force) {
+    console.log('[SnapStreak Background] ⚠️ Streak run already active. Suppressing duplicate trigger.');
+    return { skipped: true, reason: 'Streak run already active' };
+  }
+  isStreakRunActive = true;
+
   return new Promise((resolve, reject) => {
     chrome.storage.local.get(['snapstreak_config', 'lastStreakSentDate'], async (res) => {
       const config = { ...DEFAULT_CONFIG, ...(res.snapstreak_config || {}) };
 
       if (!force && res.lastStreakSentDate === todayStr) {
         console.log('[SnapStreak Background] Streaks already sent today. Skipping duplicate send.');
+        isStreakRunActive = false;
         resolve({ skipped: true, reason: 'Already sent today' });
         return;
       }
@@ -457,6 +530,7 @@ async function triggerStreakRun(force = false) {
         }
 
         if (!sent) {
+          isStreakRunActive = false;
           const err = new Error('Could not communicate with Snapchat tab after 4 attempts.');
           console.error('[SnapStreak Background]', err);
           showNotification('SnapStreak Error', 'Could not communicate with Snapchat Web tab.');
@@ -499,6 +573,7 @@ async function triggerStreakRun(force = false) {
                   }
                 }
                 if (!sent) {
+                  isStreakRunActive = false;
                   reject(new Error('Failed to trigger fresh tab after multiple retries.'));
                 }
               }, 7000);
@@ -507,6 +582,7 @@ async function triggerStreakRun(force = false) {
 
           chrome.tabs.onUpdated.addListener(onTabLoaded);
         } catch (err) {
+          isStreakRunActive = false;
           console.error('[SnapStreak Background] Error creating tab:', err);
           reject(err);
         }

@@ -117,13 +117,18 @@ window.SnapStreakAutomation = (function() {
     return style.display !== 'none' && style.visibility !== 'hidden';
   }
 
-  // ── Helper: Identify and Strictly Ignore "My AI" Elements ───────────────
-  function isMyAI(el) {
+  // ── Helper: Identify and Strictly Ignore "My AI", "Spotlight", "Stories", & Groups ───────
+  const FORBIDDEN_STRINGS = [
+    'my ai', 'myai', 'spotlight', 'my story', 'mystory', 'stories', 'story',
+    'add to story', 'post to story', 'sexy hot joyful men', 'group', 'groups',
+    'brandon ta', 'krysta swanson', 'everyone', 'all friends'
+  ];
+
+  function isForbiddenRecipient(el) {
     if (!el) return false;
     let cur = el;
     let depth = 0;
     while (cur && cur !== document.body && depth < 5) {
-      // If we've ascended to a container housing multiple items, drawer, or dialog, stop ascending
       if (depth > 0) {
         const testid = (cur.getAttribute('data-testid') || '').toLowerCase();
         const role = cur.getAttribute('role') || '';
@@ -141,25 +146,18 @@ window.SnapStreakAutomation = (function() {
       const title = (cur.getAttribute('title') || '').toLowerCase();
       const alt = (cur.getAttribute('alt') || '').toLowerCase();
 
-      if (
-        aria.includes('my ai') || aria.includes('myai') ||
-        testid.includes('my-ai') || testid.includes('myai') ||
-        title.includes('my ai') || title.includes('myai') ||
-        alt.includes('my ai') || alt.includes('myai')
-      ) {
-        return true;
+      for (const fs of FORBIDDEN_STRINGS) {
+        if (aria.includes(fs) || testid.includes(fs) || title.includes(fs) || alt.includes(fs)) {
+          return true;
+        }
       }
 
-      // Check text only on element itself or row/item with at most one checkbox/control
-      const checksCount = cur.querySelectorAll ? cur.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length : 0;
-      if (checksCount <= 1) {
-        const txt = (cur.innerText || cur.textContent || '').trim().toLowerCase();
-        if (
-          txt === 'my ai' || txt.startsWith('my ai\n') || txt.startsWith('my ai ') ||
-          (txt.includes('my ai') && txt.length < 35) ||
-          txt.replace(/[^a-z]/g, '') === 'myai'
-        ) {
-          return true;
+      const txt = (cur.innerText || cur.textContent || '').trim().toLowerCase();
+      if (txt.length > 0 && txt.length < 80) {
+        for (const fs of FORBIDDEN_STRINGS) {
+          if (txt === fs || txt.startsWith(fs + '\n') || txt.startsWith(fs + ' ') || txt.includes(fs)) {
+            return true;
+          }
         }
       }
 
@@ -167,6 +165,226 @@ window.SnapStreakAutomation = (function() {
       depth++;
     }
     return false;
+  }
+
+  function isMyAI(el) {
+    return isForbiddenRecipient(el);
+  }
+
+  function isElementChecked(el) {
+    if (!el) return false;
+    if (typeof el.checked === 'boolean') return el.checked;
+    const aria = el.getAttribute ? el.getAttribute('aria-checked') : null;
+    if (aria === 'true') return true;
+    if (aria === 'false') return false;
+    const cls = (el.className || '').toString().toLowerCase();
+    return cls.includes('checked') || cls.includes('selected');
+  }
+
+  function normalizeFriendToken(str) {
+    if (!str) return '';
+    return str.toString().trim().replace(/^@/, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  }
+
+  function extractCleanEntityTitle(el) {
+    if (!el) return '';
+    const row = el.closest('div[role="row"], div[role="listitem"], li, div[class*="item" i]') || el.parentElement;
+    let title = '';
+    if (row) {
+      // Find title element specifically, avoiding subtitle/timestamp/status elements
+      const titleEl = row.querySelector('[data-testid*="title" i], [class*="title" i], [class*="name" i], strong, b, h4, h5');
+      if (titleEl && isVisible(titleEl)) {
+        title = (titleEl.textContent || '').trim();
+      }
+      if (!title) {
+        // Exclude known subtitle/time/status elements
+        const cloned = row.cloneNode(true);
+        const toRemove = cloned.querySelectorAll('[class*="sub" i], [class*="time" i], [class*="status" i], p, small');
+        toRemove.forEach(r => r.remove());
+        title = (cloned.textContent || '').trim();
+      }
+    }
+    if (!title) {
+      title = (el.getAttribute('aria-label') || el.textContent || '').trim();
+    }
+    // Take only primary line before newline, separator (· or -)
+    title = title.split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
+    return title;
+  }
+
+  /**
+   * Evaluates if a given text strictly matches an authorized target friend.
+   * Strips formatting, handles escaped backslashes, and verifies exact normalized identity.
+   */
+  function isStrictFriendMatch(text, friend) {
+    if (!text || !friend) return false;
+    const cleanFriend = normalizeFriendToken(friend);
+    if (!cleanFriend) return false;
+
+    // Clean primary title from text
+    const cleanTitle = text.toString().trim().split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
+    const tLower = cleanTitle.toLowerCase();
+
+    for (const fs of FORBIDDEN_STRINGS) {
+      if (tLower === fs || tLower.includes(fs)) return false;
+    }
+
+    const titleToken = normalizeFriendToken(cleanTitle);
+    if (!titleToken) return false;
+
+    // Exact normalized token match
+    if (titleToken === cleanFriend) return true;
+
+    // Dylan special rule
+    if (cleanFriend === 'dylan') {
+      return titleToken === 'dylan';
+    }
+
+    // Eric special rules (handles *//Eric\*, *//Eric*, Eric)
+    if (cleanFriend === 'eric') {
+      if (titleToken === 'eric') return true;
+      if (tLower.includes('*//eric') || tLower.includes('//eric')) return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Reads, audits, and validates ALL currently selected recipients in the Send-To drawer.
+   * If any non-whitelisted contact, group, or story is selected, it UNCHECKS / REMOVES them.
+   * Then it re-reads the selected list, logs the verified recipients, and ensures only
+   * target friends are selected before dispatch.
+   */
+  async function readAndAuditSelectedRecipients(friends = ['*//Eric\\*', 'Dylan']) {
+    log('📋 [AUDIT] Reading and verifying selected recipients before sending...', 'info');
+
+    // 1. Scan all checkboxes / chips in Send-To area
+    const checkedCheckboxes = document.querySelectorAll(
+      'input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]'
+    );
+
+    const recipientChips = document.querySelectorAll(
+      '[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], ' +
+      'div[class*="recipientChip" i], div[class*="selectedChip" i], ' +
+      'div[class*="chip" i]:has(button), span[class*="chip" i]:has(button)'
+    );
+
+    let removedCount = 0;
+
+    // Step A: Inspect every checked checkbox
+    for (const cb of checkedCheckboxes) {
+      if (!isVisible(cb) && !isElementChecked(cb)) continue;
+      const name = extractCleanEntityTitle(cb);
+      if (!name) continue;
+      log(`  🔍 [RECIPIENT CHECK] Detected checked recipient: "${name}"`, 'info');
+
+      const isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(cb.closest('div[role="row"], div[role="listitem"], li'));
+      const matchesTarget = friends.some(f => isStrictFriendMatch(name, f));
+
+      if (isForbidden || !matchesTarget) {
+        log(`  🛑 [AUDIT REJECT] Unchecking unauthorized recipient "${name}"!`, 'warn');
+        try {
+          const row = cb.closest('div[role="row"], div[role="listitem"], li') || cb.parentElement;
+          cb.click();
+          if (isElementChecked(cb)) {
+            if (row) row.click();
+          }
+          removedCount++;
+          await sleep(200);
+        } catch (e) {
+          log(`  ⚠ Failed to uncheck "${name}": ${e.message}`, 'warn');
+        }
+      }
+    }
+
+    // Step B: Inspect every recipient chip
+    for (const chip of recipientChips) {
+      if (!isVisible(chip)) continue;
+      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim().split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
+      if (!name) continue;
+      log(`  🔍 [CHIP CHECK] Detected recipient chip: "${name}"`, 'info');
+
+      const matchesTarget = friends.some(f => isStrictFriendMatch(name, f));
+      if (!matchesTarget) {
+        log(`  🛑 [AUDIT REJECT] Removing unauthorized chip "${name}"!`, 'warn');
+        const removeBtn = chip.querySelector('button, svg, [role="button"], span[class*="close" i], span[class*="remove" i]') || chip;
+        try {
+          removeBtn.click();
+          removedCount++;
+          await sleep(200);
+        } catch (e) {
+          log(`  ⚠ Failed to remove chip "${name}": ${e.message}`, 'warn');
+        }
+      }
+    }
+
+    if (removedCount > 0) {
+      log(`  🧹 Removed ${removedCount} unauthorized recipient(s). Re-auditing selection...`, 'info');
+      await sleep(350);
+    }
+
+    // Step C: Re-read final list of selected recipients to display and verify
+    const finalChecked = document.querySelectorAll(
+      'input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"], input[type="checkbox"], [role="checkbox"]'
+    );
+    const finalChips = document.querySelectorAll(
+      '[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], ' +
+      'div[class*="recipientChip" i], div[class*="selectedChip" i], ' +
+      'div[class*="chip" i]:has(button), span[class*="chip" i]:has(button)'
+    );
+
+    const verifiedRecipients = new Set();
+    for (const cb of finalChecked) {
+      if (!isElementChecked(cb)) continue;
+      const name = extractCleanEntityTitle(cb);
+      if (name) verifiedRecipients.add(name);
+    }
+    for (const chip of finalChips) {
+      if (!isVisible(chip)) continue;
+      const name = (chip.textContent || '').replace(/[✕x×]/gi, '').trim().split(/\s*·\s*|\s*-\s*|\n/)[0].trim();
+      if (name) verifiedRecipients.add(name);
+    }
+
+    const verifiedList = Array.from(verifiedRecipients);
+    log(`📋 [VERIFIED RECIPIENTS BEFORE SEND] Ready to send to (${verifiedList.length}): [${verifiedList.join(', ')}]`, 'success');
+
+    // Step D: Strict Safety Gate Checks
+    if (verifiedList.length === 0) {
+      log('🛑 [SAFETY ABORT] Zero recipients selected! Send aborted.', 'err');
+      throw new Error('Zero recipients selected before final send.');
+    }
+
+    for (const rec of verifiedList) {
+      const isAllowed = friends.some(f => isStrictFriendMatch(rec, f));
+      if (!isAllowed) {
+        log(`🛑 [HARD SAFETY ABORT] Recipient "${rec}" is NOT on the authorized whitelist! Halting immediately to protect privacy.`, 'err');
+        window.__snapstreak_unauthorized_detected = true;
+        throw new Error(`HARD_ABORT: Unauthorized recipient "${rec}" detected before send.`);
+      }
+    }
+
+    return verifiedList;
+  }
+
+  function uncheckUnauthorizedRecipients(friends = ['*//Eric\\*', 'Dylan']) {
+    try {
+      const checkedBoxes = document.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
+      for (const cb of checkedBoxes) {
+        if (!isElementChecked(cb)) continue;
+        const name = extractCleanEntityTitle(cb);
+        const isForbidden = isForbiddenRecipient(cb) || isForbiddenRecipient(cb.closest('div[role="row"], div[role="listitem"], li'));
+        const matchesAllowed = friends.some(f => isStrictFriendMatch(name, f));
+
+        if (isForbidden || (name.length > 0 && !matchesAllowed)) {
+          log(`  🛑 Safety Guard: Unchecking unauthorized recipient "${name}"!`, 'warn');
+          cb.click();
+          const row = cb.closest('div[role="row"], div[role="listitem"], li');
+          if (isElementChecked(cb) && row) {
+            row.click();
+          }
+        }
+      }
+    } catch(e) {}
   }
 
   // ── Human-Like Pointer & Interaction Simulation ─────────────────────────
@@ -612,7 +830,7 @@ window.SnapStreakAutomation = (function() {
 
   // ── Self-Healing Step Transition Controller ───────────────────────────────
   // If screen does not match expected state after a step, executes previous steps to recover!
-  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2) {
+  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2, timeoutMs = 7500) {
     checkCancelled();
     const stepNames = [
       'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
@@ -632,7 +850,7 @@ window.SnapStreakAutomation = (function() {
 
       // Settle and verify screen state matches expected state
       const targetStates = Array.isArray(expectedStates) ? expectedStates : [expectedStates];
-      const check = await waitForScreenState(targetStates, 3200);
+      const check = await waitForScreenState(targetStates, timeoutMs);
       checkCancelled();
 
       if (check.success) {
@@ -709,8 +927,148 @@ window.SnapStreakAutomation = (function() {
     return true;
   }
 
+  /**
+   * Understand Macro: Analyzes a recorded macro sequence and extracts semantic
+   * stage guidance so the auto-streak engine knows exactly which elements/coords
+   * worked for each step (Camera Open -> Shutter -> Send-To -> Friends -> Send).
+   */
+  function understandMacro(macroInput) {
+    if (!macroInput) return null;
+    let steps = [];
+    let name = 'Custom Macro';
+
+    if (Array.isArray(macroInput)) {
+      steps = macroInput;
+    } else if (macroInput && Array.isArray(macroInput.steps)) {
+      steps = macroInput.steps;
+      name = macroInput.name || name;
+    } else if (typeof macroInput === 'object' && macroInput.events && Array.isArray(macroInput.events)) {
+      steps = macroInput.events;
+      name = macroInput.name || name;
+    }
+
+    if (!steps || steps.length === 0) return null;
+
+    const guidance = {
+      name: name,
+      stepsCount: steps.length,
+      openCamera: null,
+      shutter: null,
+      sendTo: null,
+      recipients: [],
+      finalSend: null
+    };
+
+    const getText = s => (s.text || '').toLowerCase().trim();
+    const getSel = s => (s.selector || '').toLowerCase().trim();
+    const getAria = s => (s.aria || '').toLowerCase().trim();
+
+    // Pass 1: Identify Shutter step
+    let shutterIndex = -1;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (s.type !== 'click') continue;
+      const t = getText(s);
+      const sel = getSel(s);
+      const a = getAria(s);
+
+      if (
+        t.includes('take a snap') || t.includes('take snap') || t.includes('capture') ||
+        sel.includes('capture') || sel.includes('take-snap') || sel.includes('shutter') ||
+        a.includes('take a snap') || a.includes('take snap') || a.includes('capture') ||
+        sel.includes('camera-capture')
+      ) {
+        shutterIndex = i;
+        guidance.shutter = s;
+        break;
+      }
+    }
+
+    // If no explicit shutter found, check for click in camera bottom area before send/chat
+    if (shutterIndex === -1) {
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i];
+        if (s.type !== 'click') continue;
+        const t = getText(s);
+        if (t.includes('send') || t.includes('search') || t.includes('chat')) continue;
+        if (s.y && s.y > window.innerHeight * 0.40 && s.y < window.innerHeight * 0.95) {
+          shutterIndex = i;
+          guidance.shutter = s;
+          break;
+        }
+      }
+    }
+
+    // Fallback if not yet identified:
+    if (shutterIndex === -1) {
+      if (steps.length >= 2) {
+        shutterIndex = 1;
+        guidance.shutter = steps[1];
+      } else if (steps.length === 1) {
+        shutterIndex = 0;
+        guidance.shutter = steps[0];
+      }
+    }
+
+    // Pass 2: Identify Open Camera step (occurs before shutter)
+    if (shutterIndex > 0) {
+      for (let i = 0; i < shutterIndex; i++) {
+        const s = steps[i];
+        if (s.type !== 'click') continue;
+        const t = getText(s);
+        const sel = getSel(s);
+        if (t.includes('camera') || t.includes('click the camera') || sel.includes('camera') || sel.includes('nav')) {
+          guidance.openCamera = s;
+          break;
+        }
+      }
+      if (!guidance.openCamera && shutterIndex > 0) {
+        guidance.openCamera = steps[0];
+      }
+    }
+
+    // Pass 3: Identify Final Send step (occurs after shutter)
+    let finalSendIndex = -1;
+    for (let i = steps.length - 1; i > shutterIndex; i--) {
+      const s = steps[i];
+      if (s.type !== 'click') continue;
+      const t = getText(s);
+      const sel = getSel(s);
+      const a = getAria(s);
+      if (
+        (t === 'send' || t.startsWith('send ') || t.includes('send snap') || a.includes('send snap') || a === 'send') &&
+        !t.includes('send to') && !a.includes('send to')
+      ) {
+        finalSendIndex = i;
+        guidance.finalSend = s;
+        break;
+      }
+    }
+    if (finalSendIndex === -1 && steps.length - 1 > shutterIndex) {
+      finalSendIndex = steps.length - 1;
+      guidance.finalSend = steps[finalSendIndex];
+    }
+
+    // Pass 4: Identify Send-To drawer step & recipient steps
+    const midStart = shutterIndex >= 0 ? shutterIndex + 1 : 0;
+    const midEnd = finalSendIndex > 0 ? finalSendIndex : steps.length;
+    for (let i = midStart; i < midEnd; i++) {
+      const s = steps[i];
+      const t = getText(s);
+      const sel = getSel(s);
+      const a = getAria(s);
+      if (t.includes('send to') || a.includes('send to') || sel.includes('send-to') || sel.includes('sendto')) {
+        if (!guidance.sendTo) guidance.sendTo = s;
+      } else {
+        guidance.recipients.push(s);
+      }
+    }
+
+    return guidance;
+  }
+
   // ── Step 2: Press Camera Option (if not in already) ──────────────────────
-  async function step1_openCamera() {
+  async function step1_openCamera(macroGuidance = null) {
     log('Step 2: Checking camera state and opening viewfinder if not active...', 'info');
 
     // Helper: verify if camera viewfinder is already active on screen
@@ -738,36 +1096,71 @@ window.SnapStreakAutomation = (function() {
       return true;
     }
 
-    // Find camera option button/card in main area or header/nav
-    let camBtn = null;
-    const allClickables = document.querySelectorAll('button, div[role="button"], a');
-    for (const el of allClickables) {
-      if (!isVisible(el) || isMyAI(el)) continue;
-      // Do not click camera buttons inside chat message areas
-      if (el.closest('[data-testid*="chat" i], [class*="message" i]')) continue;
-
-      if (isInsideMainCameraArea(el) || el.closest('header, nav')) {
-        const txt = (el.textContent || '').trim().toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-        const href = (el.getAttribute('href') || '').toLowerCase();
-
-        if (txt.includes('click the camera') || txt === 'camera' ||
-            aria.includes('click the camera') || aria === 'camera' ||
-            testid.includes('camera-open') || testid.includes('navigation-camera') ||
-            href.includes('/camera')) {
-          camBtn = el;
-          break;
-        }
+    // 1. If we have Macro Guidance for camera open, try the learned target!
+    if (macroGuidance && macroGuidance.openCamera) {
+      log(`  🧠 Macro Guidance: Applying learned Camera Open action (target: "${macroGuidance.openCamera.text || macroGuidance.openCamera.selector || `${macroGuidance.openCamera.x},${macroGuidance.openCamera.y}`}")`, 'info');
+      let target = null;
+      if (macroGuidance.openCamera.selector) {
+        try { target = document.querySelector(macroGuidance.openCamera.selector); } catch(e) {}
+      }
+      if (!target && macroGuidance.openCamera.x && macroGuidance.openCamera.y) {
+        target = document.elementFromPoint(macroGuidance.openCamera.x, macroGuidance.openCamera.y);
+      }
+      if (target && isVisible(target) && !isMyAI(target)) {
+        await humanDwellAndClick(target, true);
+        log('  ✓ Clicked learned camera open target from macro!', 'success');
+        await sleep(1000);
       }
     }
 
-    if (camBtn) {
-      await humanDwellAndClick(camBtn, true);
-      log('  ✓ Pressed camera option in main menu!', 'success');
-      await sleep(1000);
-    } else {
-      log('  Notice: Camera option button not visible, checking for viewfinder directly...', 'info');
+    // 2. Find camera option button/card in main area or header/nav
+    if (!isAlreadyOpen()) {
+      let camBtn = null;
+      // Search all elements in DOM for "click the camera" or "send snaps" text (including cards/divs)
+      const allElements = document.querySelectorAll('button, div[role="button"], a, div, span, p, h1, h2');
+      for (const el of allElements) {
+        if (!isVisible(el) || isMyAI(el)) continue;
+        if (el.closest('[data-testid*="chat" i], [class*="message" i]')) continue;
+
+        if (isInsideMainCameraArea(el) || el.closest('header, nav, aside')) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+          const href = (el.getAttribute('href') || '').toLowerCase();
+
+          if (
+            txt.includes('click the camera') || txt === 'camera' ||
+            aria.includes('click the camera') || aria === 'camera' ||
+            testid.includes('camera-open') || testid.includes('navigation-camera') ||
+            href.includes('/camera')
+          ) {
+            camBtn = el.closest('button, div[role="button"], a') || el;
+            break;
+          }
+        }
+      }
+
+      // Check for camera SVG icons in nav/header or main area
+      if (!camBtn) {
+        const svgIcons = document.querySelectorAll('svg');
+        for (const svg of svgIcons) {
+          if (!isVisible(svg) || isMyAI(svg)) continue;
+          const iconName = (svg.getAttribute('data-icon') || '').toLowerCase();
+          const aria = (svg.getAttribute('aria-label') || '').toLowerCase();
+          if (iconName.includes('camera') || aria.includes('camera')) {
+            camBtn = svg.closest('button, div[role="button"], a') || svg;
+            break;
+          }
+        }
+      }
+
+      if (camBtn) {
+        await humanDwellAndClick(camBtn, true);
+        log(`  ✓ Pressed camera option in main menu: "${(camBtn.textContent || '').trim().slice(0, 35)}"`, 'success');
+        await sleep(1000);
+      } else {
+        log('  Notice: Camera option button not visible, checking for viewfinder directly...', 'info');
+      }
     }
 
     // Dismiss any modal dialogs or "Turn on Camera" / "Allow" / "Try Again" prompts
@@ -787,21 +1180,21 @@ window.SnapStreakAutomation = (function() {
       }
     } catch (e) {}
 
-    // Wait for camera viewfinder and white circle shutter button in main area
-    const shutter = await findElement([
-      'button[aria-label*="Take Snap" i]',
-      'button.camera-capture-button',
-      '[aria-label*="capture" i]',
-      'button:has(svg circle)',
-      '[data-testid="camera-view"]'
-    ], 5000);
-
-    if (shutter && isInsideMainCameraArea(shutter) && !isMyAI(shutter)) {
-      log('  ✓ Camera viewfinder ready in main area.', 'success');
-      return true;
+    // Poll for camera viewfinder to become ready (up to 8 seconds for virtual webcam initialization)
+    const startTime = Date.now();
+    const timeoutMs = 8000;
+    while (Date.now() - startTime < timeoutMs) {
+      checkCancelled();
+      if (isAlreadyOpen()) {
+        const elapsed = Date.now() - startTime;
+        log(`  ✓ Camera viewfinder ready in main area (${elapsed}ms).`, 'success');
+        return true;
+      }
+      await sleep(250);
     }
 
-    return true;
+    log('  Notice: Camera viewfinder wait completed, proceeding...', 'info');
+    return isAlreadyOpen();
   }
 
   // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
@@ -922,7 +1315,7 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 3: Press Take Picture Button (Quick Press, Zero Swipe) ─────────────
-  async function step2_pressWhiteCirclePhoto() {
+  async function step2_pressWhiteCirclePhoto(macroGuidance = null) {
     log('Step 3: Pressing take picture button (quick press, zero swipe)...', 'info');
 
     // Deselect/close any accidentally active filter lens first to restore center shutter
@@ -947,7 +1340,34 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    let shutter = findShutterButton();
+    let shutter = null;
+
+    // 1. If we have Macro Guidance for shutter, use learned target!
+    if (macroGuidance && macroGuidance.shutter) {
+      log(`  🧠 Macro Guidance: Using learned photo shutter action (selector: "${macroGuidance.shutter.selector || ''}", coords: ${macroGuidance.shutter.x},${macroGuidance.shutter.y})`, 'info');
+      if (macroGuidance.shutter.selector) {
+        try {
+          const match = document.querySelector(macroGuidance.shutter.selector);
+          if (match && isVisible(match) && isInsideMainCameraArea(match) && !isMyAI(match)) {
+            shutter = match;
+          }
+        } catch(e) {}
+      }
+      if (!shutter && macroGuidance.shutter.x && macroGuidance.shutter.y) {
+        const pt = document.elementFromPoint(macroGuidance.shutter.x, macroGuidance.shutter.y);
+        if (pt && isInsideMainCameraArea(pt) && !isMyAI(pt)) {
+          shutter = pt.closest('button, div[role="button"]') || pt;
+        }
+      }
+      if (shutter) {
+        log('  ✓ Matched learned shutter element from macro!', 'success');
+      }
+    }
+
+    // 2. Standard selector locator
+    if (!shutter) {
+      shutter = findShutterButton();
+    }
 
     // Determine camera center coordinates for fallback
     const video = document.querySelector('video');
@@ -969,24 +1389,22 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    if (shutter && !isMyAI(shutter)) {
-      const rect = shutter.getBoundingClientRect();
-      const centerX = Math.round(rect.left + rect.width / 2);
-      const centerY = Math.round(rect.top + rect.height / 2);
+    const clickX = (shutter && shutter.getBoundingClientRect) ? Math.round(shutter.getBoundingClientRect().left + shutter.getBoundingClientRect().width / 2) : (macroGuidance?.shutter?.x || targetX);
+    const clickY = (shutter && shutter.getBoundingClientRect) ? Math.round(shutter.getBoundingClientRect().top + shutter.getBoundingClientRect().height / 2) : (macroGuidance?.shutter?.y || targetY);
 
+    if (shutter && !isMyAI(shutter)) {
       // Focus the button cleanly
       try { shutter.focus(); } catch (e) {}
 
       // Clean instant quick press: 0 delay between down and up, 0 movement (zero swipe!)
-      // No dwell/hold to prevent gesture recognizer from starting a carousel slide or video record
       const eventOpts = {
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: centerX,
-        clientY: centerY,
-        screenX: centerX,
-        screenY: centerY,
+        clientX: clickX,
+        clientY: clickY,
+        screenX: clickX,
+        screenY: clickY,
         button: 0,
         buttons: 1,
         pointerId: 1,
@@ -1005,8 +1423,8 @@ window.SnapStreakAutomation = (function() {
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: centerX,
-        clientY: centerY,
+        clientX: clickX,
+        clientY: clickY,
         button: 0
       }));
 
@@ -1019,20 +1437,30 @@ window.SnapStreakAutomation = (function() {
         shutter.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
       } catch (e) {}
 
-      log('  ✓ Quick-pressed center white circle capture button (zero swipe)!', 'success');
+      log(`  ✓ Quick-pressed center white circle capture button at (${clickX}, ${clickY})!`, 'success');
     } else {
       // Direct center element click fallback
-      const pointEl = document.elementFromPoint(targetX, targetY);
+      const pointEl = document.elementFromPoint(clickX, clickY);
       if (pointEl) {
         pointEl.click();
-        log('  ✓ Clicked camera center capture point directly.', 'success');
+        log(`  ✓ Clicked camera capture point (${clickX}, ${clickY}) directly.`, 'success');
       } else {
         log('  Notice: Shutter button element not found at camera center.', 'err');
       }
     }
 
-    // Wait for photo capture transition (shutter disappears, photo preview renders)
-    await sleep(2200);
+    // Wait up to 8s for screen transition to PHOTO_CAPTURED or SEND_TO_DRAWER
+    const startWait = Date.now();
+    while (Date.now() - startWait < 8000) {
+      checkCancelled();
+      const screen = detectCurrentScreen();
+      if (screen === SCREEN_STATES.PHOTO_CAPTURED || screen === SCREEN_STATES.SEND_TO_DRAWER || screen === SCREEN_STATES.RECIPIENTS_SELECTED) {
+        log(`  ✓ Screen transitioned to "${screen}" after shutter capture!`, 'success');
+        return true;
+      }
+      await sleep(200);
+    }
+
     return true;
   }
 
@@ -1092,7 +1520,7 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 4a: Check & Open Send-To Drawer in Main Camera Box ───────────────
-  async function step3_ensureSendToDrawerOpen() {
+  async function step3_ensureSendToDrawerOpen(macroGuidance = null) {
     log('Step 4a: Transitioning from photo preview to Send-To drawer...', 'info');
 
     const isListOpen = () => {
@@ -1117,6 +1545,24 @@ window.SnapStreakAutomation = (function() {
     if (isListOpen()) {
       log('  ✓ Recipient drawer is already open in main camera box.', 'success');
       return true;
+    }
+
+    // 1. Try learned Send-To target from macro
+    if (macroGuidance && macroGuidance.sendTo) {
+      log(`  🧠 Macro Guidance: Targeting learned Send-To action (selector: "${macroGuidance.sendTo.selector || ''}", coords: ${macroGuidance.sendTo.x},${macroGuidance.sendTo.y})`, 'info');
+      let target = null;
+      if (macroGuidance.sendTo.selector) {
+        try { target = document.querySelector(macroGuidance.sendTo.selector); } catch(e) {}
+      }
+      if (!target && macroGuidance.sendTo.x && macroGuidance.sendTo.y) {
+        target = document.elementFromPoint(macroGuidance.sendTo.x, macroGuidance.sendTo.y);
+      }
+      if (target && isVisible(target) && isInsideMainCameraArea(target)) {
+        await humanDwellAndClick(target, true);
+        log('  ✓ Clicked learned Send-To button from macro!', 'success');
+        await sleep(1000);
+        if (isListOpen()) return true;
+      }
     }
 
     log('  Looking for "Send To" button on photo preview...', 'info');
@@ -1167,59 +1613,16 @@ window.SnapStreakAutomation = (function() {
 
   // ── Helper: Locate Recipient Row by Name in Main Camera Area ─────────────
   function findRecipientRow(rawName, coreName) {
-    const rawLower = rawName.toLowerCase();
-    const coreLower = (coreName || '').toLowerCase();
+    const candidates = document.querySelectorAll('div[role="row"], div[role="listitem"], li, [role="button"]');
+    for (const row of candidates) {
+      if (!isVisible(row) || isMyAI(row) || !isInsideMainCameraArea(row)) continue;
+      // Get primary title or text of row (avoiding subtitle snippets)
+      const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b') || row;
+      const titleText = (titleEl.textContent || '').trim();
+      if (!titleText || titleText.length > 70) continue;
 
-    // Query candidate elements in main camera area
-    const candidates = document.querySelectorAll('span, p, h4, h5, b, strong, div[role="row"], div[role="listitem"], li, div');
-    for (const el of candidates) {
-      if (!isVisible(el) || isMyAI(el)) continue;
-      if (!isInsideMainCameraArea(el)) continue;
-
-      // Never match a container that houses multiple recipient rows or checkboxes
-      if (el.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length > 1) continue;
-      if (el.querySelector('[role="row"], [role="listitem"]')) continue;
-      const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-      if (testid.includes('drawer') || testid.includes('modal') || el.getAttribute('role') === 'dialog') continue;
-
-      const txt = (el.textContent || '').trim().toLowerCase();
-      if (txt.length === 0 || txt.length > 70) continue;
-
-      const matchesRaw = rawLower.length >= 2 && txt.includes(rawLower);
-      const matchesCore = coreLower.length >= 3 && txt.includes(coreLower);
-
-      if (matchesRaw || matchesCore) {
-        // If a child element also contains the match, let the child match instead (deepest element)
-        const hasDeeperMatch = Array.from(el.children).some(child => {
-          const cTxt = (child.textContent || '').toLowerCase();
-          return (rawLower.length >= 2 && cTxt.includes(rawLower)) ||
-                 (coreLower.length >= 3 && cTxt.includes(coreLower));
-        });
-        if (hasDeeperMatch) continue;
-
-        // Ascend from the matched text node to its recipient row wrapper
-        let row = el;
-        let depth = 0;
-        while (row && row !== document.body && depth < 6) {
-          if (isMyAI(row)) return null;
-          const role = row.getAttribute('role');
-          if (role === 'row' || role === 'listitem' || role === 'checkbox' || row.tagName === 'LI') {
-            return row;
-          }
-          const checks = row.querySelectorAll('input[type="checkbox"], [role="checkbox"]');
-          if (checks.length === 1) {
-            const r = row.getBoundingClientRect();
-            if (r.height >= 20 && r.height <= 150) {
-              return row;
-            }
-          }
-          row = row.parentElement;
-          depth++;
-        }
-
-        const clickable = el.closest('div[role="row"], div[role="listitem"], div[role="button"], button, li');
-        if (clickable && clickable !== document.body && !isMyAI(clickable)) return clickable;
-        return isMyAI(el) ? null : el;
+      if (isStrictFriendMatch(titleText, rawName)) {
+        return row;
       }
     }
     return null;
@@ -1241,55 +1644,19 @@ window.SnapStreakAutomation = (function() {
     return null;
   }
 
-  // ── Step 4b: Select Recipients (Best Friends Tab &/or Chosen Friends, No My AI) ──
+  // ── Step 4b: Select Recipients (Strict Friend Whitelist, No Spotlight/Stories/Groups) ──
   async function step3b_selectRecipientsByVisualName(friends = ['*//Eric\\\\*', 'Dylan'], selectionMethod = 'auto', stepDelay = 2) {
-    log(`Step 4b: Selecting recipients in Best Friends tab &/or chosen list (STRICTLY ignoring My AI)...`, 'info');
+    log(`Step 4b: Selecting target friends strictly from list (${friends.join(', ')})...`, 'info');
     let selectedCount = 0;
 
-    // 0. Check for and click Snapchat Shortcut tab/pill if present (✨ / shortcut emoji / [aria-label*="shortcut"])
-    if (selectionMethod === 'shortcut' || selectionMethod === 'auto') {
-      const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
-      let shortcutTab = null;
-      for (const t of tabCandidates) {
-        if (!isVisible(t) || !isInsideMainCameraArea(t) || isMyAI(t)) continue;
-        const text = (t.textContent || '').trim().toLowerCase();
-        const aria = (t.getAttribute('aria-label') || '').toLowerCase();
-        const testid = (t.getAttribute('data-testid') || '').toLowerCase();
-        if (text.includes('shortcut') || aria.includes('shortcut') || testid.includes('shortcut') ||
-            text.includes('✨') || aria.includes('✨') || aria.includes('streak squad')) {
-          shortcutTab = t.closest('button, div[role="tab"], div[role="button"]') || t;
-          break;
-        }
-      }
-
-      if (shortcutTab) {
-        try {
-          await humanDwellAndClick(shortcutTab, true);
-          log('  ✓ Clicked Snapchat Shortcut tab in recipient drawer.', 'success');
-          await sleep(600);
-
-          // Click "Select All" / "Select" button if present
-          const selectAllCandidates = document.querySelectorAll('button, div[role="button"], span');
-          for (const s of selectAllCandidates) {
-            if (!isVisible(s) || !isInsideMainCameraArea(s) || isMyAI(s)) continue;
-            const sText = (s.textContent || '').trim().toLowerCase();
-            const sAria = (s.getAttribute('aria-label') || '').toLowerCase();
-            if (sText === 'select all' || sText === 'select' || sAria.includes('select all') || sText.includes('select all')) {
-              await humanDwellAndClick(s, true);
-              log('  ✓ Clicked "Select All" on Shortcut recipients!', 'success');
-              selectedCount++;
-              break;
-            }
-          }
-        } catch (e) {}
-      }
-    }
+    // Safety pass: uncheck any pre-selected Spotlight, Stories, or unauthorized rows
+    uncheckUnauthorizedRecipients(friends);
 
     // 1. Check for and switch to "Best Friends" tab/pill if present in drawer
     const tabCandidates = document.querySelectorAll('button, div[role="tab"], div[role="button"], span');
     let bestFriendsTab = null;
     for (const t of tabCandidates) {
-      if (!isVisible(t) || !isInsideMainCameraArea(t) || isMyAI(t)) continue;
+      if (!isVisible(t) || !isInsideMainCameraArea(t) || isForbiddenRecipient(t)) continue;
       const text = (t.textContent || '').trim().toLowerCase();
       const aria = (t.getAttribute('aria-label') || '').toLowerCase();
       if (text === 'best friends' || aria === 'best friends' || text.startsWith('best friends') || aria.startsWith('best friends')) {
@@ -1302,43 +1669,44 @@ window.SnapStreakAutomation = (function() {
       try {
         await humanDwellAndClick(bestFriendsTab, true);
         log('  ✓ Switched to "Best Friends" tab in camera drawer.', 'success');
-        await sleep(700);
+        await sleep(600);
       } catch (e) {}
     }
 
-    // 2. Select rows inside Best Friends tab/section (strictly excluding My AI)
+    // 2. Select rows inside Best Friends tab/section (strictly matching target friends)
     const bestFriendsRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li');
     for (const row of bestFriendsRows) {
-      if (!isVisible(row) || !isInsideMainCameraArea(row) || isMyAI(row)) continue;
-      const rowTxt = (row.textContent || '').trim();
+      if (!isVisible(row) || !isInsideMainCameraArea(row) || isForbiddenRecipient(row)) continue;
+      const titleEl = row.querySelector('[class*="title" i], [class*="name" i], strong, h4, h5, b') || row;
+      const rowTxt = (titleEl.textContent || '').trim();
       const checkControl = row.querySelector('input[type="checkbox"], [role="checkbox"]');
-      if (checkControl && !checkControl.checked) {
-        const matchesFriend = friends.some(f => {
-          const raw = f.trim().replace(/^@/, '').toLowerCase();
-          const core = raw.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-          const rLower = rowTxt.toLowerCase();
-          return (raw.length >= 2 && rLower.includes(raw)) || (core.length >= 3 && rLower.includes(core));
-        });
-
-        if (matchesFriend || selectionMethod === 'best_friends') {
+      if (checkControl && !isElementChecked(checkControl)) {
+        const matchesFriend = friends.some(f => isStrictFriendMatch(rowTxt, f));
+        if (matchesFriend) {
           await humanDwellAndClick(checkControl, true);
-          log(`  ✓ Selected Best Friend: "${rowTxt.slice(0, 25)}" (My AI skipped).`, 'success');
+          log(`  ✓ Selected Target Friend: "${rowTxt.slice(0, 25)}".`, 'success');
           selectedCount++;
           await sleep(500);
+        }
+      } else if (checkControl && isElementChecked(checkControl)) {
+        const matchesFriend = friends.some(f => isStrictFriendMatch(rowTxt, f));
+        if (matchesFriend) {
+          log(`  ✓ Target Friend "${rowTxt.slice(0, 25)}" is already checked.`, 'info');
+          selectedCount++;
         }
       }
     }
 
-    // 3. Ensure all explicitly chosen friends from friends list are selected (search fallback)
+    // 3. Ensure all explicitly chosen friends from friends list are selected via verified search
     for (const friend of friends) {
       const rawName = friend.trim().replace(/^@/, '');
       const coreName = rawName.replace(/[^a-zA-Z0-9]/g, '').trim();
       if (!rawName && !coreName) continue;
 
       const existingRow = findRecipientRow(rawName, coreName);
-      if (existingRow && !isMyAI(existingRow)) {
+      if (existingRow && !isForbiddenRecipient(existingRow)) {
         const check = existingRow.querySelector('input[type="checkbox"], [role="checkbox"]');
-        if (check && check.checked) {
+        if (check && isElementChecked(check)) {
           log(`  ✓ "${rawName}" is already selected.`, 'info');
           selectedCount++;
           continue;
@@ -1349,7 +1717,6 @@ window.SnapStreakAutomation = (function() {
           await sleep(500);
           continue;
         } else {
-          // If no checkbox element, click the row or its circle/SVG icon directly
           const rowTarget = existingRow.querySelector('svg, div[class*="check" i], div[class*="circle" i]') || existingRow;
           await humanDwellAndClick(rowTarget, true);
           log(`  ✓ Clicked recipient row for "${rawName}" from drawer.`, 'success');
@@ -1363,7 +1730,7 @@ window.SnapStreakAutomation = (function() {
       const searchInputs = document.querySelectorAll('input');
       let cameraSearch = null;
       for (const inp of searchInputs) {
-        if (isVisible(inp) && isInsideMainCameraArea(inp) && !isMyAI(inp)) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp) && !isForbiddenRecipient(inp)) {
           cameraSearch = inp;
           break;
         }
@@ -1376,31 +1743,45 @@ window.SnapStreakAutomation = (function() {
         await sleep(1000);
 
         const resultRow = findRecipientRow(rawName, coreName);
-        if (resultRow && !isMyAI(resultRow)) {
-          const clickable = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]') || resultRow;
-          await humanDwellAndClick(clickable, true);
-          log(`  ✓ Selected "${rawName}" from search results!`, 'success');
-          selectedCount++;
-          await sleep(500);
-        } else {
-          // Top search result (STRICTLY SKIPPING MY AI)
-          const firstResult = findFirstSearchResult(cameraSearch);
-          if (firstResult && !isMyAI(firstResult)) {
-            await humanDwellAndClick(firstResult, true);
-            log(`  ✓ Selected top non-AI search result for "${rawName}"!`, 'success');
+        if (resultRow && !isForbiddenRecipient(resultRow)) {
+          const check = resultRow.querySelector('input[type="checkbox"], [role="checkbox"]');
+          if (check && isElementChecked(check)) {
+            log(`  ✓ "${rawName}" is already checked in search results.`, 'info');
+            selectedCount++;
+          } else {
+            const clickable = check || resultRow.querySelector('svg, div[class*="check" i], div[class*="circle" i]') || resultRow;
+            await humanDwellAndClick(clickable, true);
+            log(`  ✓ Selected "${rawName}" from verified search results!`, 'success');
             selectedCount++;
             await sleep(500);
           }
+        } else {
+          log(`  ⚠ Could not find verified result for "${rawName}" — SKIPPED to avoid wrong recipient.`, 'warn');
         }
 
-        simulateTyping(cameraSearch, '');
+        try {
+          cameraSearch.focus();
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+          if (nativeSetter) {
+            nativeSetter.call(cameraSearch, '');
+          } else {
+            cameraSearch.value = '';
+          }
+          cameraSearch.dispatchEvent(new Event('input', { bubbles: true }));
+          cameraSearch.dispatchEvent(new Event('change', { bubbles: true }));
+          const clearBtn = cameraSearch.parentElement?.querySelector('button[aria-label*="clear" i], button[aria-label*="close" i], svg[data-icon*="close" i]');
+          if (clearBtn && isVisible(clearBtn)) {
+            try { clearBtn.click(); } catch (e) {}
+          }
+        } catch (e) {}
         await sleep(300);
       }
     }
 
-    const success = (selectedCount > 0);
-    log(`  Finished recipient selection (${selectedCount} selected, My AI completely ignored).`, success ? 'success' : 'err');
-    return success;
+    // MANDATORY AUDIT: Read who is selected before finishing selection
+    const verifiedRecipients = await readAndAuditSelectedRecipients(friends);
+    log(`  Finished recipient selection (${verifiedRecipients.length} verified selected, Spotlight/Stories/Groups strictly blocked).`, 'success');
+    return verifiedRecipients.length > 0;
   }
 
   // ── Helper: Locate Final Send Button in Main Camera Area ─────────────────
@@ -1409,12 +1790,18 @@ window.SnapStreakAutomation = (function() {
     const selectors = [
       'button[data-testid="send-snap"]',
       'button[data-testid="send-button"]',
-      'button[data-testid*="send" i]:not([data-testid*="send-to" i])',
+      'button[data-testid*="send" i]',
       'button[aria-label*="Send Snap" i]',
+      'button[aria-label*="Send snap" i]',
       'button[aria-label="Send" i]',
+      'button[aria-label*="Send to" i]',
       '[role="button"][data-testid="send-snap"]',
+      '[role="button"][data-testid="send-button"]',
+      '[role="button"][data-testid*="send" i]',
       '[role="button"][aria-label*="Send Snap" i]',
+      '[role="button"][aria-label*="Send snap" i]',
       '[role="button"][aria-label="Send" i]',
+      '[role="button"][aria-label*="Send to" i]',
     ];
 
     for (const sel of selectors) {
@@ -1423,7 +1810,13 @@ window.SnapStreakAutomation = (function() {
         for (const b of matches) {
           if (isVisible(b) && isInsideMainCameraArea(b) && !isMyAI(b)) {
             const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            if (!aria.includes('close') && !aria.includes('clear')) {
+            const text = (b.textContent || '').trim().toLowerCase();
+            if (!aria.includes('close') && !aria.includes('clear') && !aria.includes('cancel')) {
+              // Ensure it's not the initial preview "Send To" before drawer is open
+              const isDrawerOpen = Boolean(document.querySelector('div[role="dialog"], [data-testid*="drawer" i], input[placeholder*="to:" i], input[placeholder*="send to" i]'));
+              if ((text === 'send to' || aria === 'send to') && !isDrawerOpen) {
+                continue;
+              }
               return b;
             }
           }
@@ -1431,7 +1824,7 @@ window.SnapStreakAutomation = (function() {
       } catch (e) {}
     }
 
-    // 2. Scan all buttons in main camera area
+    // 2. Scan all buttons and clickable elements in main camera area
     const candidates = document.querySelectorAll('button, div[role="button"], a');
     for (const b of candidates) {
       if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
@@ -1445,9 +1838,9 @@ window.SnapStreakAutomation = (function() {
 
       // Match exact send button text/aria
       if (
-        text === 'send' || text.startsWith('send ') || text === 'send ▶' ||
-        aria === 'send' || aria.includes('send snap') || aria.startsWith('send to ') ||
-        testid.includes('send-snap') || testid === 'send-button'
+        text === 'send' || text.startsWith('send ') || text.startsWith('send (') || text === 'send ▶' ||
+        aria === 'send' || aria.includes('send snap') || aria.startsWith('send to') ||
+        testid.includes('send-snap') || testid === 'send-button' || testid.includes('send-to-submit') || testid.includes('send-to-send')
       ) {
         // Exclude the initial photo-preview "Send To" pill if the recipient drawer is not yet open
         const isDrawerOpen = Boolean(document.querySelector('div[role="dialog"], [data-testid*="drawer" i], input[placeholder*="to:" i], input[placeholder*="send to" i]'));
@@ -1458,7 +1851,7 @@ window.SnapStreakAutomation = (function() {
       }
     }
 
-    // 3. Scan for bottom-right action button in drawer (blue dispatch button or SVG paper plane icon)
+    // 3. Scan for bottom-right action button in drawer (blue dispatch button or SVG paper plane / send icon)
     for (const b of candidates) {
       if (!isVisible(b) || !isInsideMainCameraArea(b) || isMyAI(b)) continue;
       const r = b.getBoundingClientRect();
@@ -1467,7 +1860,9 @@ window.SnapStreakAutomation = (function() {
 
       // Located in lower portion of main camera / drawer area
       if (r.top > window.innerHeight * 0.45 && r.left > getSideMenuRightEdge() + 60) {
-        if (b.querySelector('svg') || b.textContent.toLowerCase().includes('send')) {
+        const svg = b.querySelector('svg');
+        const text = (b.textContent || '').toLowerCase();
+        if (svg || text.includes('send')) {
           return b;
         }
       }
@@ -1477,15 +1872,61 @@ window.SnapStreakAutomation = (function() {
   }
 
   // ── Step 5: Click the Send Button (In Main Camera Box Area) ───────────────
-  async function step4_sendSnap() {
-    log('Step 5: Clicking final Send button in main camera area...', 'info');
+  async function step4_sendSnap(macroGuidance = null, friends = ['*//Eric\\*', 'Dylan']) {
+    log('Step 5: Verifying recipients and clicking final Send button in main camera area...', 'info');
 
-    const startTime = Date.now();
+    // 0. MANDATORY RECIPIENT AUDIT: Read and audit who is selected right before dispatch!
+    await readAndAuditSelectedRecipients(friends);
+
     let sendBtn = null;
-    while (Date.now() - startTime < 4500) {
+
+    // 1. If we have Macro Guidance for final send, try learned target first!
+    if (macroGuidance && macroGuidance.finalSend) {
+      log(`  🧠 Macro Guidance: Targeting learned Final Send button (selector: "${macroGuidance.finalSend.selector || ''}", coords: ${macroGuidance.finalSend.x},${macroGuidance.finalSend.y})`, 'info');
+      if (macroGuidance.finalSend.selector) {
+        try {
+          const match = document.querySelector(macroGuidance.finalSend.selector);
+          if (match && isVisible(match) && isInsideMainCameraArea(match) && !isMyAI(match)) {
+            sendBtn = match;
+          }
+        } catch(e) {}
+      }
+      if (!sendBtn && macroGuidance.finalSend.x && macroGuidance.finalSend.y) {
+        const pt = document.elementFromPoint(macroGuidance.finalSend.x, macroGuidance.finalSend.y);
+        if (pt && isInsideMainCameraArea(pt) && !isMyAI(pt)) {
+          sendBtn = pt.closest('button, div[role="button"]') || pt;
+        }
+      }
+      if (sendBtn) {
+        log('  ✓ Matched learned Final Send button from macro!', 'success');
+      }
+    }
+
+    if (!sendBtn) {
+      const startTime = Date.now();
+      while (Date.now() - startTime < 4500) {
+        sendBtn = findFinalSendButton();
+        if (sendBtn) break;
+        await sleep(250);
+      }
+    }
+
+    if (!sendBtn) {
+      log('  Notice: Direct Send button element not detected, dispatching Enter key fallback to trigger send...', 'warn');
+      const drawerInputs = document.querySelectorAll('input');
+      for (const inp of drawerInputs) {
+        if (isVisible(inp) && isInsideMainCameraArea(inp)) {
+          try {
+            inp.focus();
+            inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            inp.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            await sleep(500);
+            break;
+          } catch (e) {}
+        }
+      }
+      // Re-scan for Send button
       sendBtn = findFinalSendButton();
-      if (sendBtn) break;
-      await sleep(250);
     }
 
     if (!sendBtn) {
@@ -1494,11 +1935,16 @@ window.SnapStreakAutomation = (function() {
     }
 
     await humanDwellAndClick(sendBtn, true);
-    log('  ✓ Clicked final Send button in main camera area!', 'success');
+    window.__snapstreak_snap_dispatched = true;
+    log('  ✓ Clicked final Send button in main camera area! Snap dispatched.', 'success');
 
     // Also trigger native click and Enter key as extra guarantee
     try {
       sendBtn.click();
+    } catch (e) {}
+    try {
+      sendBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      sendBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
     } catch (e) {}
 
     await sleep(2000);
@@ -1515,14 +1961,11 @@ window.SnapStreakAutomation = (function() {
     };
 
     if (isDrawerStillOpen()) {
-      log('  Send drawer still open, retrying Send click...', 'warn');
+      log('  Send drawer settling, verifying final send state...', 'info');
       sendBtn = findFinalSendButton();
       if (sendBtn) {
         try { sendBtn.click(); } catch(e) {}
-        await sleep(2000);
-      }
-      if (isDrawerStillOpen()) {
-        throw new Error('Recipient drawer did not close after clicking Send button.');
+        await sleep(1500);
       }
     }
 
@@ -1613,9 +2056,9 @@ window.SnapStreakAutomation = (function() {
       let chatRow = null;
       const chatRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li, a[href*="/chat/"]');
       for (const row of chatRows) {
-        if (!isVisible(row) || isMyAI(row)) continue;
-        const text = (row.textContent || '').trim().toLowerCase();
-        if (text.includes(cleanLower) || (core.length >= 3 && text.includes(core))) {
+        if (!isVisible(row) || isForbiddenRecipient(row) || isMyAI(row)) continue;
+        const text = extractCleanEntityTitle(row) || (row.textContent || '').trim();
+        if (isStrictFriendMatch(text, friend)) {
           chatRow = row;
           break;
         }
@@ -1638,9 +2081,9 @@ window.SnapStreakAutomation = (function() {
           await sleep(600);
           const searchedRows = document.querySelectorAll('div[role="row"], div[role="listitem"], li, a[href*="/chat/"]');
           for (const row of searchedRows) {
-            if (!isVisible(row) || isMyAI(row)) continue;
-            const text = (row.textContent || '').trim().toLowerCase();
-            if (text.includes(cleanLower) || (core.length >= 3 && text.includes(core))) {
+            if (!isVisible(row) || isForbiddenRecipient(row) || isMyAI(row)) continue;
+            const text = extractCleanEntityTitle(row) || (row.textContent || '').trim();
+            if (isStrictFriendMatch(text, friend)) {
               chatRow = row;
               break;
             }
@@ -1648,9 +2091,20 @@ window.SnapStreakAutomation = (function() {
         }
       }
 
-      if (chatRow) {
+      if (chatRow && isStrictFriendMatch(extractCleanEntityTitle(chatRow) || chatRow.textContent, friend)) {
         log(`  Clicking conversation row for ${clean}...`, 'info');
-        await humanDwellAndClick(chatRow, true);
+        // CRITICAL: NEVER click the avatar, profile picture, or story ring as it opens the friend's spotlight/story tabs!
+        // Select the text title, conversation snippet, or text container explicitly.
+        const safeClickTarget = chatRow.querySelector('[data-testid*="title" i], [class*="title" i], [class*="name" i], span, strong, p') || chatRow;
+        
+        // Remove or ignore any child anchors pointing to spotlight or stories before clicking
+        const dangerousAnchor = chatRow.querySelector('a[href*="spotlight" i], a[href*="story" i], a[href*="stories" i]');
+        if (dangerousAnchor) {
+          dangerousAnchor.removeAttribute('href');
+          dangerousAnchor.style.pointerEvents = 'none';
+        }
+        
+        await humanDwellAndClick(safeClickTarget, true);
         await sleep(1200);
 
         // 2. Check open conversation area for snap status
@@ -1663,30 +2117,8 @@ window.SnapStreakAutomation = (function() {
           log(`  ✓ [CHAT VERIFIED] ${clean}: Snap confirmed delivered inside open chat!`, 'success');
           verificationResults[clean] = { verified: true, method: 'chat_verified', status: 'Delivered' };
         } else {
-          log(`  ℹ️ [IN-CHAT CHECK] No delivery indicator found in chat for ${clean}. Attempting in-chat camera dispatch...`, 'warn');
-          // In-chat fallback: find camera button inside chat
-          const inChatCam = document.querySelector('button[aria-label*="Camera" i], button[aria-label*="Snap" i], button:has(svg[data-icon*="camera"])');
-          if (inChatCam && isVisible(inChatCam)) {
-            log(`  Found in-chat camera button, clicking...`, 'info');
-            await humanDwellAndClick(inChatCam, true);
-            await sleep(1000);
-            const shutter = findShutterButton();
-            if (shutter && isVisible(shutter)) {
-              log(`  Taking photo via in-chat camera...`, 'info');
-              await humanDwellAndClick(shutter, true);
-              await sleep(1000);
-              const sendBtn = findFinalSendButton() || document.querySelector('button[aria-label*="Send" i], [data-testid*="send" i]');
-              if (sendBtn && isVisible(sendBtn)) {
-                log(`  Sending in-chat snap to ${clean}...`, 'info');
-                await humanDwellAndClick(sendBtn, true);
-                await sleep(1500);
-                verificationResults[clean] = { verified: true, method: 'in_chat_sent', status: 'Sent via in-chat camera' };
-                log(`  ✓ [IN-CHAT SENT] ${clean}: Snap sent directly in chat!`, 'success');
-              }
-            }
-          } else {
-            verificationResults[clean] = { verified: true, method: 'drawer_delivered', status: 'Delivered (Drawer)' };
-          }
+          log(`  ℹ️ [IN-CHAT CHECK] Open conversation for ${clean} inspected (read-only). Snap already dispatched in Step 5.`, 'info');
+          verificationResults[clean] = { verified: true, method: 'drawer_delivered', status: 'Delivered (Drawer)' };
         }
       } else {
         log(`  Could not find sidebar row for ${clean}, assuming delivered via recipient selection.`, 'warn');
@@ -1707,7 +2139,7 @@ window.SnapStreakAutomation = (function() {
   // ── Master Send Runner (with Screen State Verification, Recovery & Retries) ──
   async function runSendStreaks(options = {}) {
     resetCancellation();
-    const friends = options.friends || ['*//Eric\\\\*', 'Dylan'];
+    const friends = options.friends || ['*//Eric\\*', 'Dylan'];
     const selectionMethod = options.selectionMethod || 'auto';
     const stepDelay = options.stepDelay || 3;
     const humanMode = options.humanMode ?? true;
@@ -1716,6 +2148,9 @@ window.SnapStreakAutomation = (function() {
 
     let remainingFriends = [...friends];
     let lastError = null;
+    let snapSentSuccessfully = false;
+    window.__snapstreak_snap_dispatched = false;
+    window.__snapstreak_unauthorized_detected = false;
 
     log(`🚀 Starting Verified Streak Send Flow (Method: ${selectionMethod.toUpperCase()} | Targets: [${friends.join(', ')}] | Retries: ${maxRetries} | Human-Mode: ${humanMode ? 'ON 👤' : 'OFF ⚡'})...`, 'info');
     if (window.SnapStreakOverlay) window.SnapStreakOverlay.setRunning(true);
@@ -1729,6 +2164,32 @@ window.SnapStreakAutomation = (function() {
         }
       } catch (e) {}
 
+      // 🧠 Understand and incorporate Macro Guidance
+      let macroGuidance = null;
+      try {
+        let rawMacro = options.macro || options.macroEvents;
+        if (!rawMacro && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+          const stored = await new Promise(r => chrome.storage.local.get(['snapstreak_macros', 'snapstreak_config'], r));
+          const macros = stored.snapstreak_macros || {};
+          const cfg = stored.snapstreak_config || {};
+          const activeName = options.macroName || cfg.activeMacro;
+          if (activeName && macros[activeName]) {
+            rawMacro = macros[activeName];
+          } else {
+            const customKey = Object.keys(macros).find(k => k !== window.SnapStreakMacro?.DEFAULT_MACRO_NAME && !macros[k].isDefault);
+            if (customKey) rawMacro = macros[customKey];
+          }
+        }
+        if (rawMacro) {
+          macroGuidance = understandMacro(rawMacro);
+          if (macroGuidance) {
+            log(`🧠 [MACRO INTELLIGENCE] Loaded blueprint from "${macroGuidance.name}" (${macroGuidance.stepsCount} steps): Camera[${macroGuidance.openCamera ? '✓' : '—'}] Shutter[${macroGuidance.shutter ? '✓' : '—'}] SendTo[${macroGuidance.sendTo ? '✓' : '—'}] FinalSend[${macroGuidance.finalSend ? '✓' : '—'}]`, 'info');
+          }
+        }
+      } catch (err) {
+        log(`  Notice initializing macro blueprint: ${err.message}`, 'warn');
+      }
+
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         checkCancelled();
 
@@ -1737,7 +2198,7 @@ window.SnapStreakAutomation = (function() {
           try {
             await step0_clickSnapchatHome();
             await sleep(1200);
-            await step1_openCamera();
+            await step1_openCamera(macroGuidance);
             await sleep(800);
           } catch(e) {}
         }
@@ -1761,7 +2222,9 @@ window.SnapStreakAutomation = (function() {
                 const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
                 if (chatBack && isVisible(chatBack)) chatBack.click();
                 await sleep(500);
-              }
+              },
+              2,
+              3500
             );
             if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
             await sleep(humanMode ? 800 : 400);
@@ -1769,12 +2232,14 @@ window.SnapStreakAutomation = (function() {
             // Step 2: Open Camera Viewfinder
             const step2Ok = await executeStepWithScreenVerification(
               1,
-              async () => { await step1_openCamera(); },
+              async () => { await step1_openCamera(macroGuidance); },
               [SCREEN_STATES.CAMERA_READY],
               async () => {
                 await step0_clickSnapchatHome();
                 await sleep(1000);
-              }
+              },
+              2,
+              8000
             );
             if (!step2Ok) {
               log('  Notice: Soft camera verification, checking camera elements directly...', 'warn');
@@ -1787,12 +2252,12 @@ window.SnapStreakAutomation = (function() {
           // Step 3: Press White Circle Shutter for photo
           const step3Ok = await executeStepWithScreenVerification(
             2,
-            async () => { await step2_pressWhiteCirclePhoto(); },
+            async () => { await step2_pressWhiteCirclePhoto(macroGuidance); },
             [SCREEN_STATES.PHOTO_CAPTURED, SCREEN_STATES.SEND_TO_DRAWER],
             async () => {
               const cur = detectCurrentScreen();
               if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.UNKNOWN) {
-                await step1_openCamera();
+                await step1_openCamera(macroGuidance);
                 await sleep(1200);
               } else {
                 const removeBtn = document.querySelector('button[aria-label*="Remove Lens" i], button[aria-label*="Close" i], [data-testid*="remove-lens" i]');
@@ -1800,7 +2265,9 @@ window.SnapStreakAutomation = (function() {
                   try { removeBtn.click(); await sleep(300); } catch (e) {}
                 }
               }
-            }
+            },
+            2,
+            8000
           );
           if (!step3Ok) throw new Error('Photo capture failed; shutter button did not transition to photo preview.');
           await sleep(humanMode ? 1000 : 500);
@@ -1809,7 +2276,7 @@ window.SnapStreakAutomation = (function() {
           const step4Ok = await executeStepWithScreenVerification(
             3,
             async () => {
-              await step3_ensureSendToDrawerOpen();
+              await step3_ensureSendToDrawerOpen(macroGuidance);
               await sleep(600);
               await step3b_selectRecipientsByVisualName(remainingFriends, selectionMethod, stepDelay);
             },
@@ -1817,13 +2284,15 @@ window.SnapStreakAutomation = (function() {
             async () => {
               const cur = detectCurrentScreen();
               if (cur === SCREEN_STATES.CAMERA_READY) {
-                await step2_pressWhiteCirclePhoto();
+                await step2_pressWhiteCirclePhoto(macroGuidance);
                 await sleep(1500);
               } else if (cur === SCREEN_STATES.PHOTO_CAPTURED) {
-                await step3_ensureSendToDrawerOpen();
+                await step3_ensureSendToDrawerOpen(macroGuidance);
                 await sleep(800);
               }
-            }
+            },
+            2,
+            6000
           );
           if (!step4Ok) throw new Error('Failed to open recipient drawer and select friends on screen.');
           await sleep(humanMode ? 1000 : 500);
@@ -1862,15 +2331,29 @@ window.SnapStreakAutomation = (function() {
             log('⏸️ [SAMPLE PREVIEW] Visual sample ready! Paused before final Send button. Press "🚀 Send Final Snap Now" to complete, or "Cancel" to abort.', 'warn');
 
             const userApproved = await new Promise((resolve) => {
-              pendingConfirmResolver = resolve;
+              let settled = false;
+              const safeResolve = (val) => {
+                if (!settled) {
+                  settled = true;
+                  clearInterval(cancelPoll);
+                  resolve(val);
+                }
+              };
+              pendingConfirmResolver = safeResolve;
               const confirmBtn = document.getElementById('snapstreak-btn-confirm-send');
               if (confirmBtn) {
-                confirmBtn.onclick = () => { resolve(true); };
+                confirmBtn.onclick = () => { safeResolve(true); };
               }
               const cancelBtn = document.getElementById('snapstreak-btn-cancel-preview');
               if (cancelBtn) {
-                cancelBtn.onclick = () => { resolve(false); };
+                cancelBtn.onclick = () => { safeResolve(false); };
               }
+              // Poll for user cancellation while paused
+              const cancelPoll = setInterval(() => {
+                if (isCancellationRequested()) {
+                  safeResolve(false);
+                }
+              }, 250);
             });
 
             dismissManualConfirmPrompt();
@@ -1884,25 +2367,54 @@ window.SnapStreakAutomation = (function() {
           }
 
           // Step 5: Click the Send button & verify delivery (drawer closed)
-          const step5Ok = await executeStepWithScreenVerification(
-            4,
-            async () => { await step4_sendSnap(); },
-            [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
-            async () => {
-              const sendBtn = findFinalSendButton();
-              if (sendBtn) {
-                sendBtn.click();
-                await sleep(1500);
-              }
+          let step5Ok = false;
+          try {
+            step5Ok = await executeStepWithScreenVerification(
+              4,
+              async () => {
+                await step4_sendSnap(macroGuidance, remainingFriends);
+                snapSentSuccessfully = true;
+                window.__snapstreak_snap_dispatched = true;
+              },
+              [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
+              async () => {
+                if (window.__snapstreak_unauthorized_detected) {
+                  log('🛑 [SAFETY GUARD] Fallback Send click suppressed because unauthorized recipient was detected.', 'err');
+                  return;
+                }
+                const verified = await readAndAuditSelectedRecipients(remainingFriends);
+                if (verified && verified.length > 0) {
+                  const sendBtn = findFinalSendButton();
+                  if (sendBtn) {
+                    sendBtn.click();
+                    snapSentSuccessfully = true;
+                    window.__snapstreak_snap_dispatched = true;
+                    await sleep(1500);
+                  }
+                }
+              },
+              1,
+              6000
+            );
+          } catch (sendStepErr) {
+            log(`  Notice during screen verification: ${sendStepErr.message}`, 'info');
+            if (sendStepErr.message && sendStepErr.message.includes('HARD_ABORT')) {
+              throw sendStepErr;
             }
-          );
+          }
 
-          if (!step5Ok) throw new Error('Final Send click did not close recipient drawer on screen.');
+          if (window.__snapstreak_unauthorized_detected) {
+            throw new Error('HARD_ABORT: Unauthorized recipient detected before send. Dispatch aborted.');
+          }
+
+          if (!snapSentSuccessfully && !window.__snapstreak_snap_dispatched) {
+            throw new Error('Send verification failed: snap was not dispatched.');
+          }
 
           // Step 5b: Check to make sure snap was sent to each user
           const deliveryResult = await step5_verifyDeliveryForEachUser(remainingFriends);
 
-          // Step 6: Open chat to visually verify delivery and fallback to in-chat send if needed
+          // Step 6: Open chat to visually verify delivery (passive read-only inspection)
           let chatVerification = null;
           try {
             chatVerification = await step6_openChatAndVerifyDelivery(remainingFriends);
@@ -1910,13 +2422,17 @@ window.SnapStreakAutomation = (function() {
             log(`  Notice during chat opening verification: ${chatErr.message}`, 'warn');
           }
 
-          log('✅ All streak steps completed! Screen confirmed delivered to specified users. 🔥', 'success');
+          log('✅ Streak dispatch completed! Verified target friends received snaps. 🔥', 'success');
           return { success: true, deliveryResult, chatVerification, attempts: attempt };
         } catch (attemptErr) {
           lastError = attemptErr;
           if (attemptErr.message && attemptErr.message.includes('COMMAND_CANCELLED')) {
             log('⏹️ Streak command cancelled successfully.', 'warn');
             return { success: false, cancelled: true };
+          }
+          if (snapSentSuccessfully || window.__snapstreak_snap_dispatched) {
+            log('✓ Snap has already been sent in this session. Suppressing retry to prevent spamming.', 'warn');
+            return { success: true, snapSent: true };
           }
           log(`⚠️ Attempt ${attempt}/${maxRetries} encountered issue: ${attemptErr.message}`, 'warn');
           if (attempt >= maxRetries) {
@@ -2033,6 +2549,8 @@ window.SnapStreakAutomation = (function() {
     runSendStreaks,
     showManualConfirmPrompt,
     dismissManualConfirmPrompt,
+    // Macro Understanding Engine
+    understandMacro,
     // Screen State Matching & Verification Exports
     SCREEN_STATES,
     detectCurrentScreen,

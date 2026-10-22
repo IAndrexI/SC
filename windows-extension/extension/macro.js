@@ -159,6 +159,15 @@ window.SnapStreakMacro = (function() {
       };
       await chrome.storage.local.set({ snapstreak_macros: saved });
       log(`✓ Saved macro "${macroName}" (${events.length} steps).`, 'success');
+
+      // Also persist to backend /api/macro/save for headless auto-runs
+      try {
+        fetch('http://127.0.0.1:8080/api/macro/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: macroName, events: events })
+        }).catch(() => {});
+      } catch(e) {}
     }
 
     return events;
@@ -299,7 +308,7 @@ window.SnapStreakMacro = (function() {
 
     const config = (window.SnapStreakOverlay && window.SnapStreakOverlay.getConfig)
       ? window.SnapStreakOverlay.getConfig()
-      : { friends: ['*//Eric\\\\*', 'Dylan'], selectionMethod: 'auto', humanMode: true };
+      : { friends: ['*//Eric\\*', 'Dylan'], selectionMethod: 'auto', humanMode: true };
 
     if (isTest) {
       log(`🧪 [TEST MODE] Starting Dry-Run verification for "${macro.name}"...`, 'info');
@@ -331,7 +340,7 @@ window.SnapStreakMacro = (function() {
         log('  Step 4/5: Opening Send-To drawer & selecting recipients by visual name...', 'info');
         await window.SnapStreakAutomation.step3_ensureSendToDrawerOpen();
         await window.SnapStreakAutomation.sleep(800);
-        await window.SnapStreakAutomation.step3b_selectRecipientsByVisualName(config.friends, config.selectionMethod, stepDelay);
+        await window.SnapStreakAutomation.step3b_selectRecipientsByVisualName(config.friends || ['*//Eric\\*', 'Dylan'], config.selectionMethod, stepDelay);
         await window.SnapStreakAutomation.sleep(1000);
 
         // Find Send button
@@ -362,12 +371,27 @@ window.SnapStreakMacro = (function() {
           return true;
         } else {
           log('  Step 5/5: Submitting and Sending Streak...', 'info');
-          await window.SnapStreakAutomation.step4_sendSnap();
+          await window.SnapStreakAutomation.step4_sendSnap(null, config.friends || ['*//Eric\\*', 'Dylan']);
           log(`🎉 Primary Macro "${macro.name}" completed successfully! Streaks sent. 🔥`, 'success');
           return true;
         }
       } else {
-        // Custom Recorded Macro Replay
+        // Custom Recorded Macro Replay Guided by SnapStreakAutomation
+        log(`🧠 Macro Intelligence: Parsing "${macro.name}" to guide autonomous steps...`, 'info');
+        if (window.SnapStreakAutomation && typeof window.SnapStreakAutomation.runSendStreaks === 'function') {
+          const runRes = await window.SnapStreakAutomation.runSendStreaks({
+            macro: macro,
+            friends: config.friends || ['*//Eric\\*', 'Dylan'],
+            selectionMethod: config.selectionMethod || 'auto',
+            stepDelay: stepDelay,
+            humanMode: config.humanMode ?? true,
+            isTest: isTest,
+            pauseBeforeFinalSend: isTest
+          });
+          return runRes && runRes.success;
+        }
+
+        // Direct event-by-event replay fallback if SnapStreakAutomation is not loaded
         for (let i = 0; i < macro.steps.length; i++) {
           if (window.SnapStreakAutomation && window.SnapStreakAutomation.checkCancelled) {
             window.SnapStreakAutomation.checkCancelled();
@@ -414,6 +438,14 @@ window.SnapStreakMacro = (function() {
             } else {
               showClickIndicator(step.x, step.y);
               if (target) {
+                const isSendClick = isLast ||
+                  (step.text && (step.text.toLowerCase().includes('send') || step.text.toLowerCase().includes('send snap'))) ||
+                  (target.textContent && target.textContent.toLowerCase().includes('send')) ||
+                  (target.getAttribute('aria-label') && target.getAttribute('aria-label').toLowerCase().includes('send'));
+                if (isSendClick && window.SnapStreakAutomation && window.SnapStreakAutomation.readAndAuditSelectedRecipients) {
+                  log('📋 [MACRO AUDIT] Auditing recipients before clicking Send in custom macro replay...', 'info');
+                  await window.SnapStreakAutomation.readAndAuditSelectedRecipients(config.friends || ['*//Eric\\*', 'Dylan']);
+                }
                 window.SnapStreakAutomation.simulateHumanClick(target);
               }
             }
@@ -459,6 +491,7 @@ window.SnapStreakMacro = (function() {
     deleteMacro,
     replayMacro,
     showTestIndicator,
+    understandMacro: (m) => (window.SnapStreakAutomation && window.SnapStreakAutomation.understandMacro ? window.SnapStreakAutomation.understandMacro(m) : null),
     DEFAULT_MACRO_NAME,
     isRecording: () => isRecording
   };
