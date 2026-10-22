@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "4.3.0"
+APP_VERSION = "4.3.1"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -214,7 +214,9 @@ async def lifespan(app: FastAPI):
                     log.info(f"🔄 Auto-update: new commit detected on origin/main ({remote_c[:7]}). Pulling...")
                     subprocess.run(["git", "-C", str(repo), "reset", "--hard", "FETCH_HEAD"], capture_output=True, text=True, timeout=15)
                     try:
-                        subprocess.run(["systemctl", "restart", "sc"], timeout=5)
+                        res = subprocess.run(["systemctl", "restart", "sc"], timeout=5)
+                        if res.returncode == 0:
+                            return
                     except Exception:
                         pass
                     os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -378,7 +380,7 @@ async def get_status(request: Request):
             next_run = next_runs[0]
 
         host_ip = request.url.hostname or "localhost"
-        novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale&path=websockify"
+        novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify"
 
         is_logged_in = False
         try:
@@ -416,7 +418,7 @@ async def get_status(request: Request):
             "error": str(ex),
             "logged_in": False,
             "login_active": False,
-            "novnc_url": f"http://{host_ip}:6080/vnc.html?autoconnect=true&resize=scale",
+            "novnc_url": f"http://{host_ip}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify",
             "running": False,
             "last_run_time": None,
             "last_run_results": {},
@@ -453,7 +455,9 @@ async def system_update():
         async def _restart_service():
             await asyncio.sleep(1.0)
             try:
-                subprocess.run(["systemctl", "restart", "sc"], timeout=5)
+                res = subprocess.run(["systemctl", "restart", "sc"], timeout=5)
+                if res.returncode == 0:
+                    return
             except Exception:
                 pass
             os.execv(sys.executable, [sys.executable] + sys.argv)

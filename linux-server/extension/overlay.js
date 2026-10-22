@@ -705,7 +705,7 @@ textarea {
     waitForUIChanges: true,
     scheduleEnabled: true,
     scheduleTime: '09:00',
-    endTaskOnComplete: true,
+    endTaskOnComplete: false,
     alwaysCloseOtherTabs: true,
     activeMacro: '⚡ Default Streak Macro',
     isDocked: true,

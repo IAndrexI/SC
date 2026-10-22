@@ -15,7 +15,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%2300f2fe'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23080c16'>⚡</text></svg>" />
   <script>
     console.log(
-      "%c PROTUTECH SNAPSTREAK %c v4.3.0 %c",
+      "%c PROTUTECH SNAPSTREAK %c v4.3.1 %c",
       "background: #00f2fe; color: #080c16; font-weight: 800; padding: 4px 8px; border-radius: 4px 0 0 4px;",
       "background: #7f00ff; color: #ffffff; font-weight: 700; padding: 4px 8px; border-radius: 0 4px 4px 0;",
       ""
@@ -462,7 +462,7 @@
 <header>
   <div class="logo">⚡</div>
   <h1>SC Service Control</h1>
-  <span id="app-version-badge" class="badge">v4.3.0</span>
+  <span id="app-version-badge" class="badge">v4.3.1</span>
   <div class="protutech-theme-bar">
     <select id="pt-palette-select" class="pt-theme-select" title="Switch Theme Palette">
       <option value="protutech-obsidian">Obsidian Neon</option>
@@ -650,7 +650,7 @@
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:18px">🧩</span>
               <span style="font-size:15px;font-weight:700;color:var(--text)">SnapStreak In-Page Browser Extension</span>
-              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.3.0</span>
+              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.3.1</span>
               <span id="ext-session-status-badge" class="badge" style="background:rgba(61,220,132,0.15);color:var(--green);border-color:var(--green)">Active in Web Session</span>
             </div>
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
@@ -1312,7 +1312,7 @@
         document.getElementById('login-idle').style.display = 'none';
         document.getElementById('login-active').style.display = '';
         const host = window.location.hostname || 'localhost';
-        const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale&path=websockify`;
+        const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
         const frame = document.getElementById('novnc-iframe');
         if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
           frame.src = vncUrl;
@@ -1831,7 +1831,7 @@
     // Load iframe after desktop socket initializes
     setTimeout(() => {
       const host = window.location.hostname || 'localhost';
-      const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale&path=websockify`;
+      const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
       if (frame && (!frame.src || frame.src === 'about:blank')) {
         frame.src = vncUrl;
       }
@@ -2541,7 +2541,7 @@
       const host = window.location.hostname || 'localhost';
       frame.src = 'about:blank';
       setTimeout(() => {
-        frame.src = `http://${host}:6080/vnc.html?autoconnect=true&resize=scale&path=websockify`;
+        frame.src = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
       }, 300);
     }
   }

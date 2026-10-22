@@ -106,7 +106,8 @@ Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/sc-browsers"
 Environment="PYTHONPATH=${APP_SUBDIR}:${APP_DIR}"
 ExecStart=${APP_DIR}/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT}
 Restart=always
-RestartSec=5
+RestartSec=3
+StartLimitIntervalSec=0
 
 
 [Install]

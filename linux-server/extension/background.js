@@ -17,7 +17,7 @@ const DEFAULT_CONFIG = {
   scheduleEnabled: true,
   scheduleTime: '09:00',
   scheduleTimes: ['09:00'],
-  endTaskOnComplete: true,
+  endTaskOnComplete: false,
   alwaysCloseOtherTabs: true,
   activeMacro: '⚡ Default Streak Macro'
 };
