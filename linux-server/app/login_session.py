@@ -147,12 +147,110 @@ def _cleanup_processes():
             pass
 
 
-def _is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
+def _is_port_listening(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
     try:
-        with socket.create_connection((host, port), timeout=0.3):
+        with socket.create_connection((host, port), timeout=timeout):
             return True
     except Exception:
         return False
+
+
+def _is_vnc_responding(port: int = VNC_PORT, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
+    """Check if x11vnc is actively answering and returns the RFB handshake."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            banner = s.recv(12)
+            return banner.startswith(b"RFB")
+    except Exception:
+        return False
+
+
+def _is_websockify_responding(port: int = NOVNC_PORT, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
+    """Check if websockify proxy is actively answering HTTP/WebSocket requests."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(b"HEAD / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            data = s.recv(16)
+            return len(data) > 0
+    except Exception:
+        return False
+
+
+def is_vnc_healthy() -> bool:
+    """Check overall health of the VNC display & proxy stack."""
+    if not _state.get("active"):
+        return True
+    if not sys.platform.startswith("linux") or shutil.which("Xvfb") is None:
+        return True
+    return _is_vnc_responding(VNC_PORT) and _is_websockify_responding(NOVNC_PORT)
+
+
+async def reset_vnc_stack(emit: Callable | None = None) -> dict:
+    """Safely terminate and respawn x11vnc and websockify without disturbing the browser or Playwright."""
+    if not sys.platform.startswith("linux") or shutil.which("Xvfb") is None:
+        return {"ok": True, "message": "VNC stack not used on this platform"}
+
+    _log("🔄 [VNC Reset] Resetting x11vnc and websockify processes...", emit)
+
+    # Terminate existing VNC proxy processes
+    _kill(_state.get("websockify"))
+    _kill(_state.get("x11vnc"))
+    _state["websockify"] = None
+    _state["x11vnc"] = None
+
+    try:
+        subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    await asyncio.sleep(0.4)
+
+    # Check if Xvfb is running; resurrect if terminated
+    xp = _state.get("xvfb")
+    if xp and xp.poll() is not None:
+        _log("  ⚠ Xvfb had terminated. Respawning Xvfb on display " + DISPLAY, emit)
+        _state["xvfb"] = subprocess.Popen(
+            ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac", "+extension", "RANDR", "+extension", "GLX", "-noreset"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        await asyncio.sleep(0.6)
+
+    # Respawn x11vnc
+    _state["x11vnc"] = subprocess.Popen(
+        [
+            "x11vnc",
+            "-display", DISPLAY,
+            "-nopw",
+            "-forever",
+            "-shared",
+            "-rfbport", str(VNC_PORT),
+            "-listen", "127.0.0.1",
+            "-wait", "5",
+            "-defer", "5",
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    vnc_ok = await _wait_for_port(VNC_PORT, "127.0.0.1", timeout=3.5)
+
+    # Respawn websockify
+    novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
+    websock_cmd = ["websockify", "--heartbeat", "30"]
+    if novnc_web:
+        websock_cmd.extend(["--web", novnc_web])
+    websock_cmd.extend([f"0.0.0.0:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}"])
+
+    _state["websockify"] = subprocess.Popen(
+        websock_cmd,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    ws_ok = await _wait_for_port(NOVNC_PORT, "127.0.0.1", timeout=3.5)
+
+    msg = f"VNC Reset finished: x11vnc={vnc_ok}, websockify={ws_ok}"
+    _log(f"  ✓ {msg}", emit)
+    return {"ok": vnc_ok and ws_ok, "vnc_ok": vnc_ok, "websockify_ok": ws_ok, "message": msg}
 
 
 async def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 4.0) -> bool:
@@ -406,43 +504,30 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
         )
 
         async def _vnc_watchdog():
-            """Continuously inspect x11vnc and websockify; auto-resurrect if connection drops."""
+            """Continuously inspect x11vnc and websockify; auto-resurrect if stalled or crashed."""
+            stall_count = 0
             while _state.get("active"):
+                await asyncio.sleep(3)
+                if not _state.get("active"):
+                    break
                 try:
                     xp = _state.get("x11vnc")
-                    if xp and xp.poll() is not None:
-                        _log("  ⚠️ [VNC Watchdog] x11vnc stopped. Auto-resurrecting...", emit)
-                        _state["x11vnc"] = subprocess.Popen(
-                            [
-                                "x11vnc",
-                                "-display", DISPLAY,
-                                "-nopw",
-                                "-forever",
-                                "-shared",
-                                "-rfbport", str(VNC_PORT),
-                                "-listen", "127.0.0.1",
-                                "-wait", "5",
-                                "-defer", "5",
-                            ],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                        )
                     wp = _state.get("websockify")
-                    need_ws = False
-                    if wp and wp.poll() is not None:
-                        need_ws = True
-                    elif not _is_port_listening(NOVNC_PORT, "127.0.0.1"):
-                        need_ws = True
-                    if need_ws:
-                        _log("  ⚠️ [VNC Watchdog] websockify stopped. Auto-resurrecting...", emit)
-                        if _state.get("websockify"):
-                            _kill(_state.get("websockify"))
-                        _state["websockify"] = subprocess.Popen(
-                            websock_cmd,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                        )
+                    proc_dead = (xp and xp.poll() is not None) or (wp and wp.poll() is not None)
+                    vnc_live = _is_vnc_responding(VNC_PORT)
+                    ws_live = _is_websockify_responding(NOVNC_PORT)
+
+                    if proc_dead or not vnc_live or not ws_live:
+                        stall_count += 1
+                        if proc_dead or stall_count >= 2:
+                            _log(f"  ⚠️ [VNC Watchdog] VNC stall detected (proc_dead={proc_dead}, vnc={vnc_live}, ws={ws_live}). Executing auto-reset...", emit)
+                            await reset_vnc_stack(emit=emit)
+                            stall_count = 0
+                            await asyncio.sleep(2)
+                    else:
+                        stall_count = 0
                 except Exception:
                     pass
-                await asyncio.sleep(4)
 
         if _state.get("watchdog_task"):
             try:

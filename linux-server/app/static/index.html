@@ -15,7 +15,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%2300f2fe'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23080c16'>⚡</text></svg>" />
   <script>
     console.log(
-      "%c PROTUTECH SNAPSTREAK %c v4.3.1 %c",
+      "%c PROTUTECH SNAPSTREAK %c v4.3.2 %c",
       "background: #00f2fe; color: #080c16; font-weight: 800; padding: 4px 8px; border-radius: 4px 0 0 4px;",
       "background: #7f00ff; color: #ffffff; font-weight: 700; padding: 4px 8px; border-radius: 0 4px 4px 0;",
       ""
@@ -462,7 +462,7 @@
 <header>
   <div class="logo">⚡</div>
   <h1>SC Service Control</h1>
-  <span id="app-version-badge" class="badge">v4.3.1</span>
+  <span id="app-version-badge" class="badge">v4.3.2</span>
   <div class="protutech-theme-bar">
     <select id="pt-palette-select" class="pt-theme-select" title="Switch Theme Palette">
       <option value="protutech-obsidian">Obsidian Neon</option>
@@ -650,7 +650,7 @@
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:18px">🧩</span>
               <span style="font-size:15px;font-weight:700;color:var(--text)">SnapStreak In-Page Browser Extension</span>
-              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.3.1</span>
+              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.3.2</span>
               <span id="ext-session-status-badge" class="badge" style="background:rgba(61,220,132,0.15);color:var(--green);border-color:var(--green)">Active in Web Session</span>
             </div>
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
@@ -874,6 +874,8 @@
           </div>
 
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px" onclick="reloadVncFrame()" title="Reload the desktop iframe viewer">↻ Reload Desktop</button>
+            <button id="btn-reset-vnc" class="btn btn-secondary" style="font-size:11px;padding:4px 8px;border-color:var(--yellow);color:var(--yellow);font-weight:700" onclick="triggerVncReset()" title="Kill and cleanly respawn x11vnc and websockify proxy">⚡ Auto-Reset VNC</button>
             <button class="btn btn-success" style="font-size:11px;padding:4px 10px;font-weight:bold" onclick="saveLogin()">💾 Save Session</button>
             <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks</button>
             <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2)">↗ Fullscreen</a>
@@ -1323,6 +1325,15 @@
         const link = document.getElementById('novnc-tab-link');
         if (link) link.href = vncUrl;
         if (!_shotLoop) _startShotLoop();
+
+        // Auto-heal VNC if server health check reports stalled/unhealthy
+        if (s.vnc_healthy === false) {
+          if (Date.now() - _lastVncResetTime > 15000) {
+            _lastVncResetTime = Date.now();
+            console.warn('[VNC] Server reported stalled VNC stack. Auto-triggering reset...');
+            triggerVncReset();
+          }
+        }
       } else {
         document.getElementById('login-idle').style.display = '';
         document.getElementById('login-active').style.display = 'none';
@@ -2543,6 +2554,41 @@
       setTimeout(() => {
         frame.src = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
       }, 300);
+    }
+  }
+
+  let _lastVncResetTime = 0;
+  async function triggerVncReset() {
+    const btn = document.getElementById('btn-reset-vnc');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '⏳ Resetting...';
+    }
+    const statusEl = document.getElementById('login-status');
+    if (statusEl) {
+      statusEl.style.color = 'var(--yellow)';
+      statusEl.textContent = '🔄 Auto-resetting VNC desktop & websockify proxy on server...';
+    }
+    try {
+      const res = await fetch('/api/login/vnc-reset', { method: 'POST' });
+      const data = await res.json();
+      if (statusEl) {
+        statusEl.style.color = data.ok ? 'var(--green)' : 'var(--red)';
+        statusEl.textContent = data.message || 'VNC reset executed.';
+      }
+    } catch (err) {
+      if (statusEl) {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = 'Failed to reset VNC: ' + err.message;
+      }
+    }
+    reloadVncFrame();
+    _lastVncResetTime = Date.now();
+    if (btn) {
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = '⚡ Auto-Reset VNC';
+      }, 2500);
     }
   }
 

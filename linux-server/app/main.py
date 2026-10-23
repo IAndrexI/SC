@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "4.3.1"
+APP_VERSION = "4.3.2"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -396,6 +396,7 @@ async def get_status(request: Request):
             "logged_in":       is_logged_in,
             "login_active":    login_session.is_active(),
             "login_starting":  login_session.is_starting(),
+            "vnc_healthy":     login_session.is_vnc_healthy(),
             "novnc_url":       novnc_url,
             "running":         _state.get("running", False),
             "last_run_time":   _state.get("last_run_time"),
@@ -539,6 +540,14 @@ async def login_cancel():
     """Cancel the active login session without saving."""
     await login_session.cancel(emit=_emit)
     return {"message": "Login session cancelled."}
+
+
+@app.post("/api/login/vnc-reset")
+async def login_vnc_reset():
+    """Force an active reset and re-binding of x11vnc and websockify proxy."""
+    if not login_session.is_active():
+        return {"ok": False, "message": "No active browser session."}
+    return await login_session.reset_vnc_stack(emit=_emit)
 
 
 class GoogleLoginInput(BaseModel):
