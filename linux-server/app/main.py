@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "4.3.2"
+APP_VERSION = "5.0.0"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -744,6 +744,12 @@ class ClickInput(BaseModel):
     x: int
     y: int
 
+class ScrollInput(BaseModel):
+    x: int = 720
+    y: int = 450
+    delta_x: int = 0
+    delta_y: int = 120
+
 class TypeInput(BaseModel):
     text: str
 
@@ -772,6 +778,15 @@ async def login_submit():
 async def login_click(body: ClickInput):
     await login_session.click(body.x, body.y)
     return {"ok": True}
+
+@app.post("/api/login/scroll")
+async def login_scroll(body: ScrollInput):
+    await login_session.scroll(body.x, body.y, body.delta_x, body.delta_y)
+    return {"ok": True}
+
+@app.post("/api/login/repair-snapchat")
+async def login_repair_snapchat():
+    return await login_session.repair_snapchat_session(emit=_emit)
 
 @app.post("/api/login/type")
 async def login_type(body: TypeInput):

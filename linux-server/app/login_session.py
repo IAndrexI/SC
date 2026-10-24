@@ -370,18 +370,28 @@ async def ensure_extension_active(page: Page | None = None, force_toggle: bool =
 
 
 
-async def _fast_frame_loop():
-    """Fallback frame loop in case CDP screencast is idle or in Firefox."""
-    while _state["active"]:
+async def _fast_frame_loop(emit: Callable | None = None):
+    """Continuous frame loop that guarantees live Port-8080 streaming even when CDP is idle or in popups."""
+    while _state.get("active"):
         try:
-            page: Page = _state.get("page")
-            if page:
-                img = await page.screenshot(type="jpeg", quality=60, full_page=False)
-                _state["last_shot_b64"] = base64.b64encode(img).decode()
-                _state["url"] = page.url
+            now = time.time()
+            # Capture if more than 0.8s since last CDP frame (or always in Firefox / static screen)
+            if now - _state.get("last_frame_ts", 0) >= 0.8:
+                page: Page = _state.get("page")
+                if page and not page.is_closed():
+                    img = await page.screenshot(type="jpeg", quality=65, full_page=False, timeout=2500)
+                    b64 = base64.b64encode(img).decode()
+                    _state["last_shot_b64"] = b64
+                    _state["url"] = page.url
+                    _state["last_frame_ts"] = time.time()
+                    if emit:
+                        try:
+                            emit(json.dumps({"type": "screencast", "image": b64, "url": page.url}))
+                        except Exception:
+                            pass
         except Exception:
             pass
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.65)
 
 
 def _find_chrome_executable() -> str | None:
@@ -716,7 +726,14 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                     _log("  ✓ SnapStreak Extension injected into Chrome CDP context.", emit)
                 _log("  ✓ Connected cleanly to native Chrome without automation flags.", emit)
             else:
-                _log("  ⚠ Native Chrome CDP wait timed out; falling back to persistent context...", emit)
+                _log("  ⚠ Native Chrome CDP wait timed out; cleaning up process and falling back to persistent context...", emit)
+                _kill(_state.get("chrome_proc"))
+                _state["chrome_proc"] = None
+                for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                    try:
+                        (USER_DATA_DIR / lock_name).unlink()
+                    except Exception:
+                        pass
 
         if not context:
             kwargs = {
@@ -786,11 +803,28 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
     page.on("domcontentloaded", lambda p: asyncio.create_task(ensure_extension_active(p)))
     page.on("load", lambda p: asyncio.create_task(ensure_extension_active(p)))
 
-    # Start screencast: CDP for Chromium, fast frame loop for Firefox
+    # Grant camera, microphone, and notification permissions explicitly for Snapchat origins
+    for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com"]:
+        try:
+            await context.grant_permissions(["camera", "microphone", "notifications"], origin=origin)
+        except Exception:
+            pass
+
+    # Start screencast: CDP for Chromium + continuous _fast_frame_loop heartbeat
+    _state["last_frame_ts"] = 0.0
     if chosen_engine != "firefox":
         try:
             cdp = await context.new_cdp_session(page)
             _state["cdp"] = cdp
+
+            for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com"]:
+                try:
+                    await cdp.send("Browser.grantPermissions", {
+                        "permissions": ["videoCapture", "audioCapture", "notifications", "durableStorage"],
+                        "origin": origin,
+                    })
+                except Exception:
+                    pass
 
             async def on_screencast_frame(params):
                 session_id = params.get("sessionId")
@@ -803,6 +837,7 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 if data_b64:
                     _state["last_shot_b64"] = data_b64
                     _state["url"] = page.url
+                    _state["last_frame_ts"] = time.time()
                     if emit:
                         emit(json.dumps({"type": "screencast", "image": data_b64, "url": page.url}))
 
@@ -810,17 +845,16 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
 
             await cdp.send("Page.startScreencast", {
                 "format": "jpeg",
-                "quality": 60,
+                "quality": 65,
                 "maxWidth": 1440,
                 "maxHeight": 900,
                 "everyNthFrame": 1,
             })
         except Exception as ex:
-            _log(f"CDP Screencast fallback: {ex}", emit)
-            asyncio.create_task(_fast_frame_loop())
-    else:
-        _log("  ℹ Firefox active — streaming via screenshot loop.", emit)
-        asyncio.create_task(_fast_frame_loop())
+            _log(f"CDP Screencast notice: {ex}", emit)
+
+    # Always run _fast_frame_loop alongside CDP so static pages & popups stream without stalling
+    asyncio.create_task(_fast_frame_loop(emit=emit))
 
     # Navigate to login page if unauthenticated, or directly to web.snapchat.com if session exists
     if SESSION_FILE.exists():
@@ -841,21 +875,31 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
 
     _state["nav_task"] = asyncio.create_task(_initial_navigation())
 
-    # Background task to monitor for login completion directly inside the browser
+    # Background task to monitor for login completion & auto-dismiss Snapchat blocker modals
     async def _auto_save_watcher():
+        already_announced_save = False
         while _state.get("active"):
             try:
                 p = _state.get("page")
                 ctx = _state.get("context")
-                if p and ctx:
+                if p and ctx and not p.is_closed():
                     u = p.url or ""
-                    # Keep extension overlay attached on Snapchat pages
                     if "snapchat.com" in u:
                         has_host = await p.evaluate("() => Boolean(document.getElementById('snapstreak-shadow-host'))")
                         if not has_host:
                             await ensure_extension_active(p, force_toggle=False)
 
-                    # User completed login if on web.snapchat.com and not on accounts/login page
+                        # Auto-dismiss Snapchat's "Use Here" (multiple tab lock) or "Not now" modal
+                        await p.evaluate("""() => {
+                            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                            for (const b of btns) {
+                                const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                                if (t === 'use here' || t === 'not now' || t === 'got it') {
+                                    b.click();
+                                }
+                            }
+                        }""")
+
                     if "web.snapchat.com" in u and "accounts.snapchat.com" not in u and "/login" not in u:
                         cookies = await ctx.cookies()
                         c_names = {c.get("name") for c in cookies}
@@ -863,10 +907,11 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                             storage = await ctx.storage_state()
                             SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
                             SESSION_FILE.write_text(json.dumps(storage, indent=2), encoding="utf-8")
-                            _log("✓ Detected successful Snapchat login inside emulated browser! Session saved.", emit)
-                            if emit:
-                                emit("LOGIN_AUTO_SAVED")
-                            break
+                            if not already_announced_save:
+                                already_announced_save = True
+                                _log("✓ Detected active Snapchat login inside browser! Session automatically saved.", emit)
+                                if emit:
+                                    emit("LOGIN_AUTO_SAVED")
             except Exception:
                 pass
             await asyncio.sleep(3)
@@ -977,9 +1022,108 @@ async def click(x: int, y: int):
             await page.mouse.move(x, y)
             await asyncio.sleep(0.04)
             await page.mouse.click(x, y, delay=50)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.15)
+            _state["last_frame_ts"] = 0.0  # Trigger immediate frame refresh
         except Exception:
             pass
+
+
+async def scroll(x: int, y: int, delta_x: int, delta_y: int):
+    """Forward mouse wheel scroll at (x, y) to the active browser page."""
+    page: Page | None = _state.get("page")
+    if page:
+        try:
+            await page.mouse.move(x, y)
+            await page.mouse.wheel(delta_x, delta_y)
+            _state["last_frame_ts"] = 0.0
+        except Exception:
+            pass
+
+
+async def repair_snapchat_session(emit: Callable | None = None) -> dict:
+    """Fix stuck Snapchat Web sessions by clearing corrupted Service Workers/CacheStorage,
+    closing duplicate tabs, re-granting camera/mic permissions, and reloading cleanly."""
+    if not _state.get("active") or not _state.get("page"):
+        _log("🔧 Starting browser session for Snapchat Repair...", emit)
+        await start(emit=emit)
+        await asyncio.sleep(2.0)
+
+    page: Page | None = _state.get("page")
+    context: BrowserContext | None = _state.get("context")
+    cdp = _state.get("cdp")
+    if not page:
+        return {"ok": False, "error": "Browser session could not be started."}
+
+    _log("🔧 Running Snapchat Web Deep Repair (preserving login cookies)...", emit)
+    try:
+        # 1. Close extra tabs that trigger 'Snapchat is open in another tab'
+        if context and len(context.pages) > 1:
+            for p in list(context.pages):
+                if p != page:
+                    try:
+                        await p.close()
+                    except Exception:
+                        pass
+            _log("  ✓ Closed duplicate browser tabs.", emit)
+
+        # 2. Re-grant camera, microphone, and notifications permissions
+        for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com"]:
+            try:
+                if context:
+                    await context.grant_permissions(["camera", "microphone", "notifications"], origin=origin)
+                if cdp:
+                    await cdp.send("Browser.grantPermissions", {
+                        "permissions": ["videoCapture", "audioCapture", "notifications", "durableStorage"],
+                        "origin": origin,
+                    })
+            except Exception:
+                pass
+        _log("  ✓ Re-granted Camera, Microphone & Notification permissions.", emit)
+
+        # 3. Unregister broken Service Workers & clear CacheStorage (keeps cookies/auth intact!)
+        try:
+            await page.evaluate("""async () => {
+                try {
+                    if ('serviceWorker' in navigator) {
+                        const regs = await navigator.serviceWorker.getRegistrations();
+                        for (const r of regs) {
+                            await r.unregister();
+                        }
+                    }
+                    if ('caches' in window) {
+                        const keys = await caches.keys();
+                        for (const k of keys) {
+                            await caches.delete(k);
+                        }
+                    }
+                } catch (e) {}
+            }""")
+            _log("  ✓ Cleared stale Snapchat Service Workers & CacheStorage.", emit)
+        except Exception:
+            pass
+
+        # 4. Reload web.snapchat.com and re-attach virtual camera & extension
+        target = "https://web.snapchat.com/" if SESSION_FILE.exists() else "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
+        await page.goto(target, timeout=35_000, wait_until="domcontentloaded")
+        await asyncio.sleep(1.5)
+        await ensure_extension_active(page, force_toggle=False)
+
+        # 5. Click 'Use Here' or 'Not now' if present
+        await page.evaluate("""() => {
+            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            for (const b of btns) {
+                const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                if (t === 'use here' || t === 'not now' || t === 'got it' || t === 'allow') {
+                    b.click();
+                }
+            }
+        }""")
+        _state["last_frame_ts"] = 0.0
+        _log("✓ Snapchat Web Repair complete! Viewfinder and virtual camera refreshed.", emit)
+        return {"ok": True, "message": "Snapchat Web repaired and reloaded cleanly."}
+    except Exception as ex:
+        _log(f"⚠ Snapchat Repair notice: {ex}", emit)
+        return {"ok": False, "error": str(ex)}
 
 
 async def fill_field(field: str, value: str) -> dict:

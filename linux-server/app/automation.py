@@ -174,12 +174,28 @@ def fetch_webcam_image(force_refresh: bool = False) -> bytes:
 
 async def _dismiss_banners_and_reset(page: Page, emit=None):
     """Dismiss any notification popups, cookie alerts, or active chats to ensure clean view."""
+    # 0. Click "Use Here" if Snapchat complains about another open tab/session
+    for use_sel in [
+        'button:has-text("Use Here")',
+        'button:has-text("Use here")',
+        'div[role="button"]:has-text("Use Here")',
+    ]:
+        try:
+            u_loc = page.locator(use_sel).first
+            if await u_loc.is_visible(timeout=500):
+                await u_loc.click()
+                _log("  ✓ Clicked 'Use Here' to claim active Snapchat Web session.", emit)
+                await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
     # 1. Close notification/learn more banners
     for sel in [
         '[aria-label*="close" i]',
         'button:has-text("✕")',
         'button:has-text("Not now")',
         'button:has-text("Dismiss")',
+        'button:has-text("Got it")',
         '[data-testid="close-button"]',
     ]:
         try:
@@ -466,12 +482,24 @@ STEALTH_INIT_SCRIPT = """
         };
     }
 
-    // 13. Notification permission mock
+    // 13. Camera, Microphone & Notification permission mock
     if (navigator.permissions && navigator.permissions.query) {
         const origQuery = navigator.permissions.query.bind(navigator.permissions);
-        navigator.permissions.query = (p) => (
-            p.name === 'notifications' ? Promise.resolve({ state: 'granted' }) : origQuery(p)
-        );
+        const grantedObj = {
+            state: 'granted',
+            status: 'granted',
+            onchange: null,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            dispatchEvent: () => false
+        };
+        navigator.permissions.query = (p) => {
+            const name = p && p.name ? String(p.name).toLowerCase() : '';
+            if (['notifications', 'camera', 'microphone', 'persistent-storage', 'clipboard-read', 'clipboard-write'].includes(name)) {
+                return Promise.resolve(grantedObj);
+            }
+            return origQuery(p).catch(() => grantedObj);
+        };
     }
 
     // 14. Clean CDP / automation indicators
@@ -1349,8 +1377,10 @@ async def send_streaks_flow(
         emit=emit,
     )
     if not step2_ok:
-        _log("❌ Failed to verify Camera Viewfinder open on screen.", emit)
-        return {f: "camera_open_failed" for f in friends}
+        _log("⚠ Main Camera Viewfinder did not open — falling back to direct per-friend chat delivery...", emit)
+        for f in friends:
+            results[f] = await _send_to_friend(page, f, emit)
+        return results
     await _take_screenshot(page, "step1_verified_camera_open")
     await asyncio.sleep(step_delay if not is_test else 0.5)
 
@@ -1433,8 +1463,10 @@ async def send_streaks_flow(
         emit=emit,
     )
     if not step3_ok:
-        _log("❌ Photo capture failed: shutter did not transition to photo preview.", emit)
-        return {f: "photo_capture_failed" for f in friends}
+        _log("⚠ Main Shutter did not transition — falling back to direct per-friend chat delivery...", emit)
+        for f in friends:
+            results[f] = await _send_to_friend(page, f, emit)
+        return results
     await _take_screenshot(page, "step2_verified_photo_captured")
     await asyncio.sleep(step_delay if not is_test else 0.5)
 
@@ -1485,8 +1517,10 @@ async def send_streaks_flow(
         emit=emit,
     )
     if not step4_ok:
-        _log("❌ Failed to open recipient drawer and select friends on screen.", emit)
-        return {f: "recipient_selection_failed" for f in friends}
+        _log("⚠ Recipient drawer selection incomplete — falling back to direct per-friend chat delivery...", emit)
+        for f in friends:
+            results[f] = await _send_to_friend(page, f, emit)
+        return results
     await _take_screenshot(page, "step4_verified_recipients_checked")
     await asyncio.sleep(step_delay if not is_test else 0.5)
 

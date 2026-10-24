@@ -8,6 +8,7 @@
   <meta http-equiv="Expires" content="0" />
   <title>SnapStreak Auto</title>
   <link rel="manifest" href="/static/manifest.json" />
+  <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#080c16" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -15,7 +16,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%2300f2fe'/><text x='50' y='68' font-size='42' text-anchor='middle' fill='%23080c16'>⚡</text></svg>" />
   <script>
     console.log(
-      "%c PROTUTECH SNAPSTREAK %c v4.3.2 %c",
+      "%c PROTUTECH SNAPSTREAK %c v5.0.0 %c",
       "background: #00f2fe; color: #080c16; font-weight: 800; padding: 4px 8px; border-radius: 4px 0 0 4px;",
       "background: #7f00ff; color: #ffffff; font-weight: 700; padding: 4px 8px; border-radius: 0 4px 4px 0;",
       ""
@@ -76,6 +77,11 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
+      color-scheme: light dark;
+      --scrollbar-thumb: rgba(0, 242, 254, 0.35);
+      --scrollbar-track: rgba(8, 12, 22, 0.7);
+      scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+      scrollbar-width: thin;
       /* Default: Protutech Obsidian Palette */
       --bg: #080c16;
       --bg-sidebar: #0d1322;
@@ -250,36 +256,90 @@
       border-color: var(--accent);
     }
 
+    h1, h2, h3, h4, h5, h6 {
+      text-wrap: balance;
+    }
+    p, li, blockquote {
+      text-wrap: pretty;
+    }
+    @supports not (scrollbar-color: auto) {
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: 5px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--scrollbar-track);
+      }
+    }
+
+    header {
+      width: 100%;
+      max-width: 1360px;
+      background: rgba(13, 19, 34, 0.82);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg);
+      padding: 14px 20px;
+      box-shadow: var(--shadow-card);
+      flex-wrap: wrap;
+    }
+
     .grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(12, 1fr);
       gap: 18px;
       width: 100%;
-      max-width: 900px;
+      max-width: 1360px;
     }
-    @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
-
     .card {
-      background: var(--surface2);
+      grid-column: span 6;
+      background: linear-gradient(180deg, rgba(18, 26, 45, 0.92) 0%, rgba(13, 19, 34, 0.96) 100%);
+      backdrop-filter: blur(14px);
       border: 1px solid var(--border-card);
       border-radius: var(--radius-lg);
       padding: 22px;
       box-shadow: var(--shadow-card);
-      transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+      transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
     }
     .card:hover {
       border-color: var(--border-hover);
       box-shadow: var(--shadow-hover);
-      transform: translateY(-2px);
     }
     .card.wide { grid-column: 1 / -1; }
+    @media (max-width: 960px) {
+      .card { grid-column: 1 / -1; }
+    }
     .card h2 {
       font-size: 12px;
       font-weight: 800;
       text-transform: uppercase;
       letter-spacing: 1.2px;
-      color: var(--text-dim);
+      color: var(--accent);
       margin-bottom: 16px;
+    }
+    #click-dot {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      margin-left: -12px;
+      margin-top: -12px;
+      border-radius: 50%;
+      background: rgba(0, 242, 254, 0.45);
+      border: 2px solid #fffc00;
+      box-shadow: 0 0 16px #00f2fe;
+      pointer-events: none;
+      display: none;
+      z-index: 30;
+      animation: clickRipple 0.4s ease-out forwards;
+    }
+    @keyframes clickRipple {
+      0% { transform: scale(0.5); opacity: 1; }
+      100% { transform: scale(1.8); opacity: 0; }
     }
 
     /* Status pills */
@@ -462,7 +522,7 @@
 <header>
   <div class="logo">⚡</div>
   <h1>SC Service Control</h1>
-  <span id="app-version-badge" class="badge">v4.3.2</span>
+  <span id="app-version-badge" class="badge">v5.0.0</span>
   <div class="protutech-theme-bar">
     <select id="pt-palette-select" class="pt-theme-select" title="Switch Theme Palette">
       <option value="protutech-obsidian">Obsidian Neon</option>
@@ -574,8 +634,9 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h2 style="margin:0">Snapchat Automation & Live Control</h2>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-secondary" id="btn-mode-bliss" style="padding:6px 14px;font-size:12px;background:var(--accent)" onclick="switchPlatform('bliss')">🤖 Bliss OS (Android VM)</button>
-        <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('web')">🖥️ Web Browser Mode</button>
+        <button class="btn btn-secondary" id="btn-mode-web" style="padding:6px 14px;font-size:12px;background:var(--accent);color:#000;font-weight:800" onclick="switchPlatform('web')">🖥️ Web Browser Studio</button>
+        <button class="btn btn-secondary" id="btn-mode-bliss" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('bliss')">🤖 Bliss OS (Android)</button>
+        <button class="btn btn-secondary" style="padding:6px 14px;font-size:12px;border-color:#fbbf24;color:#fbbf24;font-weight:700" onclick="repairSnapchatSession()" title="Fix stuck Snapchat Web sessions, clear broken Service Workers, and re-grant camera permissions">🔧 Fix Snapchat</button>
         <button class="btn btn-secondary" id="btn-mode-extension" style="padding:6px 14px;font-size:12px" onclick="switchPlatform('extension')">🧩 Browser Extension</button>
         <button class="btn btn-secondary" id="btn-preview" style="padding:6px 14px;font-size:12px;border-color:var(--accent);color:var(--accent)" onclick="doPreview()" title="Test streak sequence up to final Send button with manual review">🧪 Sample Preview</button>
         <button class="btn btn-success" id="btn-send" style="padding:6px 16px;font-size:12px" onclick="doSend()">🔥 Send Streaks Now</button>
@@ -600,7 +661,7 @@
     </div>
 
     <!-- Bliss OS Android Mode View -->
-    <div id="bliss-view" style="display:block">
+    <div id="bliss-view" style="display:none">
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
           <div style="display:flex;align-items:center;gap:8px">
@@ -650,7 +711,7 @@
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:18px">🧩</span>
               <span style="font-size:15px;font-weight:700;color:var(--text)">SnapStreak In-Page Browser Extension</span>
-              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v4.3.2</span>
+              <span id="ext-version-badge" class="badge" style="background:#08080c;color:var(--accent)">v5.0.0</span>
               <span id="ext-session-status-badge" class="badge" style="background:rgba(61,220,132,0.15);color:var(--green);border-color:var(--green)">Active in Web Session</span>
             </div>
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px">
@@ -807,30 +868,33 @@
 
     <!-- Idle state -->
     <div id="login-idle">
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:24px;text-align:center;margin-bottom:14px">
-        <div style="font-size:38px;margin-bottom:10px">🦊</div>
-        <h3 style="font-size:16px;font-weight:700;margin-bottom:8px">Emulated Desktop Browser</h3>
-        <p style="font-size:13px;color:var(--text-dim);max-width:560px;margin:0 auto 16px;line-height:1.5">
-          All authentication happens directly inside the emulated desktop browser. Select your preferred engine below. <strong>Firefox ESR</strong> uses the Gecko engine to cleanly bypass Chromium bot/captcha suppression ("unusual connection").
+      <div style="background:linear-gradient(145deg, rgba(18,26,45,0.95) 0%, rgba(10,15,28,0.98) 100%);border:1px solid var(--border-card);border-radius:14px;padding:28px 24px;text-align:center;margin-bottom:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06)">
+        <div style="font-size:40px;margin-bottom:10px">👻⚡</div>
+        <h3 style="font-size:18px;font-weight:800;margin-bottom:8px;color:#fff">Interactive Snapchat Web Studio (Zero-Stall Port 8080 Stream)</h3>
+        <p style="font-size:13px;color:var(--text-dim);max-width:640px;margin:0 auto 18px;line-height:1.55">
+          Streams the live server browser directly over <strong>Port 8080</strong> (no external VNC port required) with hardware-spoofed 30fps HD camera, instant mouse &amp; keyboard pass-through, and automatic session persistence.
         </p>
 
         <!-- Engine Selector -->
-        <div style="display:inline-flex;background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:3px;margin-bottom:18px;gap:4px">
-          <button id="btn-engine-firefox" type="button" class="btn" style="border-radius:20px;padding:6px 16px;font-size:12px;font-weight:bold;background:var(--accent);color:#000" onclick="setBrowserEngine('firefox')">
-            🦊 Firefox ESR (Recommended)
+        <div style="display:inline-flex;background:var(--surface);border:1px solid var(--border-card);border-radius:24px;padding:4px;margin-bottom:20px;gap:4px">
+          <button id="btn-engine-chromium" type="button" class="btn" style="border-radius:20px;padding:7px 18px;font-size:12px;font-weight:800;background:var(--accent);color:#000" onclick="setBrowserEngine('chromium')">
+            🌐 Google Chrome / Chromium (Recommended)
           </button>
-          <button id="btn-engine-chromium" type="button" class="btn" style="border-radius:20px;padding:6px 16px;font-size:12px;font-weight:bold;background:transparent;color:var(--text-dim)" onclick="setBrowserEngine('chromium')">
-            🌐 Google Chrome
+          <button id="btn-engine-firefox" type="button" class="btn" style="border-radius:20px;padding:7px 18px;font-size:12px;font-weight:700;background:transparent;color:var(--text-dim)" onclick="setBrowserEngine('firefox')">
+            🦊 Firefox ESR (Gecko)
           </button>
         </div>
 
-        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-          <button class="btn btn-primary" style="font-size:14px;padding:12px 24px;background:#fff;color:#000;font-weight:700;box-shadow:0 0 16px rgba(255,255,255,0.2)" onclick="triggerGoogleLoginFlow()">
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-primary" style="font-size:14px;padding:12px 26px;font-weight:800" onclick="startLogin()">
+            🖥️ Launch Live Snapchat Browser
+          </button>
+          <button class="btn btn-secondary" style="font-size:14px;padding:12px 22px;background:#fff;color:#000;font-weight:700" onclick="triggerGoogleLoginFlow()">
             <svg style="width:16px;height:16px;vertical-align:middle;margin-right:6px" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
             Sign in with Google
           </button>
-          <button class="btn btn-secondary" style="font-size:14px;padding:12px 22px" onclick="startLogin()">
-            🖥️ Launch Browser Window
+          <button class="btn btn-secondary" style="font-size:14px;padding:12px 20px;border-color:#fbbf24;color:#fbbf24;font-weight:700" onclick="repairSnapchatSession()">
+            🔧 Deep Repair &amp; Launch
           </button>
         </div>
       </div>
@@ -874,11 +938,16 @@
           </div>
 
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px" onclick="reloadVncFrame()" title="Reload the desktop iframe viewer">↻ Reload Desktop</button>
-            <button id="btn-reset-vnc" class="btn btn-secondary" style="font-size:11px;padding:4px 8px;border-color:var(--yellow);color:var(--yellow);font-weight:700" onclick="triggerVncReset()" title="Kill and cleanly respawn x11vnc and websockify proxy">⚡ Auto-Reset VNC</button>
+            <!-- Dual-Mode Stream Switcher -->
+            <div style="display:inline-flex;background:#0b0d14;border:1px solid var(--border);border-radius:8px;padding:2px;gap:2px">
+              <button id="btn-view-direct" type="button" class="btn" style="font-size:11px;padding:3px 9px;border-radius:6px;background:var(--accent);color:#000;font-weight:800" onclick="setViewportMode('direct')" title="Stream directly over Port 8080 (Zero VNC, never stalls!)">⚡ Direct Stream (8080)</button>
+              <button id="btn-view-vnc" type="button" class="btn" style="font-size:11px;padding:3px 9px;border-radius:6px;background:transparent;color:var(--text-dim);font-weight:600" onclick="setViewportMode('vnc')" title="Switch to X11 VNC Desktop on Port 6080">🖥️ VNC Desktop (6080)</button>
+            </div>
+            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;border-color:#fbbf24;color:#fbbf24;font-weight:700" onclick="repairSnapchatSession()" title="Unregister broken Service Workers, close duplicate tabs, re-grant camera permissions & reload">🔧 Fix Snapchat</button>
+            <button id="btn-reset-vnc" class="btn btn-secondary" style="font-size:11px;padding:4px 8px;display:none" onclick="triggerVncReset()" title="Kill and cleanly respawn x11vnc and websockify proxy">⚡ Reset VNC</button>
             <button class="btn btn-success" style="font-size:11px;padding:4px 10px;font-weight:bold" onclick="saveLogin()">💾 Save Session</button>
-            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">⚡ Auto Send Streaks</button>
-            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--yellow);text-decoration:none;font-size:11px;font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2)">↗ Fullscreen</a>
+            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;background:#fffc00;color:#000;font-weight:bold" onclick="sendStreakInLiveSession()">🔥 Auto Send Streaks</button>
+            <a id="novnc-tab-link" href="#" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;font-weight:600;padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2)">↗ Fullscreen</a>
             <button class="btn btn-danger" style="font-size:11px;padding:4px 8px" onclick="cancelLogin()">✕ Close</button>
           </div>
         </div>
@@ -964,9 +1033,19 @@
           </div>
         </div>
 
-        <!-- Live Desktop / Browser Viewport -->
-        <div style="position:relative">
-          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:750px;border:none;display:block;background:#000"></iframe>
+        <!-- Live Desktop / Browser Viewport (Dual Engine: Direct Port-8080 Stream + Optional Port-6080 VNC) -->
+        <div style="position:relative;background:#05070b;min-height:540px">
+          <!-- PRIMARY ENGINE: Port-8080 Direct Interactive Stream (Never Stalls!) -->
+          <div id="direct-stream-viewport" tabindex="0" onkeydown="handleViewportKeyDown(event)" style="position:relative;width:100%;background:#05070b;outline:none;cursor:crosshair;user-select:none">
+            <img id="browser-shot" src="" alt="Live Server Browser Stream" onclick="browserClick(event)" onwheel="browserWheel(event)" style="width:100%;height:auto;max-height:760px;object-fit:contain;display:block;margin:0 auto;background:#05070b" />
+            <div id="click-dot"></div>
+            <div id="browser-loading" style="padding:60px 20px;text-align:center;color:var(--text-dim);font-size:13px">
+              ⏳ Waiting for first browser video frame over Port 8080…
+            </div>
+          </div>
+
+          <!-- SECONDARY ENGINE: Port-6080 X11 VNC Iframe (Hidden unless VNC mode toggled) -->
+          <iframe id="novnc-iframe" src="about:blank" style="width:100%;height:750px;border:none;display:none;background:#000"></iframe>
           <div id="vnc-connecting-overlay" style="position:absolute;inset:0;background:rgba(13,14,21,0.95);backdrop-filter:blur(6px);display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;color:var(--text);z-index:20">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
               <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div>
@@ -1004,8 +1083,35 @@
             </div>
 
             <button type="button" class="btn btn-secondary" onclick="document.getElementById('vnc-connecting-overlay').style.display='none'" style="margin-top:14px;font-size:12px;padding:6px 16px;background:rgba(255,255,255,0.08);border:1px solid var(--border);border-radius:20px;cursor:pointer">
-              👀 Dismiss &amp; View Desktop Now
+              👀 Dismiss &amp; View Live Stream Now
             </button>
+          </div>
+        </div>
+
+        <!-- Smart Login & Direct Keyboard Assistant Bar (Works in Direct Stream & VNC Mode) -->
+        <div style="background:#141724;border-top:1px solid var(--border);padding:10px 14px;display:flex;flex-direction:column;gap:8px">
+          <!-- Row 1: Smart Snapchat Credential Quick-Fill -->
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:700;color:var(--accent);min-width:95px">🔑 Quick Login:</span>
+            <input id="quick-user-input" type="text" placeholder="Snapchat Username or Email" style="flex:1;min-width:150px;padding:6px 10px;font-size:12px;background:#090c14;border:1px solid var(--border-card);border-radius:6px;color:#fff" onkeydown="if(event.key==='Enter')quickFillField('username','quick-user-input')" />
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="quickFillField('username','quick-user-input')">Fill User</button>
+            <input id="quick-pass-input" type="password" placeholder="Password" style="flex:1;min-width:130px;padding:6px 10px;font-size:12px;background:#090c14;border:1px solid var(--border-card);border-radius:6px;color:#fff" onkeydown="if(event.key==='Enter')quickFillField('password','quick-pass-input')" />
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="quickFillField('password','quick-pass-input')">Fill Pass</button>
+            <input id="quick-code-input" type="text" placeholder="2FA Code" style="width:90px;padding:6px 10px;font-size:12px;background:#090c14;border:1px solid var(--border-card);border-radius:6px;color:#fff" onkeydown="if(event.key==='Enter')quickFillField('code','quick-code-input')" />
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="quickFillField('code','quick-code-input')">Fill 2FA</button>
+            <button type="button" class="btn btn-primary" style="font-size:11px;padding:6px 14px;font-weight:800" onclick="quickSubmitLogin()">🚀 Submit / Next ↵</button>
+          </div>
+
+          <!-- Row 2: Direct Keyboard & Special Key Dispatch -->
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:700;color:var(--text-dim);min-width:95px">⌨️ Type Text:</span>
+            <input id="browser-text" type="text" placeholder="Type any text to send to focused browser field and press Enter…" style="flex:1;min-width:200px;padding:6px 10px;font-size:12px;background:#090c14;border:1px solid var(--border-card);border-radius:6px;color:#fff" onkeydown="if(event.key==='Enter'){event.preventDefault();browserSendText();}" />
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 12px" onclick="browserSendText()">Send Text</button>
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="browserKey('Enter')">Enter ↵</button>
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="browserKey('Tab')">Tab ⇥</button>
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="browserKey('Backspace')">⌫ Backspace</button>
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="browserKey('Escape')">Esc</button>
+            <button type="button" class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="triggerRefreshNow()" title="Capture fresh screenshot now">📸 Refresh Frame</button>
           </div>
         </div>
       </div>
@@ -1316,7 +1422,7 @@
         const host = window.location.hostname || 'localhost';
         const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
         const frame = document.getElementById('novnc-iframe');
-        if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
+        if (window._viewportMode === 'vnc' && frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes(':6080'))) {
           frame.src = vncUrl;
         }
         const overlay = document.getElementById('vnc-connecting-overlay');
@@ -1326,8 +1432,8 @@
         if (link) link.href = vncUrl;
         if (!_shotLoop) _startShotLoop();
 
-        // Auto-heal VNC if server health check reports stalled/unhealthy
-        if (s.vnc_healthy === false) {
+        // Auto-heal VNC if in VNC mode and server health check reports stalled/unhealthy
+        if (window._viewportMode === 'vnc' && s.vnc_healthy === false) {
           if (Date.now() - _lastVncResetTime > 15000) {
             _lastVncResetTime = Date.now();
             console.warn('[VNC] Server reported stalled VNC stack. Auto-triggering reset...');
@@ -1426,7 +1532,7 @@
     }
   }
 
-  let _currentBrowserEngine = 'firefox';
+  let _currentBrowserEngine = 'chromium';
 
   function setBrowserEngine(eng) {
     _currentBrowserEngine = eng;
@@ -1839,25 +1945,154 @@
     }
     statusEl.textContent = '';
 
-    // Load iframe after desktop socket initializes
+    // Reveal Direct Stream immediately & configure optional VNC link
     setTimeout(() => {
       const host = window.location.hostname || 'localhost';
       const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
-      if (frame && (!frame.src || frame.src === 'about:blank')) {
+      if (window._viewportMode === 'vnc' && frame && (!frame.src || frame.src === 'about:blank')) {
         frame.src = vncUrl;
       }
       const link = document.getElementById('novnc-tab-link');
       if (link) link.href = vncUrl;
-      
-      // Keep overlay briefly for smooth transition, then reveal the desktop
-      setTimeout(() => {
-        if (overlay) overlay.style.display = 'none';
-        if (_vncTimer) clearInterval(_vncTimer);
-      }, 1200);
-    }, 2000);
+      if (overlay) overlay.style.display = 'none';
+      if (_vncTimer) clearInterval(_vncTimer);
+      triggerRefreshNow();
+    }, 1000);
     _startShotLoop();
     setTimeout(refreshStatus, 2000);
     setTimeout(refreshStatus, 4000);
+  }
+
+  window._viewportMode = 'direct';
+
+  function setViewportMode(mode) {
+    window._viewportMode = mode;
+    const directEl = document.getElementById('direct-stream-viewport');
+    const vncFrame = document.getElementById('novnc-iframe');
+    const btnDirect = document.getElementById('btn-view-direct');
+    const btnVnc = document.getElementById('btn-view-vnc');
+    const btnResetVnc = document.getElementById('btn-reset-vnc');
+
+    if (mode === 'vnc') {
+      if (directEl) directEl.style.display = 'none';
+      if (vncFrame) {
+        vncFrame.style.display = 'block';
+        const host = window.location.hostname || 'localhost';
+        const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
+        if (!vncFrame.src || vncFrame.src === 'about:blank' || !vncFrame.src.includes(':6080')) {
+          vncFrame.src = vncUrl;
+        }
+      }
+      if (btnDirect) { btnDirect.style.background = 'transparent'; btnDirect.style.color = 'var(--text-dim)'; }
+      if (btnVnc) { btnVnc.style.background = 'var(--accent)'; btnVnc.style.color = '#000'; }
+      if (btnResetVnc) btnResetVnc.style.display = 'inline-flex';
+    } else {
+      if (directEl) directEl.style.display = 'block';
+      if (vncFrame) {
+        vncFrame.style.display = 'none';
+        vncFrame.src = 'about:blank';
+      }
+      if (btnDirect) { btnDirect.style.background = 'var(--accent)'; btnDirect.style.color = '#000'; }
+      if (btnVnc) { btnVnc.style.background = 'transparent'; btnVnc.style.color = 'var(--text-dim)'; }
+      if (btnResetVnc) btnResetVnc.style.display = 'none';
+      triggerRefreshNow();
+    }
+  }
+
+  async function repairSnapchatSession() {
+    const statusEl = document.getElementById('login-status');
+    if (statusEl) {
+      statusEl.style.color = '#fbbf24';
+      statusEl.textContent = '🔧 Running Snapchat Web Deep Repair (clearing broken Service Workers, re-granting camera & reloading)…';
+    }
+    appendLog('info', '🔧 Triggering Snapchat Web Deep Repair...');
+    try {
+      const r = await fetch('/api/login/repair-snapchat', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        if (statusEl) {
+          statusEl.style.color = 'var(--green)';
+          statusEl.textContent = '✓ ' + (d.message || 'Snapchat Web repaired and reloaded!');
+        }
+        document.getElementById('login-idle').style.display = 'none';
+        document.getElementById('login-active').style.display = '';
+        _startShotLoop();
+        setTimeout(triggerRefreshNow, 800);
+      } else {
+        if (statusEl) {
+          statusEl.style.color = 'var(--red)';
+          statusEl.textContent = '✗ Repair error: ' + (d.error || 'Unknown error');
+        }
+      }
+    } catch (e) {
+      if (statusEl) {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = '✗ Repair failed: ' + e.message;
+      }
+    }
+  }
+
+  async function quickFillField(field, inputId) {
+    const inp = document.getElementById(inputId);
+    if (!inp || !inp.value) return;
+    const val = inp.value;
+    appendLog('info', `Quick-filling ${field} into browser...`);
+    try {
+      const r = await fetch('/api/login/fill', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ field: field, value: val })
+      });
+      const d = await r.json();
+      const statusEl = document.getElementById('login-status');
+      if (d.ok) {
+        if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = `✓ Filled ${field} into Snapchat login form.`; }
+      } else {
+        if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = `⚠ Could not fill ${field}: ${d.error || 'Click the input field on screen first'}`; }
+      }
+      setTimeout(triggerRefreshNow, 400);
+    } catch (e) {}
+  }
+
+  async function quickSubmitLogin() {
+    appendLog('info', 'Submitting login / clicking Next...');
+    try {
+      await fetch('/api/login/submit', { method: 'POST' });
+      setTimeout(triggerRefreshNow, 600);
+      setTimeout(triggerRefreshNow, 1800);
+    } catch (e) {}
+  }
+
+  async function browserWheel(evt) {
+    evt.preventDefault();
+    const img = document.getElementById('browser-shot');
+    if (!img) return;
+    const rect = img.getBoundingClientRect();
+    const x = Math.round((evt.clientX - rect.left) * (1440 / (rect.width || 1440)));
+    const y = Math.round((evt.clientY - rect.top) * (900 / (rect.height || 900)));
+    await fetch('/api/login/scroll', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ x, y, delta_x: Math.round(evt.deltaX), delta_y: Math.round(evt.deltaY) })
+    });
+    setTimeout(triggerRefreshNow, 350);
+  }
+
+  async function handleViewportKeyDown(evt) {
+    // Ignore if user is typing inside an input/textarea
+    if (evt.target && (evt.target.tagName === 'INPUT' || evt.target.tagName === 'TEXTAREA')) return;
+    if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
+    evt.preventDefault();
+    if (evt.key.length === 1) {
+      await fetch('/api/login/type', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text: evt.key })
+      });
+    } else {
+      await browserKey(evt.key);
+    }
+    setTimeout(triggerRefreshNow, 350);
   }
 
   function _startShotLoop() {
@@ -1868,15 +2103,16 @@
         if (!d.active) { _stopShotLoop(); return; }
         if (d.image) {
           const img = document.getElementById('browser-shot');
-          img.src = 'data:image/jpeg;base64,' + d.image;
-          document.getElementById('browser-loading').style.display = 'none';
+          if (img) img.src = 'data:image/jpeg;base64,' + d.image;
+          const loader = document.getElementById('browser-loading');
+          if (loader) loader.style.display = 'none';
         }
         if (d.url) {
           const addr = document.getElementById('browser-address-input');
           if (addr && document.activeElement !== addr) addr.value = d.url;
         }
       } catch(e) {}
-    }, 1000);
+    }, 900);
   }
 
   function _stopShotLoop() {
@@ -2078,8 +2314,9 @@
       const d = await fetch('/api/login/screenshot').then(r => r.json());
       if (d.image) {
         const img = document.getElementById('browser-shot');
-        img.src = 'data:image/jpeg;base64,' + d.image;
-        document.getElementById('browser-loading').style.display = 'none';
+        if (img) img.src = 'data:image/jpeg;base64,' + d.image;
+        const loader = document.getElementById('browser-loading');
+        if (loader) loader.style.display = 'none';
       }
       if (d.url) {
         const addr = document.getElementById('browser-address-input');
@@ -2138,7 +2375,7 @@
 
 
 
-  let currentPlatform = 'bliss';
+  let currentPlatform = 'web';
 
   function switchPlatform(plat) {
     currentPlatform = plat;

@@ -709,7 +709,7 @@ textarea {
     alwaysCloseOtherTabs: true,
     activeMacro: '⚡ Default Streak Macro',
     isDocked: true,
-    isDockCollapsed: false
+    isDockCollapsed: true
   };
 
   const SJSU_WEBCAM_URL = 'https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg';
