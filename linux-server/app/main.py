@@ -44,7 +44,7 @@ import socket
 # ---------------------------------------------------------------------------
 # Version & Paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "5.0.0"
+APP_VERSION = "5.1.0"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
 STATIC_DIR = Path(__file__).resolve().parent / "static"

@@ -90,7 +90,7 @@ def _cleanup_stale_locks():
             pass
 
 
-def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width: int = 1280, height: int = 720, fps: int = 15, frames: int = 150):
+def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width: int = 1280, height: int = 720, fps: int = 15, frames: int = 15):
     """Convert JPEG/PNG image bytes into standard Y4M video for Chromium native fake video capture (150 frames = 10s video stream)."""
     try:
         from PIL import Image, ImageOps
@@ -126,10 +126,13 @@ def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width
 def fetch_webcam_image(force_refresh: bool = False) -> bytes:
     """Fetch latest frame from meteorology webcam with automatic freshness check, cache-busting, and Y4M generation."""
     now = time.time()
-    # If cached file exists and is less than 5 minutes old and not forced, return cached
+    # Fast path: If cached visual exists and Y4M is present, return immediately without blocking
+    if not force_refresh and WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000 and Y4M_FILE.exists() and Y4M_FILE.stat().st_size > 10000:
+        return WEBCAM_FILE.read_bytes()
+
     if not force_refresh and WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
         age_seconds = now - WEBCAM_FILE.stat().st_mtime
-        if age_seconds < 300:  # 5 minutes
+        if age_seconds < 600:  # 10 minutes cache
             if not Y4M_FILE.exists():
                 generate_y4m_from_image(WEBCAM_FILE.read_bytes())
             return WEBCAM_FILE.read_bytes()
@@ -148,7 +151,7 @@ def fetch_webcam_image(force_refresh: bool = False) -> bytes:
             }
         )
         ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
             data = resp.read()
             if data and len(data) > 1000:
                 WEBCAM_FILE.write_bytes(data)
@@ -514,6 +517,29 @@ STEALTH_INIT_SCRIPT = """
         delete window.__playwright;
         delete window.__pw_manual;
     } catch(e) {}
+
+    // 15. Real-time in-page modal & blocker auto-dismissal (Zero-latency instant clicker)
+    try {
+        const dismissBlockers = () => {
+            try {
+                const targets = ['use here', 'not now', 'got it', 'allow', 'accept all', 'accept', 'continue'];
+                const btns = document.querySelectorAll('button, div[role="button"], a[role="button"]');
+                for (const b of btns) {
+                    const text = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    if (targets.some(t => text === t || text.startsWith(t + '\n'))) {
+                        b.click();
+                    }
+                }
+            } catch(e) {}
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', dismissBlockers);
+        } else {
+            dismissBlockers();
+        }
+        const obs = new MutationObserver(() => dismissBlockers());
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+    } catch(e) {}
 })();
 """
 
@@ -559,6 +585,12 @@ async def _build_context(playwright, headless: bool = True):
             "--enable-webgl2",
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-ipc-flooding-protection",
+            "--disk-cache-size=209715200",
         ]
         if Y4M_FILE.exists():
             args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")

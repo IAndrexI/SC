@@ -1236,6 +1236,9 @@
               const loader = document.getElementById('browser-loading');
               if (loader) loader.style.display = 'none';
             }
+            const overlay = document.getElementById('vnc-connecting-overlay');
+            if (overlay) overlay.style.display = 'none';
+            if (_vncTimer) { clearInterval(_vncTimer); _vncTimer = null; }
             if (d.url) {
               const addr = document.getElementById('browser-address-input');
               if (addr && document.activeElement !== addr) addr.value = d.url;
@@ -1946,21 +1949,24 @@
     statusEl.textContent = '';
 
     // Reveal Direct Stream immediately & configure optional VNC link
+    const host = window.location.hostname || 'localhost';
+    const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
+    const link = document.getElementById('novnc-tab-link');
+    if (link) link.href = vncUrl;
+    if (window._viewportMode === 'vnc' && frame && (!frame.src || frame.src === 'about:blank')) {
+      frame.src = vncUrl;
+    }
+    // Fast dismissal for Direct Stream mode
     setTimeout(() => {
-      const host = window.location.hostname || 'localhost';
-      const vncUrl = `http://${host}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify`;
-      if (window._viewportMode === 'vnc' && frame && (!frame.src || frame.src === 'about:blank')) {
-        frame.src = vncUrl;
+      if (window._viewportMode === 'direct') {
+        if (overlay) overlay.style.display = 'none';
+        if (_vncTimer) clearInterval(_vncTimer);
       }
-      const link = document.getElementById('novnc-tab-link');
-      if (link) link.href = vncUrl;
-      if (overlay) overlay.style.display = 'none';
-      if (_vncTimer) clearInterval(_vncTimer);
       triggerRefreshNow();
-    }, 1000);
+    }, 400);
     _startShotLoop();
-    setTimeout(refreshStatus, 2000);
-    setTimeout(refreshStatus, 4000);
+    setTimeout(refreshStatus, 1500);
+    setTimeout(refreshStatus, 3000);
   }
 
   window._viewportMode = 'direct';
@@ -2003,8 +2009,17 @@
     const statusEl = document.getElementById('login-status');
     if (statusEl) {
       statusEl.style.color = '#fbbf24';
-      statusEl.textContent = '🔧 Running Snapchat Web Deep Repair (clearing broken Service Workers, re-granting camera & reloading)…';
+      statusEl.textContent = '🔧 Running Instant Snapchat Deep Repair (clearing broken workers, re-granting camera & reloading)…';
     }
+    // Switch to active viewport immediately so user sees live self-repair in real-time
+    document.getElementById('login-idle').style.display   = 'none';
+    document.getElementById('login-active').style.display = '';
+    const loader = document.getElementById('browser-loading');
+    if (loader) {
+      loader.style.display = 'flex';
+      loader.innerHTML = '<div class="spinner"></div><span style="font-weight:600">Deep Repairing Snapchat Web...</span>';
+    }
+    _startShotLoop();
     appendLog('info', '🔧 Triggering Snapchat Web Deep Repair...');
     try {
       const r = await fetch('/api/login/repair-snapchat', { method: 'POST' });
@@ -2012,12 +2027,9 @@
       if (d.ok) {
         if (statusEl) {
           statusEl.style.color = 'var(--green)';
-          statusEl.textContent = '✓ ' + (d.message || 'Snapchat Web repaired and reloaded!');
+          statusEl.textContent = '✓ ' + (d.message || 'Snapchat Web repaired and reloaded cleanly!');
         }
-        document.getElementById('login-idle').style.display = 'none';
-        document.getElementById('login-active').style.display = '';
-        _startShotLoop();
-        setTimeout(triggerRefreshNow, 800);
+        triggerRefreshNow();
       } else {
         if (statusEl) {
           statusEl.style.color = 'var(--red)';
@@ -2096,8 +2108,9 @@
   }
 
   function _startShotLoop() {
-    if (_shotLoop) clearInterval(_shotLoop);
-    _shotLoop = setInterval(async () => {
+    if (_shotLoop) { clearTimeout(_shotLoop); clearInterval(_shotLoop); }
+    let fastCycles = 16; // 250ms polling for first 4 seconds while loading/repairing
+    const fetchFrame = async () => {
       try {
         const d = await fetch('/api/login/screenshot').then(r => r.json());
         if (!d.active) { _stopShotLoop(); return; }
@@ -2106,17 +2119,25 @@
           if (img) img.src = 'data:image/jpeg;base64,' + d.image;
           const loader = document.getElementById('browser-loading');
           if (loader) loader.style.display = 'none';
+          const overlay = document.getElementById('vnc-connecting-overlay');
+          if (overlay) overlay.style.display = 'none';
         }
         if (d.url) {
           const addr = document.getElementById('browser-address-input');
           if (addr && document.activeElement !== addr) addr.value = d.url;
         }
       } catch(e) {}
-    }, 900);
+      if (_shotLoop !== null) {
+        fastCycles--;
+        const delay = fastCycles > 0 ? 250 : 750;
+        _shotLoop = setTimeout(fetchFrame, delay);
+      }
+    };
+    _shotLoop = setTimeout(fetchFrame, 80);
   }
 
   function _stopShotLoop() {
-    if (_shotLoop) { clearInterval(_shotLoop); _shotLoop = null; }
+    if (_shotLoop) { clearTimeout(_shotLoop); clearInterval(_shotLoop); _shotLoop = null; }
   }
 
   async function importSession() {

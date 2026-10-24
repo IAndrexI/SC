@@ -121,14 +121,9 @@ def _cleanup_processes():
     _kill(_state.get("xvfb"))
     _state["xvfb"] = _state["openbox"] = _state["x11vnc"] = _state["websockify"] = _state["chrome_proc"] = None
 
-    # Kill lingering instances by process name if orphaned
+    # Kill lingering instances by process name if orphaned with single fast pkill
     try:
-        subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "Xvfb :99"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "google-chrome"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "firefox_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "browser_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "-f", "x11vnc|websockify|Xvfb :99|google-chrome|chromium|firefox_profile|browser_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -258,7 +253,7 @@ async def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 4.
     while time.time() - start_t < timeout:
         if _is_port_listening(port, host):
             return True
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.05)
     return False
 
 
@@ -460,100 +455,108 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
 
     env = dict(os.environ)
     if is_linux and has_xvfb:
-        _log("Starting virtual X11 desktop (Xvfb)...", emit)
-        _cleanup_processes()
-        await asyncio.sleep(0.3)
-
-        _state["xvfb"] = subprocess.Popen(
-            ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac", "+extension", "RANDR", "+extension", "GLX", "-noreset"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        await asyncio.sleep(1.0)
-
-        _log("Starting VNC server (x11vnc)...", emit)
-        _state["x11vnc"] = subprocess.Popen(
-            [
-                "x11vnc",
-                "-display", DISPLAY,
-                "-nopw",
-                "-forever",
-                "-shared",
-                "-rfbport", str(VNC_PORT),
-                "-listen", "127.0.0.1",
-                "-wait", "5",
-                "-defer", "5",
-            ],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-        vnc_ok = await _wait_for_port(VNC_PORT, "127.0.0.1", timeout=3.5)
-        if vnc_ok:
-            _log(f"  ✓ x11vnc listening on 127.0.0.1:{VNC_PORT}", emit)
-        else:
-            _log(f"  ⚠ x11vnc failed to bind port {VNC_PORT} in time.", emit)
-
-        if shutil.which("openbox"):
-            _log("Starting X11 window manager (openbox)...", emit)
-            _state["openbox"] = subprocess.Popen(
-                ["openbox"],
-                env={**env, "DISPLAY": DISPLAY},
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            await asyncio.sleep(0.3)
-
-        novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
-        websock_cmd = ["websockify", "--heartbeat", "30"]
-        if novnc_web:
-            websock_cmd.extend(["--web", novnc_web])
-        websock_cmd.extend([f"0.0.0.0:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}"])
-
-        _log(f"Starting web desktop proxy (noVNC port {NOVNC_PORT} -> 127.0.0.1:{VNC_PORT})...", emit)
-        _state["websockify"] = subprocess.Popen(
-            websock_cmd,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-        async def _vnc_watchdog():
-            """Continuously inspect x11vnc and websockify; auto-resurrect if stalled or crashed."""
-            stall_count = 0
-            while _state.get("active"):
-                await asyncio.sleep(3)
-                if not _state.get("active"):
-                    break
-                try:
-                    xp = _state.get("x11vnc")
-                    wp = _state.get("websockify")
-                    proc_dead = (xp and xp.poll() is not None) or (wp and wp.poll() is not None)
-                    vnc_live = _is_vnc_responding(VNC_PORT)
-                    ws_live = _is_websockify_responding(NOVNC_PORT)
-
-                    if proc_dead or not vnc_live or not ws_live:
-                        stall_count += 1
-                        if proc_dead or stall_count >= 2:
-                            _log(f"  ⚠️ [VNC Watchdog] VNC stall detected (proc_dead={proc_dead}, vnc={vnc_live}, ws={ws_live}). Executing auto-reset...", emit)
-                            await reset_vnc_stack(emit=emit)
-                            stall_count = 0
-                            await asyncio.sleep(2)
-                    else:
-                        stall_count = 0
-                except Exception:
-                    pass
-
-        if _state.get("watchdog_task"):
+        # Check if Xvfb :99 is already running and healthy
+        x11_socket = Path("/tmp/.X11-unix/X99")
+        if not x11_socket.exists():
+            _log("Starting virtual X11 display (Xvfb :99)...", emit)
             try:
-                _state["watchdog_task"].cancel()
+                for lf in ["/tmp/.X99-lock", "/tmp/.X11-unix/X99"]:
+                    if os.path.exists(lf):
+                        os.remove(lf)
             except Exception:
                 pass
-        _state["watchdog_task"] = asyncio.create_task(_vnc_watchdog())
-        novnc_ok = await _wait_for_port(NOVNC_PORT, "127.0.0.1", timeout=3.5)
-        if novnc_ok:
-            _log(f"  ✓ noVNC websockify listening on port {NOVNC_PORT}", emit)
+            _state["xvfb"] = subprocess.Popen(
+                ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac", "+extension", "RANDR", "+extension", "GLX", "-noreset"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            # Fast check every 20ms instead of 1.0s sleep
+            for _ in range(25):
+                if x11_socket.exists():
+                    break
+                await asyncio.sleep(0.02)
         else:
-            _log(f"  ⚠ websockify failed to bind port {NOVNC_PORT}.", emit)
+            _log("  ✓ Virtual X11 display :99 already active and ready.", emit)
 
         env["DISPLAY"] = DISPLAY
         headless = False
-        _log(f"✓ Real browser desktop ready on port {NOVNC_PORT}.", emit)
+
+        # Launch VNC stack (x11vnc, openbox, websockify) ASYNCHRONOUSLY in the background
+        # Do NOT block Chrome launch waiting for VNC/websockify to bind
+        async def _launch_vnc_stack_async():
+            try:
+                if shutil.which("openbox") and not _state.get("openbox"):
+                    _state["openbox"] = subprocess.Popen(
+                        ["openbox"],
+                        env={**env, "DISPLAY": DISPLAY},
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+
+                if not _is_vnc_responding(VNC_PORT):
+                    _kill(_state.get("x11vnc"))
+                    _state["x11vnc"] = subprocess.Popen(
+                        [
+                            "x11vnc",
+                            "-display", DISPLAY,
+                            "-nopw",
+                            "-forever",
+                            "-shared",
+                            "-rfbport", str(VNC_PORT),
+                            "-listen", "127.0.0.1",
+                            "-wait", "5",
+                            "-defer", "5",
+                        ],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+
+                if not _is_websockify_responding(NOVNC_PORT):
+                    _kill(_state.get("websockify"))
+                    novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
+                    websock_cmd = ["websockify", "--heartbeat", "30"]
+                    if novnc_web:
+                        websock_cmd.extend(["--web", novnc_web])
+                    websock_cmd.extend([f"0.0.0.0:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}"])
+                    _state["websockify"] = subprocess.Popen(
+                        websock_cmd,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+
+                async def _vnc_watchdog():
+                    stall_count = 0
+                    while _state.get("active"):
+                        await asyncio.sleep(3)
+                        if not _state.get("active"):
+                            break
+                        try:
+                            xp = _state.get("x11vnc")
+                            wp = _state.get("websockify")
+                            proc_dead = (xp and xp.poll() is not None) or (wp and wp.poll() is not None)
+                            vnc_live = _is_vnc_responding(VNC_PORT)
+                            ws_live = _is_websockify_responding(NOVNC_PORT)
+
+                            if proc_dead or not vnc_live or not ws_live:
+                                stall_count += 1
+                                if proc_dead or stall_count >= 2:
+                                    _log(f"  ⚠️ [VNC Watchdog] VNC stall detected (proc_dead={proc_dead}, vnc={vnc_live}, ws={ws_live}). Executing auto-reset...", emit)
+                                    await reset_vnc_stack(emit=emit)
+                                    stall_count = 0
+                                    await asyncio.sleep(2)
+                            else:
+                                stall_count = 0
+                        except Exception:
+                            pass
+
+                if _state.get("watchdog_task"):
+                    try:
+                        _state["watchdog_task"].cancel()
+                    except Exception:
+                        pass
+                _state["watchdog_task"] = asyncio.create_task(_vnc_watchdog())
+                _log(f"  ✓ VNC background stack initialized (ports {VNC_PORT}/{NOVNC_PORT}).", emit)
+            except Exception as v_err:
+                _log(f"  ⚠ VNC background stack notice: {v_err}", emit)
+
+        asyncio.create_task(_launch_vnc_stack_async())
+        _log(f"✓ Real browser desktop ready on display {DISPLAY}.", emit)
     else:
         headless = True
 
@@ -686,7 +689,18 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                 "--new-window",
                 "--sec-ch-ua-platform=Windows",
                 "--lang=en-US,en",
-                "--disable-features=Translate,OptimizationHints,MediaRouter",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-ipc-flooding-protection",
+                "--disable-breakpad",
+                "--disable-component-update",
+                "--disable-domain-reliability",
+                "--disable-sync",
+                "--disk-cache-size=209715200",
+                "--enable-features=NetworkService,NetworkServiceInProcess",
+                "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater",
             ]
             if Y4M_FILE.exists():
                 chrome_cmd.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
@@ -696,8 +710,8 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
                     f"--load-extension={ext_dir}",
                 ])
 
-            initial_url = "https://web.snapchat.com/?snapstreak_autoboot=1" if SESSION_FILE.exists() else "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
-            chrome_cmd.append(initial_url)
+            # Start cleanly on about:blank so stealth script and permissions inject BEFORE Snapchat loads
+            chrome_cmd.append("about:blank")
 
             for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
                 try:
@@ -866,10 +880,19 @@ async def _start_impl(emit: Callable | None = None, engine: str | None = None) -
 
     async def _initial_navigation():
         try:
-            # Short wait for commit/DOM, letting the user watch the load live in noVNC
-            await page.goto(target_url, timeout=45_000, wait_until="commit")
-            await asyncio.sleep(1.5)
+            await page.goto(target_url, timeout=35_000, wait_until="domcontentloaded")
             await ensure_extension_active(page, force_toggle=False)
+            # Immediate screenshot frame push so user sees the page in < 1s
+            try:
+                img = await page.screenshot(type="jpeg", quality=70, timeout=1500)
+                b64 = base64.b64encode(img).decode()
+                _state["last_shot_b64"] = b64
+                _state["url"] = page.url
+                _state["last_frame_ts"] = time.time()
+                if emit:
+                    emit(json.dumps({"type": "screencast", "image": b64, "url": page.url}))
+            except Exception:
+                pass
         except Exception as ex:
             _log(f"Navigation notice: {ex}", emit)
 
@@ -1046,7 +1069,10 @@ async def repair_snapchat_session(emit: Callable | None = None) -> dict:
     if not _state.get("active") or not _state.get("page"):
         _log("🔧 Starting browser session for Snapchat Repair...", emit)
         await start(emit=emit)
-        await asyncio.sleep(2.0)
+        for _ in range(30):
+            if _state.get("active") and _state.get("page"):
+                break
+            await asyncio.sleep(0.1)
 
     page: Page | None = _state.get("page")
     context: BrowserContext | None = _state.get("context")
@@ -1080,10 +1106,11 @@ async def repair_snapchat_session(emit: Callable | None = None) -> dict:
                 pass
         _log("  ✓ Re-granted Camera, Microphone & Notification permissions.", emit)
 
-        # 3. Unregister broken Service Workers & clear CacheStorage (keeps cookies/auth intact!)
+        # 3. Unregister broken Service Workers, clear CacheStorage & sessionStorage (preserves cookies/localStorage/IndexedDB)
         try:
             await page.evaluate("""async () => {
                 try {
+                    sessionStorage.clear();
                     if ('serviceWorker' in navigator) {
                         const regs = await navigator.serviceWorker.getRegistrations();
                         for (const r of regs) {
@@ -1103,23 +1130,33 @@ async def repair_snapchat_session(emit: Callable | None = None) -> dict:
             pass
 
         # 4. Reload web.snapchat.com and re-attach virtual camera & extension
-        target = "https://web.snapchat.com/" if SESSION_FILE.exists() else "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
-        await page.goto(target, timeout=35_000, wait_until="domcontentloaded")
-        await asyncio.sleep(1.5)
+        target = "https://web.snapchat.com/?snapstreak_autoboot=1" if SESSION_FILE.exists() else "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
+        await page.goto(target, timeout=30_000, wait_until="domcontentloaded")
         await ensure_extension_active(page, force_toggle=False)
 
-        # 5. Click 'Use Here' or 'Not now' if present
+        # 5. Immediate blocker dismissal & frame broadcast
         await page.evaluate("""() => {
-            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const btns = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"]'));
             for (const b of btns) {
                 const t = (b.innerText || b.textContent || '').trim().toLowerCase();
-                if (t === 'use here' || t === 'not now' || t === 'got it' || t === 'allow') {
+                if (t === 'use here' || t === 'not now' || t === 'got it' || t === 'allow' || t === 'accept') {
                     b.click();
                 }
             }
         }""")
-        _state["last_frame_ts"] = 0.0
-        _log("✓ Snapchat Web Repair complete! Viewfinder and virtual camera refreshed.", emit)
+
+        try:
+            img = await page.screenshot(type="jpeg", quality=70, timeout=1500)
+            b64 = base64.b64encode(img).decode()
+            _state["last_shot_b64"] = b64
+            _state["url"] = page.url
+            _state["last_frame_ts"] = time.time()
+            if emit:
+                emit(json.dumps({"type": "screencast", "image": b64, "url": page.url}))
+        except Exception:
+            pass
+
+        _log("✓ Snapchat Web Repair complete! Clean session reloaded.", emit)
         return {"ok": True, "message": "Snapchat Web repaired and reloaded cleanly."}
     except Exception as ex:
         _log(f"⚠ Snapchat Repair notice: {ex}", emit)
