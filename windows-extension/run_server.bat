@@ -1,22 +1,21 @@
 @echo off
-title Snapchat Streak Bot - Mini Server
+title SnapStreak Studio Server (Port 8080)
 cd /d "%~dp0"
 
-set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 set "PYTHONUNBUFFERED=1"
-
-echo ===================================================
-echo  Starting Snapchat Streak Bot - Local Server
-echo ===================================================
-echo.
-echo Dashboard URL: http://localhost:8080
-echo.
+echo ========================================================
+echo  Starting SnapStreak Studio Server on http://localhost:8080
+echo ========================================================
 
 start "" "http://localhost:8080"
 
-".venv\Scripts\python.exe" run_server.py
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo Server stopped with exit code %ERRORLEVEL%.
-    pause
+if exist "..\.venv\Scripts\python.exe" (
+    "..\.venv\Scripts\python.exe" run_server.py
+) else if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" run_server.py
+) else if exist "..\..\snapstreak-server\.venv\Scripts\python.exe" (
+    "..\..\snapstreak-server\.venv\Scripts\python.exe" run_server.py
+) else (
+    python run_server.py
 )
+pause

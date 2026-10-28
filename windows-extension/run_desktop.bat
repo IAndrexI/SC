@@ -1,26 +1,19 @@
 @echo off
-title Snapchat Streak Bot Desktop
+title SnapStreak Desktop Runner
 cd /d "%~dp0"
 
-set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+set "PYTHONUNBUFFERED=1"
+echo ========================================================
+echo  Launching SnapStreak Desktop Runner
+echo ========================================================
 
-echo ===================================================
-echo  Starting Snapchat Streak Bot (Desktop Mode)
-echo ===================================================
-echo.
-
-if not exist ".venv\Scripts\python.exe" (
-    echo Setting up Python 3.11 environment with uv...
-    uv venv .venv --python 3.11
-    uv pip install -r requirements.txt
-    .venv\Scripts\python -m playwright install chromium
+if exist "..\.venv\Scripts\python.exe" (
+    "..\.venv\Scripts\python.exe" run_desktop.py %*
+) else if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" run_desktop.py %*
+) else if exist "..\..\snapstreak-server\.venv\Scripts\python.exe" (
+    "..\..\snapstreak-server\.venv\Scripts\python.exe" run_desktop.py %*
+) else (
+    python run_desktop.py %*
 )
-
-echo Launching bot...
-".venv\Scripts\python.exe" run_desktop.py
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo Bot exited with error code %ERRORLEVEL%.
-)
-echo.
 pause

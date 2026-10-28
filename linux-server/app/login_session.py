@@ -1,1719 +1,936 @@
 """
-login_session.py – Remote browser login via headless Playwright + screenshot streaming.
-
-No extra ports, no VNC, no Xvfb. Works entirely through port 8080.
-Browser runs headless, takes screenshots every second, forwards
-mouse/keyboard events from the web UI.
+login_session.py – Persistent Interactive Snapchat Web Browser & Live Screencast Engine.
+Features:
+  - Keeps login cookies & IndexedDB intact across restarts (never wipes session on save)
+  - Launches Chromium/Edge/Chrome with live SJSU Meteorology webcam (Y4M + zero-CORS Data URL hook)
+  - Real-time Port-8080 CDP/JPEG screencast + optional Linux Xvfb/noVNC support
+  - Smart Macro Recorder that enriches live viewport clicks with DOM selector & text metadata
+  - Direct execution of both AI/Expected Steps Mode and Custom Macro Mode
 """
 
 import asyncio
 import base64
 import json
+import logging
+import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Callable
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, BrowserContext, Page
 
+import config
 from automation import (
-    DATA_DIR,
     SESSION_FILE,
-    USER_AGENT,
-    VIEWPORT,
-    USER_DATA_DIR,
+    SESSION_BACKUP_FILE,
     MACRO_FILE,
+    USER_DATA_DIR,
+    FIREFOX_PROFILE_DIR,
     Y4M_FILE,
+    SNAPCHAT_WEB,
+    VIEWPORT,
     STEALTH_INIT_SCRIPT,
-    replay_macro,
     fetch_webcam_image,
-    _cleanup_stale_locks,
-    _log,
+    get_webcam_data_url,
+    inject_webcam_frame_into_page,
+    get_extension_bundle_script,
+    load_cookies_into_context,
+    save_cookies_from_context,
+    dismiss_snapchat_blockers,
+    detect_screen_state,
+    inspect_element_at_point,
+    execute_streak_flow_on_page,
+    is_snapchat_authenticated_url,
 )
 
+logger = logging.getLogger("snapstreak.login")
 
-
-
-
-import os
-import sys
-import shutil
-import socket
-import subprocess
-
-DISPLAY    = ":99"
-VNC_PORT   = 5900
+DISPLAY = ":99"
+VNC_PORT = 5900
 NOVNC_PORT = 6080
-NOVNC_WEB  = "/usr/share/novnc"
-
-_macro: dict = {
-    "recording": False,
-    "events": [],
-    "last_time": 0.0,
-}
-
-
-def start_macro_recording() -> dict:
-    _macro["recording"] = True
-    _macro["events"] = []
-    _macro["last_time"] = time.time()
-    return {"ok": True, "recording": True}
-
-
-def stop_macro_recording() -> dict:
-    _macro["recording"] = False
-    events = list(_macro["events"])
-    if events:
-        MACRO_FILE.write_text(json.dumps(events, indent=2), encoding="utf-8")
-    return {"ok": True, "count": len(events), "events": events}
-
-
-def save_macro(events: list) -> dict:
-    if events:
-        MACRO_FILE.write_text(json.dumps(events, indent=2), encoding="utf-8")
-    return {"ok": True, "count": len(events)}
-
-
-def get_macro_info() -> dict:
-    has_macro = MACRO_FILE.exists()
-    count = 0
-    if has_macro:
-        try:
-            count = len(json.loads(MACRO_FILE.read_text(encoding="utf-8")))
-        except Exception:
-            pass
-    return {"has_macro": has_macro, "count": count, "recording": _macro["recording"]}
-
 
 _state: dict = {
-    "active":        False,
-    "playwright":    None,
-    "context":       None,
-    "page":          None,
-    "cdp":           None,
+    "pw": None,
+    "browser": None,
+    "context": None,
+    "page": None,
+    "cdp": None,
+    "xvfb": None,
+    "openbox": None,
+    "x11vnc": None,
+    "websockify": None,
+    "active": False,
+    "starting": False,
+    "engine": "chromium",
+    "macro_recording": False,
+    "macro_events": [],
+    "macro_last_ts": 0.0,
     "last_shot_b64": "",
-    "url":           "",
-    "xvfb":          None,
-    "openbox":       None,
-    "x11vnc":        None,
-    "websockify":    None,
-    "chrome_proc":   None,
-    "watchdog_task": None,
+    "url": "",
+    "screen_state": "IDLE",
+    "last_frame_ts": 0.0,
+    "emit": None,
 }
-
-
-def _kill(proc):
-    if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-
-
-def _cleanup_processes():
-    _kill(_state.get("chrome_proc"))
-    _kill(_state.get("websockify"))
-    _kill(_state.get("x11vnc"))
-    _kill(_state.get("openbox"))
-    _kill(_state.get("xvfb"))
-    _state["xvfb"] = _state["openbox"] = _state["x11vnc"] = _state["websockify"] = _state["chrome_proc"] = None
-
-    # Kill lingering instances by process name if orphaned with single fast pkill
-    try:
-        subprocess.run(["pkill", "-9", "-f", "x11vnc|websockify|Xvfb :99|google-chrome|chromium|firefox_profile|browser_profile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-    # Remove stale X11 and profile lock files
-    for f in [
-        "/tmp/.X99-lock",
-        "/tmp/.X11-unix/X99",
-        "/data/sc/firefox_profile/.parentlock",
-        "/data/sc/firefox_profile/parent.lock",
-        "/data/sc/firefox_profile/lock",
-    ]:
-        try:
-            if os.path.exists(f):
-                os.remove(f)
-        except Exception:
-            pass
-
-
-def _is_port_listening(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except Exception:
-        return False
-
-
-def _is_vnc_responding(port: int = VNC_PORT, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
-    """Check if x11vnc is actively answering and returns the RFB handshake."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as s:
-            s.settimeout(timeout)
-            banner = s.recv(12)
-            return banner.startswith(b"RFB")
-    except Exception:
-        return False
-
-
-def _is_websockify_responding(port: int = NOVNC_PORT, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
-    """Check if websockify proxy is actively answering HTTP/WebSocket requests."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as s:
-            s.settimeout(timeout)
-            s.sendall(b"HEAD / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
-            data = s.recv(16)
-            return len(data) > 0
-    except Exception:
-        return False
-
-
-def is_vnc_healthy() -> bool:
-    """Check overall health of the VNC display & proxy stack."""
-    if not _state.get("active"):
-        return True
-    if not sys.platform.startswith("linux") or shutil.which("Xvfb") is None:
-        return True
-    return _is_vnc_responding(VNC_PORT) and _is_websockify_responding(NOVNC_PORT)
-
-
-async def reset_vnc_stack(emit: Callable | None = None) -> dict:
-    """Safely terminate and respawn x11vnc and websockify without disturbing the browser or Playwright."""
-    if not sys.platform.startswith("linux") or shutil.which("Xvfb") is None:
-        return {"ok": True, "message": "VNC stack not used on this platform"}
-
-    _log("🔄 [VNC Reset] Resetting x11vnc and websockify processes...", emit)
-
-    # Terminate existing VNC proxy processes
-    _kill(_state.get("websockify"))
-    _kill(_state.get("x11vnc"))
-    _state["websockify"] = None
-    _state["x11vnc"] = None
-
-    try:
-        subprocess.run(["pkill", "-9", "-f", "x11vnc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-9", "-f", "websockify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-    await asyncio.sleep(0.4)
-
-    # Check if Xvfb is running; resurrect if terminated
-    xp = _state.get("xvfb")
-    if xp and xp.poll() is not None:
-        _log("  ⚠ Xvfb had terminated. Respawning Xvfb on display " + DISPLAY, emit)
-        _state["xvfb"] = subprocess.Popen(
-            ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac", "+extension", "RANDR", "+extension", "GLX", "-noreset"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        await asyncio.sleep(0.6)
-
-    # Respawn x11vnc
-    _state["x11vnc"] = subprocess.Popen(
-        [
-            "x11vnc",
-            "-display", DISPLAY,
-            "-nopw",
-            "-forever",
-            "-shared",
-            "-rfbport", str(VNC_PORT),
-            "-listen", "127.0.0.1",
-            "-wait", "5",
-            "-defer", "5",
-        ],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    vnc_ok = await _wait_for_port(VNC_PORT, "127.0.0.1", timeout=3.5)
-
-    # Respawn websockify
-    novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
-    websock_cmd = ["websockify", "--heartbeat", "30"]
-    if novnc_web:
-        websock_cmd.extend(["--web", novnc_web])
-    websock_cmd.extend([f"0.0.0.0:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}"])
-
-    _state["websockify"] = subprocess.Popen(
-        websock_cmd,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    ws_ok = await _wait_for_port(NOVNC_PORT, "127.0.0.1", timeout=3.5)
-
-    msg = f"VNC Reset finished: x11vnc={vnc_ok}, websockify={ws_ok}"
-    _log(f"  ✓ {msg}", emit)
-    return {"ok": vnc_ok and ws_ok, "vnc_ok": vnc_ok, "websockify_ok": ws_ok, "message": msg}
-
-
-async def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 4.0) -> bool:
-    start_t = time.time()
-    while time.time() - start_t < timeout:
-        if _is_port_listening(port, host):
-            return True
-        await asyncio.sleep(0.05)
-    return False
-
-
-async def _cleanup():
-    _cleanup_processes()
-    try:
-        if _state["cdp"]:
-            await _state["cdp"].detach()
-    except Exception:
-        pass
-    try:
-        if _state["context"]:
-            await _state["context"].close()
-    except Exception:
-        pass
-    try:
-        if _state["playwright"]:
-            await _state["playwright"].stop()
-    except Exception:
-        pass
-    if _state.get("watchdog_task"):
-        try:
-            _state["watchdog_task"].cancel()
-        except Exception:
-            pass
-    _state.update(
-        active=False, playwright=None,
-        context=None, page=None, cdp=None, last_shot_b64="", url="",
-        xvfb=None, x11vnc=None, websockify=None, watchdog_task=None
-    )
 
 
 def is_active() -> bool:
-    return _state["active"]
-
-
-def last_screenshot_b64() -> str:
-    """Return the latest screenshot as a base64 JPEG string."""
-    return _state.get("last_shot_b64", "")
-
-
-def current_url() -> str:
-    return _state.get("url", "")
-
-
-def get_page() -> Page | None:
-    return _state.get("page")
-
-
-def get_extension_bundle_script() -> str:
-    """Read extension scripts and assemble a self-contained injection bundle."""
-    candidates = [
-        Path(__file__).resolve().parent.parent / "extension",
-        Path(__file__).resolve().parent / "extension",
-        Path("/opt/sc/linux-server/extension"),
-        Path("/opt/sc/extension"),
-        Path("/opt/snapstreak/linux-server/extension"),
-        Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
-    ]
-    ext_dir = None
-    for cand in candidates:
-        if (cand / "manifest.json").exists():
-            ext_dir = cand.resolve()
-            break
-    if not ext_dir:
-        return ""
-
-    parts = []
-    for script_name in ["camera_hook.js", "automation.js", "macro.js", "overlay.js", "content.js"]:
-        f = ext_dir / script_name
-        if f.exists():
-            parts.append(f.read_text(encoding="utf-8", errors="ignore"))
-
-    return "\n\n".join(parts)
-
-
-async def ensure_extension_active(page: Page | None = None, force_toggle: bool = False) -> bool:
-    """Ensure that the SnapStreak Extension HUD is actively running in the page DOM."""
-    p = page or _state.get("page")
-    if not p:
-        return False
-    bundle = get_extension_bundle_script()
-    try:
-        url = p.url or ""
-        if "snapchat.com" in url or not url or url == "about:blank":
-            if bundle:
-                await p.evaluate(bundle)
-            await p.evaluate("""(forceToggle) => {
-                try {
-                    if (window.SnapStreakOverlay && typeof window.SnapStreakOverlay.initUI === 'function') {
-                        window.SnapStreakOverlay.initUI();
-                        if (forceToggle) {
-                            if (typeof window.SnapStreakOverlay.toggleDock === 'function') {
-                                window.SnapStreakOverlay.toggleDock(true);
-                            } else if (typeof window.SnapStreakOverlay.toggleWindow === 'function') {
-                                window.SnapStreakOverlay.toggleWindow(true);
-                            }
-                        }
-                    }
-                } catch(e) {
-                    console.error('[SnapStreak] initUI error:', e);
-                }
-            }""", force_toggle)
-            return True
-        return False
-    except Exception as ex:
-        _log(f"  [Extension] In-page bundle injection failed: {ex}")
-        return False
-
-
-
-async def _fast_frame_loop(emit: Callable | None = None):
-    """Continuous frame loop that guarantees live Port-8080 streaming even when CDP is idle or in popups."""
-    while _state.get("active"):
-        try:
-            now = time.time()
-            # Capture if more than 0.8s since last CDP frame (or always in Firefox / static screen)
-            if now - _state.get("last_frame_ts", 0) >= 0.8:
-                page: Page = _state.get("page")
-                if page and not page.is_closed():
-                    img = await page.screenshot(type="jpeg", quality=65, full_page=False, timeout=2500)
-                    b64 = base64.b64encode(img).decode()
-                    _state["last_shot_b64"] = b64
-                    _state["url"] = page.url
-                    _state["last_frame_ts"] = time.time()
-                    if emit:
-                        try:
-                            emit(json.dumps({"type": "screencast", "image": b64, "url": page.url}))
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-        await asyncio.sleep(0.65)
-
-
-def _find_chrome_executable() -> str | None:
-    for path in [
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/google-chrome",
-        "/opt/google/chrome/google-chrome",
-        "/usr/bin/chromium",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    ]:
-        if os.path.exists(path):
-            return path
-    return None
-
-
-def _find_firefox_executable() -> str | None:
-    for path in [
-        "/usr/bin/firefox-esr",
-        "/usr/bin/firefox",
-        "/opt/firefox/firefox",
-        "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
-        "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe",
-    ]:
-        if os.path.exists(path):
-            return path
-    return None
-
-
-_start_lock = asyncio.Lock()
+    return bool(_state.get("active") and _state.get("page") is not None)
 
 
 def is_starting() -> bool:
-    return _start_lock.locked()
+    return bool(_state.get("starting"))
 
 
-async def start(emit: Callable | None = None, engine: str | None = None) -> str:
-    """Serialize launches: a second concurrent start used to stop the first
-    launch's Playwright driver, producing 'Target ... has been closed'."""
-    if _start_lock.locked():
-        _log("  ℹ A browser launch is already in progress — ignoring duplicate request.", emit)
-        return "Already starting."
-    async with _start_lock:
+def get_Cached_Screenshot() -> str:
+    return _state.get("last_shot_b64", "")
+
+
+def get_Current_Url() -> str:
+    page: Page | None = _state.get("page")
+    if page:
         try:
-            return await _start_impl(emit=emit, engine=engine)
+            return page.url
         except Exception:
-            await _cleanup()
-            raise
+            pass
+    return _state.get("url", "")
 
 
-async def _start_impl(emit: Callable | None = None, engine: str | None = None) -> str:
-    if _state["active"] and _state["page"]:
-        return "Already running."
+def get_Screen_State() -> str:
+    return _state.get("screen_state", "IDLE")
 
-    await _cleanup()
-    _cleanup_stale_locks()
-    fetch_webcam_image()  # ensure Y4M_FILE is ready before launch
-    _log("Launching browser with persistent profile...", emit)
 
-    pw = await async_playwright().start()
-    _state["playwright"] = pw
+def _log(msg: str, emit: Callable | None = None):
+    logger.info(msg)
+    cb = emit or _state.get("emit")
+    if cb:
+        try:
+            cb(msg)
+        except Exception:
+            pass
 
-    is_linux = sys.platform.startswith("linux")
-    has_xvfb = shutil.which("Xvfb") is not None
 
-    env = dict(os.environ)
-    if is_linux and has_xvfb:
-        # Check if Xvfb :99 is already running and healthy
-        x11_socket = Path("/tmp/.X11-unix/X99")
-        if not x11_socket.exists():
-            _log("Starting virtual X11 display (Xvfb :99)...", emit)
+def _find_chrome_executable() -> str | None:
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        # Prefer Microsoft Edge on Windows if the profile was created with Edge (DPAPI compatibility), or Chrome
+        candidates = [
+            os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(local_app, "Google", "Chrome", "Application", "chrome.exe"),
+        ]
+        for p in candidates:
+            if p and os.path.isfile(p):
+                return p
+        return None
+
+    for candidate in (
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _start_linux_virtual_display(emit: Callable | None = None):
+    """Start Xvfb + openbox + x11vnc + websockify on Linux servers if available."""
+    if os.name == "nt":
+        return
+
+    try:
+        lock_file = f"/tmp/.X{DISPLAY.lstrip(':')}-lock"
+        if os.path.exists(lock_file):
             try:
-                for lf in ["/tmp/.X99-lock", "/tmp/.X11-unix/X99"]:
-                    if os.path.exists(lf):
-                        os.remove(lf)
+                os.unlink(lock_file)
             except Exception:
                 pass
+
+        if shutil.which("Xvfb"):
             _state["xvfb"] = subprocess.Popen(
-                ["Xvfb", DISPLAY, "-screen", "0", f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-ac", "+extension", "RANDR", "+extension", "GLX", "-noreset"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            # Fast check every 20ms instead of 1.0s sleep
-            for _ in range(25):
-                if x11_socket.exists():
-                    break
-                await asyncio.sleep(0.02)
-        else:
-            _log("  ✓ Virtual X11 display :99 already active and ready.", emit)
-
-        env["DISPLAY"] = DISPLAY
-        headless = False
-
-        # Launch VNC stack (x11vnc, openbox, websockify) ASYNCHRONOUSLY in the background
-        # Do NOT block Chrome launch waiting for VNC/websockify to bind
-        async def _launch_vnc_stack_async():
-            try:
-                if shutil.which("openbox") and not _state.get("openbox"):
-                    _state["openbox"] = subprocess.Popen(
-                        ["openbox"],
-                        env={**env, "DISPLAY": DISPLAY},
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-
-                if not _is_vnc_responding(VNC_PORT):
-                    _kill(_state.get("x11vnc"))
-                    _state["x11vnc"] = subprocess.Popen(
-                        [
-                            "x11vnc",
-                            "-display", DISPLAY,
-                            "-nopw",
-                            "-forever",
-                            "-shared",
-                            "-rfbport", str(VNC_PORT),
-                            "-listen", "127.0.0.1",
-                            "-wait", "5",
-                            "-defer", "5",
-                        ],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-
-                if not _is_websockify_responding(NOVNC_PORT):
-                    _kill(_state.get("websockify"))
-                    novnc_web = NOVNC_WEB if Path(NOVNC_WEB).exists() else None
-                    websock_cmd = ["websockify", "--heartbeat", "30"]
-                    if novnc_web:
-                        websock_cmd.extend(["--web", novnc_web])
-                    websock_cmd.extend([f"0.0.0.0:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}"])
-                    _state["websockify"] = subprocess.Popen(
-                        websock_cmd,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-
-                async def _vnc_watchdog():
-                    stall_count = 0
-                    while _state.get("active"):
-                        await asyncio.sleep(3)
-                        if not _state.get("active"):
-                            break
-                        try:
-                            xp = _state.get("x11vnc")
-                            wp = _state.get("websockify")
-                            proc_dead = (xp and xp.poll() is not None) or (wp and wp.poll() is not None)
-                            vnc_live = _is_vnc_responding(VNC_PORT)
-                            ws_live = _is_websockify_responding(NOVNC_PORT)
-
-                            if proc_dead or not vnc_live or not ws_live:
-                                stall_count += 1
-                                if proc_dead or stall_count >= 2:
-                                    _log(f"  ⚠️ [VNC Watchdog] VNC stall detected (proc_dead={proc_dead}, vnc={vnc_live}, ws={ws_live}). Executing auto-reset...", emit)
-                                    await reset_vnc_stack(emit=emit)
-                                    stall_count = 0
-                                    await asyncio.sleep(2)
-                            else:
-                                stall_count = 0
-                        except Exception:
-                            pass
-
-                if _state.get("watchdog_task"):
-                    try:
-                        _state["watchdog_task"].cancel()
-                    except Exception:
-                        pass
-                _state["watchdog_task"] = asyncio.create_task(_vnc_watchdog())
-                _log(f"  ✓ VNC background stack initialized (ports {VNC_PORT}/{NOVNC_PORT}).", emit)
-            except Exception as v_err:
-                _log(f"  ⚠ VNC background stack notice: {v_err}", emit)
-
-        asyncio.create_task(_launch_vnc_stack_async())
-        _log(f"✓ Real browser desktop ready on display {DISPLAY}.", emit)
-    else:
-        headless = True
-
-    import config
-    cfg = config.load()
-    chosen_engine = (engine or cfg.get("browser_engine") or "chromium").lower()
-
-    context = None
-    if chosen_engine == "firefox":
-        _log("🦊 Using Firefox ESR Gecko Engine (Arkose Labs anti-bot bypass)...", emit)
-        ff_exe = _find_firefox_executable()
-        ff_profile_dir = DATA_DIR / "firefox_profile"
-        ff_profile_dir.mkdir(parents=True, exist_ok=True)
-
-        ff_kwargs = {
-            "user_data_dir": str(ff_profile_dir),
-            "headless": headless,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            "locale": "en-US",
-            "timezone_id": "America/Los_Angeles",
-            "permissions": ["camera", "microphone", "notifications"],
-            "firefox_user_prefs": {
-                "media.navigator.permission.disabled": True,
-                "permissions.default.camera": 1,
-                "permissions.default.microphone": 1,
-                "dom.webdriver.enabled": False,
-                "useAutomationExtension": False,
-            },
-            "env": env,
-        }
-        if not headless:
-            ff_kwargs["no_viewport"] = True
-        else:
-            ff_kwargs["viewport"] = VIEWPORT
-        # NOTE: Playwright requires its own patched Firefox build (Juggler protocol).
-        # Stock /usr/bin/firefox-esr closes immediately ("Target ... has been closed").
-        _log("  ℹ Using Playwright's patched Firefox (Gecko) build.", emit)
-
-        try:
-            _log("  Launching Firefox persistent context...", emit)
-            context = await pw.firefox.launch_persistent_context(**ff_kwargs)
-            await context.add_init_script(STEALTH_INIT_SCRIPT)
-            ext_script = get_extension_bundle_script()
-            if ext_script:
-                await context.add_init_script(ext_script)
-                _log("  ✓ SnapStreak Extension injected into Firefox context.", emit)
-            _log("  ✓ Firefox context launched successfully.", emit)
-        except Exception as ff_err:
-            _log(f"  ⚠ Firefox ESR failed to launch: {ff_err}", emit)
-            _log("  🔄 Automatically falling back to Google Chrome / Chromium...", emit)
-            chosen_engine = "chromium"
-
-    if not context or chosen_engine != "firefox":
-        _log("🌐 Using Google Chrome / Chromium engine...", emit)
-        chrome_exe = _find_chrome_executable()
-        if chrome_exe:
-            _log(f"  ✓ Using official browser: {chrome_exe}", emit)
-        else:
-            _log("  ℹ Using Playwright Chromium.", emit)
-
-        launch_args = [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-setuid-sandbox",
-            "--start-maximized",
-            "--window-position=0,0",
-            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-            "--disable-blink-features=AutomationControlled",
-            "--no-default-browser-check",
-            "--no-first-run",
-            "--disable-infobars",
-            "--lang=en-US,en",
-            "--enable-webgl",
-            "--enable-webgl2",
-            "--use-fake-ui-for-media-stream",
-            "--use-fake-device-for-media-stream",
-        ]
-        if Y4M_FILE.exists():
-            launch_args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
-
-        # Auto-load SnapStreak extension so the user has the overlay HUD just like Windows
-        ext_dir = None
-        candidates = [
-            Path(__file__).resolve().parent.parent / "extension",
-            Path(__file__).resolve().parent / "extension",
-            Path("/opt/sc/linux-server/extension"),
-            Path("/opt/sc/extension"),
-            Path("/opt/snapstreak/linux-server/extension"),
-            Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
-        ]
-        for cand in candidates:
-            if (cand / "manifest.json").exists():
-                ext_dir = cand.resolve()
-                break
-
-        if ext_dir and not headless:
-            launch_args.extend([
-                f"--disable-extensions-except={ext_dir}",
-                f"--load-extension={ext_dir}",
-            ])
-            _log(f"  ✓ Loaded SnapStreak Extension: {ext_dir}", emit)
-
-        CDP_PORT = 9222
-        # If an official system Chrome is installed, launch it as a native OS process with remote debugging
-        # This completely strips all Playwright automation drivers, process trees, and runtime flags.
-        if chrome_exe and not headless:
-            _log("  🚀 Launching official Chrome as native system process (CDP un-automated mode)...", emit)
-            chrome_cmd = [
-                chrome_exe,
-                f"--remote-debugging-port={CDP_PORT}",
-                f"--user-data-dir={USER_DATA_DIR}",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-setuid-sandbox",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-infobars",
-                "--disable-blink-features=AutomationControlled",
-                "--password-store=basic",
-                "--enable-webgl",
-                "--enable-webgl2",
-                "--start-maximized",
-                "--window-position=0,0",
-                f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-                f"--user-agent={USER_AGENT}",
-                "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
-                "--disable-session-crashed-bubble",
-                "--disable-restore-session-state",
-                "--new-window",
-                "--sec-ch-ua-platform=Windows",
-                "--lang=en-US,en",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-ipc-flooding-protection",
-                "--disable-breakpad",
-                "--disable-component-update",
-                "--disable-domain-reliability",
-                "--disable-sync",
-                "--disk-cache-size=209715200",
-                "--enable-features=NetworkService,NetworkServiceInProcess",
-                "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater",
-            ]
-            if Y4M_FILE.exists():
-                chrome_cmd.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
-            if ext_dir:
-                chrome_cmd.extend([
-                    f"--disable-extensions-except={ext_dir}",
-                    f"--load-extension={ext_dir}",
-                ])
-
-            # Start cleanly on about:blank so stealth script and permissions inject BEFORE Snapchat loads
-            chrome_cmd.append("about:blank")
-
-            for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-                try:
-                    (USER_DATA_DIR / lock_name).unlink()
-                except Exception:
-                    pass
-
-            chrome_env = {**env, "DISPLAY": DISPLAY}
-            _state["chrome_proc"] = subprocess.Popen(
-                chrome_cmd,
-                env=chrome_env,
+                ["Xvfb", DISPLAY, "-screen", "0", "1440x900x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            os.environ["DISPLAY"] = DISPLAY
+            time.sleep(0.35)
 
-            _log(f"  ⏳ Waiting for native Chrome CDP on port {CDP_PORT}...", emit)
-            cdp_ready = await _wait_for_port(CDP_PORT, "127.0.0.1", timeout=8.0)
-            if cdp_ready:
-                _log(f"  ✓ Native Chrome listening on CDP port {CDP_PORT}. Connecting...", emit)
-                browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                await context.add_init_script(STEALTH_INIT_SCRIPT)
-                ext_script = get_extension_bundle_script()
-                if ext_script:
-                    await context.add_init_script(ext_script)
-                    _log("  ✓ SnapStreak Extension injected into Chrome CDP context.", emit)
-                _log("  ✓ Connected cleanly to native Chrome without automation flags.", emit)
-            else:
-                _log("  ⚠ Native Chrome CDP wait timed out; cleaning up process and falling back to persistent context...", emit)
-                _kill(_state.get("chrome_proc"))
-                _state["chrome_proc"] = None
-                for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-                    try:
-                        (USER_DATA_DIR / lock_name).unlink()
-                    except Exception:
-                        pass
-
-        if not context:
-            kwargs = {
-                "user_data_dir": str(USER_DATA_DIR),
-                "headless": headless,
-                "user_agent": USER_AGENT,
-                "locale": "en-US",
-                "timezone_id": "America/Los_Angeles",
-                "permissions": ["camera", "microphone", "notifications"],
-                "args": launch_args,
-                "env": env,
-                "extra_http_headers": {
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": '"Windows"',
-                    "Upgrade-Insecure-Requests": "1",
-                },
-                "ignore_default_args": ["--enable-automation"],
-            }
-            if not headless:
-                kwargs["no_viewport"] = True
-            else:
-                kwargs["viewport"] = VIEWPORT
-
-            if chrome_exe:
-                kwargs["executable_path"] = chrome_exe
-
+        def _bg_vnc():
             try:
-                _log("  Launching Chromium persistent context...", emit)
-                context = await pw.chromium.launch_persistent_context(**kwargs)
-            except Exception as cr_err:
-                _log(f"  ⚠ Chrome failed to launch: {cr_err}", emit)
-                if "executable_path" not in kwargs:
-                    raise
-                _log("  🔄 Retrying with Playwright's bundled Chromium...", emit)
-                kwargs.pop("executable_path", None)
-                for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-                    try:
-                        (USER_DATA_DIR / lock_name).unlink()
-                    except Exception:
-                        pass
-                context = await pw.chromium.launch_persistent_context(**kwargs)
-            await context.add_init_script(STEALTH_INIT_SCRIPT)
-            ext_script = get_extension_bundle_script()
-            if ext_script:
-                await context.add_init_script(ext_script)
-                _log("  ✓ SnapStreak Extension injected into Chromium context.", emit)
-            _log("  ✓ Chromium context launched successfully.", emit)
+                env = {**os.environ, "DISPLAY": DISPLAY}
+                if shutil.which("openbox"):
+                    _state["openbox"] = subprocess.Popen(["openbox"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if shutil.which("x11vnc"):
+                    _state["x11vnc"] = subprocess.Popen(
+                        ["x11vnc", "-display", DISPLAY, "-forever", "-shared", "-nopw", "-rfbport", str(VNC_PORT), "-quiet"],
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                novnc_dir = next((d for d in ("/usr/share/novnc", "/usr/share/novnc/utils") if os.path.isdir(d)), None)
+                if novnc_dir and shutil.which("websockify"):
+                    _state["websockify"] = subprocess.Popen(
+                        ["websockify", f"--web={novnc_dir}", "--heartbeat=30", str(NOVNC_PORT), f"localhost:{VNC_PORT}"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+            except Exception:
+                pass
 
-    if SESSION_FILE.exists():
-        try:
-            data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-            cookies = data.get("cookies", [])
-            if cookies:
-                await context.add_cookies(cookies)
-                _log(f"  ✓ Injected {len(cookies)} cookies from session.json into browser context.", emit)
-        except Exception as ex:
-            _log(f"  ⚠ Failed to inject session cookies: {ex}", emit)
+        asyncio.get_running_loop().run_in_executor(None, _bg_vnc)
+    except Exception as ex:
+        logger.debug(f"Virtual display notice: {ex}")
+
+
+async def ensure_extension_active(page: Page | None = None, force_toggle: bool = False):
+    """Inject the SnapStreak extension bundle and live SJSU webcam Data URL into the active page."""
+    target_page = page or _state.get("page")
+    if not target_page:
+        return
+    try:
+        url = target_page.url or ""
+        if not ("snapchat.com" in url or "localhost" in url or "127.0.0.1" in url):
+            return
+
+        # Push latest SJSU webcam frame first so camera_hook.js has it immediately
+        await inject_webcam_frame_into_page(target_page, force_refresh=False)
+
+        already = await target_page.evaluate("() => Boolean(window.SnapStreakHUD && document.getElementById('snapstreak-hud-host'))")
+        if not already:
+            script = get_extension_bundle_script()
+            if script:
+                await target_page.evaluate(script)
+                await asyncio.sleep(0.15)
+
+        if force_toggle:
+            await target_page.evaluate("() => { if (window.SnapStreakHUD) window.SnapStreakHUD.toggleWindow(true); }")
+    except Exception as ex:
+        logger.debug(f"Extension injection notice: {ex}")
+
+
+async def _fast_frame_loop(emit: Callable | None = None):
+    """
+    Continuous background screencast + state detector + SJSU webcam frame refresher + cookie auto-saver.
+    """
+    last_cookie_save = time.time()
+    last_webcam_push = 0.0
+    last_state_check = 0.0
+
+    while _state.get("active"):
+        page: Page | None = _state.get("page")
+        context: BrowserContext | None = _state.get("context")
+        if not page:
+            await asyncio.sleep(0.3)
+            continue
+
+        now = time.time()
+
+        # 1. Refresh SJSU webcam frame into the page every 15 seconds
+        if now - last_webcam_push > 15.0:
+            last_webcam_push = now
+            try:
+                await inject_webcam_frame_into_page(page, force_refresh=False)
+            except Exception:
+                pass
+
+        # 2. Detect screen state & auto-dismiss 'Use Here' every 2 seconds
+        if now - last_state_check > 2.0:
+            last_state_check = now
+            try:
+                await dismiss_snapchat_blockers(page)
+                st = await detect_screen_state(page)
+                _state["screen_state"] = st.get("state", "UNKNOWN")
+                _state["url"] = page.url
+            except Exception:
+                pass
+
+        # 3. Auto-save cookies every 30 seconds when on Snapchat Web
+        if context and (now - last_cookie_save > 30.0):
+            last_cookie_save = now
+            try:
+                cfg = config.load()
+                if cfg.get("auto_save_cookies", True) and is_snapchat_authenticated_url(page.url):
+                    await save_cookies_from_context(context)
+            except Exception:
+                pass
+
+        # 4. Capture JPEG frame cleanly via CDP captureScreenshot (never deadlocks compositor)
+        if now - _state.get("last_frame_ts", 0.0) >= 0.40:
+            try:
+                cdp = _state.get("cdp")
+                b64 = ""
+                if cdp:
+                    res_shot = await asyncio.wait_for(
+                        cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": 68, "fromSurface": True}),
+                        timeout=2.0,
+                    )
+                    b64 = res_shot.get("data", "") if isinstance(res_shot, dict) else ""
+                if not b64:
+                    img = await asyncio.wait_for(page.screenshot(type="jpeg", quality=68), timeout=2.5)
+                    b64 = base64.b64encode(img).decode("ascii")
+                if b64:
+                    _state["last_shot_b64"] = b64
+                    _state["url"] = page.url
+                    _state["last_frame_ts"] = time.time()
+                    cb = emit or _state.get("emit")
+                    if cb:
+                        cb(json.dumps({
+                            "type": "screencast",
+                            "image": b64,
+                            "url": page.url,
+                            "screen_state": _state.get("screen_state", "UNKNOWN"),
+                        }))
+            except Exception:
+                pass
+
+        await asyncio.sleep(0.35)
+
+
+async def start(emit: Callable | None = None, engine: str | None = None) -> dict:
+    """
+    Launch (or reuse) the persistent Snapchat Web browser session while preserving all login cookies.
+    """
+    if emit:
+        _state["emit"] = emit
+
+    if is_active():
+        page: Page = _state["page"]
+        await ensure_extension_active(page)
+        return {"ok": True, "url": page.url, "engine": _state.get("engine", "chromium"), "reused": True}
+
+    if _state.get("starting"):
+        for _ in range(50):
+            if is_active():
+                return {"ok": True, "url": get_Current_Url(), "engine": _state.get("engine", "chromium")}
+            await asyncio.sleep(0.2)
+
+    _state["starting"] = True
+    try:
+        return await _start_impl(emit=emit, engine=engine)
+    finally:
+        _state["starting"] = False
+
+
+async def _start_impl(emit: Callable | None = None, engine: str | None = None) -> dict:
+    await _cleanup_browser_only()
+
+    config.ensure_data_dirs()
+    cfg = config.load()
+    chosen_engine = (engine or cfg.get("browser_engine") or "chromium").lower()
+    _state["engine"] = chosen_engine
+
+    # 1. Fetch SJSU webcam frame & generate Y4M before launching browser
+    _log("📷 Fetching live SJSU Meteorology webcam frame...", emit)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, fetch_webcam_image, False)
+
+    # 2. Start virtual display on Linux if needed
+    _start_linux_virtual_display(emit=emit)
+
+    # 3. Clean stale SingletonLock files
+    for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = USER_DATA_DIR / lock_name
+        if p.exists() or p.is_symlink():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
+    pw = await async_playwright().start()
+    _state["pw"] = pw
+
+    # On Windows, run headless=True so our Port-8080 Web Studio embeds the browser cleanly without popping up annoying windows,
+    # unless SNAPSTREAK_HEADED=1 is explicitly set. On Linux with Xvfb (:99), run headless=False inside Xvfb.
+    if os.name == "nt":
+        headless = os.environ.get("SNAPSTREAK_HEADED", "0") != "1"
+    else:
+        headless = False if os.environ.get("DISPLAY") else True
+
+    chrome_exe = _find_chrome_executable()
+    launch_args = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--autoplay-policy=no-user-gesture-required",
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
+        "--disable-session-crashed-bubble",
+        "--no-first-run",
+        "--no-default-browser-check",
+        f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
+    ]
+    if Y4M_FILE.exists():
+        launch_args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
+
+    kwargs = {
+        "user_data_dir": str(USER_DATA_DIR),
+        "headless": headless,
+        "viewport": VIEWPORT,
+        "locale": "en-US",
+        "timezone_id": "America/Los_Angeles",
+        "permissions": ["camera", "microphone", "notifications"],
+        "args": launch_args,
+        "ignore_default_args": ["--enable-automation"],
+    }
+    if chrome_exe:
+        kwargs["executable_path"] = chrome_exe
+        _log(f"🌐 Launching persistent browser ({Path(chrome_exe).name})...", emit)
+    else:
+        _log("🌐 Launching Playwright Chromium with persistent profile...", emit)
+
+    try:
+        context = await pw.chromium.launch_persistent_context(**kwargs)
+    except Exception as ex:
+        _log(f"⚠ Primary browser launch notice ({ex}), retrying with bundled Chromium...", emit)
+        kwargs.pop("executable_path", None)
+        context = await pw.chromium.launch_persistent_context(**kwargs)
+
+    # 4. Inject stealth + extension + SJSU webcam hook
+    await context.add_init_script(STEALTH_INIT_SCRIPT)
+    ext_script = get_extension_bundle_script()
+    if ext_script:
+        await context.add_init_script(ext_script)
+
+    # 5. Load cookies from session.json into persistent context AND sync back to session.json
+    injected_count = await load_cookies_into_context(context, emit=emit)
+    if injected_count > 0:
+        _log(f"🍪 Loaded {injected_count} saved cookies from session vault.", emit)
+
+    # Also immediately export storage_state from persistent profile so session.json has all profile cookies
+    save_res = await save_cookies_from_context(context, emit=emit)
+    if save_res.get("ok"):
+        _log(f"🍪 Cookie Vault synced: {save_res.get('snapchat_cookies', 0)} Snapchat cookies active.", emit)
 
     _state["context"] = context
-
     page = context.pages[0] if context.pages else await context.new_page()
     _state["page"] = page
     _state["active"] = True
 
-    page.on("domcontentloaded", lambda p: asyncio.create_task(ensure_extension_active(p)))
-    page.on("load", lambda p: asyncio.create_task(ensure_extension_active(p)))
-
-    # Grant camera, microphone, and notification permissions explicitly for Snapchat origins
-    for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com"]:
+    for origin in ("https://web.snapchat.com", "https://www.snapchat.com", "https://accounts.snapchat.com"):
         try:
             await context.grant_permissions(["camera", "microphone", "notifications"], origin=origin)
         except Exception:
             pass
 
-    # Start screencast: CDP for Chromium + continuous _fast_frame_loop heartbeat
-    _state["last_frame_ts"] = 0.0
-    if chosen_engine != "firefox":
-        try:
-            cdp = await context.new_cdp_session(page)
-            _state["cdp"] = cdp
+    page.on("domcontentloaded", lambda p: asyncio.create_task(ensure_extension_active(p)))
+    page.on("load", lambda p: asyncio.create_task(ensure_extension_active(p)))
 
-            for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com"]:
-                try:
-                    await cdp.send("Browser.grantPermissions", {
+    # 6. Attach CDP session for permissions and fast non-blocking captureScreenshot
+    try:
+        cdp = await context.new_cdp_session(page)
+        _state["cdp"] = cdp
+        for origin in ("https://web.snapchat.com", "https://www.snapchat.com", "https://accounts.snapchat.com"):
+            try:
+                await cdp.send(
+                    "Browser.grantPermissions",
+                    {
                         "permissions": ["videoCapture", "audioCapture", "notifications", "durableStorage"],
                         "origin": origin,
-                    })
-                except Exception:
-                    pass
+                    },
+                )
+            except Exception:
+                pass
+    except Exception as ex:
+        logger.debug(f"CDP session notice: {ex}")
 
-            async def on_screencast_frame(params):
-                session_id = params.get("sessionId")
-                data_b64 = params.get("data", "")
-                if session_id:
-                    try:
-                        await cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
-                    except Exception:
-                        pass
-                if data_b64:
-                    _state["last_shot_b64"] = data_b64
-                    _state["url"] = page.url
-                    _state["last_frame_ts"] = time.time()
-                    if emit:
-                        emit(json.dumps({"type": "screencast", "image": data_b64, "url": page.url}))
-
-            cdp.on("Page.screencastFrame", lambda params: asyncio.create_task(on_screencast_frame(params)))
-
-            await cdp.send("Page.startScreencast", {
-                "format": "jpeg",
-                "quality": 65,
-                "maxWidth": 1440,
-                "maxHeight": 900,
-                "everyNthFrame": 1,
-            })
-        except Exception as ex:
-            _log(f"CDP Screencast notice: {ex}", emit)
-
-    # Always run _fast_frame_loop alongside CDP so static pages & popups stream without stalling
     asyncio.create_task(_fast_frame_loop(emit=emit))
 
-    # Navigate to login page if unauthenticated, or directly to web.snapchat.com if session exists
-    if SESSION_FILE.exists():
-        target_url = "https://web.snapchat.com/?snapstreak_autoboot=1"
-    else:
-        target_url = "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
+    # 7. Always navigate to https://web.snapchat.com/ first so existing cookies log right in!
+    target_url = SNAPCHAT_WEB
+    _log(f"🚀 Opening {target_url} with saved login cookies & SJSU webcam...", emit)
 
-    _log(f"Navigating to {target_url}...", emit)
-
-    async def _initial_navigation():
+    async def _initial_nav():
         try:
             await page.goto(target_url, timeout=35_000, wait_until="domcontentloaded")
             await ensure_extension_active(page, force_toggle=False)
-            # Immediate screenshot frame push so user sees the page in < 1s
-            try:
-                img = await page.screenshot(type="jpeg", quality=70, timeout=1500)
-                b64 = base64.b64encode(img).decode()
-                _state["last_shot_b64"] = b64
-                _state["url"] = page.url
-                _state["last_frame_ts"] = time.time()
-                if emit:
-                    emit(json.dumps({"type": "screencast", "image": b64, "url": page.url}))
-            except Exception:
-                pass
+            await dismiss_snapchat_blockers(page, emit=emit)
+            st = await detect_screen_state(page)
+            _state["screen_state"] = st.get("state", "UNKNOWN")
+            _state["url"] = page.url
+            await save_cookies_from_context(context)
         except Exception as ex:
             _log(f"Navigation notice: {ex}", emit)
 
-    _state["nav_task"] = asyncio.create_task(_initial_navigation())
+    asyncio.create_task(_initial_nav())
+    return {"ok": True, "url": target_url, "engine": chosen_engine}
 
-    # Background task to monitor for login completion & auto-dismiss Snapchat blocker modals
-    async def _auto_save_watcher():
-        already_announced_save = False
-        while _state.get("active"):
+
+async def save(emit: Callable | None = None) -> dict:
+    """
+    Save current cookies & localStorage to session.json and session_backup.json
+    WITHOUT closing the active browser session!
+    """
+    context: BrowserContext | None = _state.get("context")
+    if not context:
+        summary = config.get_cookie_vault_summary()
+        if summary.get("has_session_file"):
+            return {"ok": True, "message": f"Session file already saved ({summary.get('snapchat_cookies', 0)} Snapchat cookies)."}
+        return {"ok": False, "message": "No active browser session to save."}
+
+    res = await save_cookies_from_context(context, emit=emit)
+    if res.get("ok"):
+        _log(f"✓ {res['message']}", emit)
+    return res
+
+
+async def import_cookies(raw_input: str | dict | list, emit: Callable | None = None) -> dict:
+    """
+    Import cookies from JSON (Cookie-Editor array or Playwright storage_state) or raw Cookie header string,
+    inject them into the live browser context if active, and persist to session.json & session_backup.json.
+    """
+    config.ensure_data_dirs()
+    parsed_cookies = []
+    origins = []
+
+    try:
+        if isinstance(raw_input, str):
+            text = raw_input.strip()
+            if text.startswith("{") or text.startswith("["):
+                data = json.loads(text)
+            else:
+                # Parse raw Cookie header string: key1=val1; key2=val2
+                data = []
+                for part in text.split(";"):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        data.append({"name": k.strip(), "value": v.strip(), "domain": ".snapchat.com", "path": "/"})
+        else:
+            data = raw_input
+
+        if isinstance(data, dict):
+            raw_list = data.get("cookies", [])
+            origins = data.get("origins", [])
+        elif isinstance(data, list):
+            raw_list = data
+        else:
+            raw_list = []
+
+        for c in raw_list:
+            if not isinstance(c, dict) or not c.get("name") or c.get("value") is None:
+                continue
+            same_site_raw = str(c.get("sameSite", "Lax")).lower()
+            same_site = "None" if "no" in same_site_raw else ("Strict" if "strict" in same_site_raw else "Lax")
+            cookie_obj = {
+                "name": str(c["name"]),
+                "value": str(c["value"]),
+                "domain": str(c.get("domain", ".snapchat.com")),
+                "path": str(c.get("path", "/")),
+                "httpOnly": bool(c.get("httpOnly", False)),
+                "secure": bool(c.get("secure", True)),
+                "sameSite": same_site,
+            }
+            exp = c.get("expirationDate") or c.get("expires")
+            if exp and float(exp) > 0:
+                cookie_obj["expires"] = float(exp)
+            parsed_cookies.append(cookie_obj)
+
+        if not parsed_cookies:
+            return {"ok": False, "message": "No valid cookies found in input."}
+
+        # Merge with existing cookies in session.json so we never lose other cookies
+        existing_cookies = []
+        if SESSION_FILE.exists():
             try:
-                p = _state.get("page")
-                ctx = _state.get("context")
-                if p and ctx and not p.is_closed():
-                    u = p.url or ""
-                    if "snapchat.com" in u:
-                        has_host = await p.evaluate("() => Boolean(document.getElementById('snapstreak-shadow-host'))")
-                        if not has_host:
-                            await ensure_extension_active(p, force_toggle=False)
-
-                        # Auto-dismiss Snapchat's "Use Here" (multiple tab lock) or "Not now" modal
-                        await p.evaluate("""() => {
-                            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                            for (const b of btns) {
-                                const t = (b.innerText || b.textContent || '').trim().toLowerCase();
-                                if (t === 'use here' || t === 'not now' || t === 'got it') {
-                                    b.click();
-                                }
-                            }
-                        }""")
-
-                    if "web.snapchat.com" in u and "accounts.snapchat.com" not in u and "/login" not in u:
-                        cookies = await ctx.cookies()
-                        c_names = {c.get("name") for c in cookies}
-                        if any(k in c_names for k in ["sc-a-nonce", "sc-session", "web_client_id"]) or len(cookies) >= 5:
-                            storage = await ctx.storage_state()
-                            SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-                            SESSION_FILE.write_text(json.dumps(storage, indent=2), encoding="utf-8")
-                            if not already_announced_save:
-                                already_announced_save = True
-                                _log("✓ Detected active Snapchat login inside browser! Session automatically saved.", emit)
-                                if emit:
-                                    emit("LOGIN_AUTO_SAVED")
+                old = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+                existing_cookies = old.get("cookies", []) if isinstance(old, dict) else []
+                if not origins and isinstance(old, dict):
+                    origins = old.get("origins", [])
             except Exception:
                 pass
-            await asyncio.sleep(3)
 
-    asyncio.create_task(_auto_save_watcher())
+        by_key = {(c.get("domain"), c.get("name"), c.get("path", "/")): c for c in existing_cookies if isinstance(c, dict)}
+        for c in parsed_cookies:
+            by_key[(c.get("domain"), c.get("name"), c.get("path", "/"))] = c
 
-    _log("✓ Browser ready — live stream active.", emit)
-    return "ok"
+        merged_state = {"cookies": list(by_key.values()), "origins": origins}
+        SESSION_FILE.write_text(json.dumps(merged_state, indent=2), encoding="utf-8")
+        SESSION_BACKUP_FILE.write_text(json.dumps(merged_state, indent=2), encoding="utf-8")
 
+        context: BrowserContext | None = _state.get("context")
+        page: Page | None = _state.get("page")
+        if context:
+            await context.add_cookies(parsed_cookies)
+            if page:
+                await page.goto(SNAPCHAT_WEB, wait_until="domcontentloaded", timeout=30_000)
 
-async def click_google_login(email: str | None = None, emit: Callable | None = None) -> dict:
-    """Click Continue with Google / Sign in with Google button and manage login popup."""
-    page: Page | None = _state["page"]
-    context: BrowserContext | None = _state["context"]
-    if not page:
-        return {"ok": False, "error": "No active browser session"}
-
-    # If currently on web.snapchat.com without login form, navigate to login page first
-    try:
-        curr_url = page.url or ""
-        if "web.snapchat.com" in curr_url and "/login" not in curr_url:
-            _log("Navigating to Snapchat accounts login page to access Google OAuth...", emit)
-            await page.goto("https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F", timeout=25_000, wait_until="commit")
-            await asyncio.sleep(2.0)
+        return {
+            "ok": True,
+            "imported_count": len(parsed_cookies),
+            "total_cookies": len(merged_state["cookies"]),
+            "message": f"Imported {len(parsed_cookies)} cookies and saved to Cookie Vault.",
+        }
     except Exception as ex:
-        _log(f"Navigation warning: {ex}", emit)
-
-    google_selectors = [
-        'button:has-text("Google")',
-        '[aria-label*="Google" i]',
-        'button:has([data-testid*="google" i])',
-        'a:has-text("Google")',
-        'div[role="button"]:has-text("Google")',
-        'button:has-text("Continue with Google")',
-        'button:has-text("Sign in with Google")',
-        'div:has-text("Continue with Google")',
-        'iframe[src*="accounts.google.com"]',
-        '#g_id_onload',
-    ]
-
-    # Check for iframe or page button
-    clicked = False
-    target_selector = None
-
-    for sel in google_selectors:
-        try:
-            btn = page.locator(sel).first
-            if await btn.is_visible(timeout=1200):
-                await btn.scroll_into_view_if_needed()
-                # Watch for popup if context exists
-                try:
-                    if context:
-                        async with context.expect_page(timeout=4000) as new_page_info:
-                            await btn.click(delay=80)
-                        popup_page = await new_page_info.value
-                        _state["page"] = popup_page
-                        _log("  ✓ Opened Google OAuth popup window. Live stream switched to Google login.", emit)
-                        if email:
-                            await asyncio.sleep(1.5)
-                            try:
-                                email_input = popup_page.locator('input[type="email"], input[name="identifier"]').first
-                                if await email_input.is_visible(timeout=3000):
-                                    await email_input.fill(email)
-                                    await popup_page.keyboard.press("Enter")
-                                    _log(f"  ✓ Automatically filled Google account email: {email}", emit)
-                            except Exception:
-                                pass
-                        return {"ok": True, "selector": sel, "popup": True}
-                    else:
-                        await btn.click(delay=80)
-                except Exception:
-                    await btn.click(delay=80)
-                _log("  ✓ Clicked Continue with Google button.", emit)
-                return {"ok": True, "selector": sel}
-        except Exception:
-            continue
-
-    # Try searching across all frames / iframes
-    for frame in page.frames:
-        for sel in ['button:has-text("Google")', '[aria-label*="Google" i]', 'div[role="button"]:has-text("Google")']:
-            try:
-                btn = frame.locator(sel).first
-                if await btn.is_visible(timeout=800):
-                    await btn.click()
-                    _log(f"  ✓ Clicked Google OAuth button inside frame {frame.name or frame.url}.", emit)
-                    return {"ok": True, "frame": frame.url}
-            except Exception:
-                continue
-
-    return {"ok": False, "error": "Google button not found on this page. Navigate to login page first."}
+        return {"ok": False, "message": f"Failed to import cookies: {ex}"}
 
 
+async def restore_cookie_backup(emit: Callable | None = None) -> dict:
+    """Restore session.json from session_backup.json and reload into active browser context."""
+    config.ensure_data_dirs()
+    if not SESSION_BACKUP_FILE.exists():
+        return {"ok": False, "message": "No cookie backup file found."}
+    try:
+        shutil.copy2(SESSION_BACKUP_FILE, SESSION_FILE)
+        context: BrowserContext | None = _state.get("context")
+        page: Page | None = _state.get("page")
+        count = 0
+        if context:
+            count = await load_cookies_into_context(context, emit=emit)
+            if page:
+                await page.goto(SNAPCHAT_WEB, wait_until="domcontentloaded", timeout=30_000)
+        summary = config.get_cookie_vault_summary()
+        return {
+            "ok": True,
+            "restored_cookies": count or summary.get("total_cookies", 0),
+            "message": f"Restored {summary.get('total_cookies', 0)} cookies ({summary.get('snapchat_cookies', 0)} Snapchat cookies) from backup!",
+        }
+    except Exception as ex:
+        return {"ok": False, "message": f"Restore backup failed: {ex}"}
 
 
-
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE BROWSER INTERACTION & SMART MACRO RECORDING
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def click(x: int, y: int):
-    """Forward a click at (x, y) to the browser with realistic mouse move and click."""
-    if _macro["recording"]:
-        now = time.time()
-        delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 1200
-        _macro["last_time"] = now
-        _macro["events"].append({"type": "click", "x": x, "y": y, "delay_ms": delay})
-
-    page: Page | None = _state["page"]
-    if page:
-        try:
-            await page.mouse.move(x, y)
-            await asyncio.sleep(0.04)
-            await page.mouse.click(x, y, delay=50)
-            await asyncio.sleep(0.15)
-            _state["last_frame_ts"] = 0.0  # Trigger immediate frame refresh
-        except Exception:
-            pass
-
-
-async def scroll(x: int, y: int, delta_x: int, delta_y: int):
-    """Forward mouse wheel scroll at (x, y) to the active browser page."""
+    """
+    Click at viewport coordinates (x, y) in the live browser.
+    If Macro Recording is active, inspects the DOM element at (x, y) first and records
+    both DOM selector/text metadata and relative/absolute coordinates!
+    """
     page: Page | None = _state.get("page")
-    if page:
-        try:
-            await page.mouse.move(x, y)
-            await page.mouse.wheel(delta_x, delta_y)
-            _state["last_frame_ts"] = 0.0
-        except Exception:
-            pass
+    if not page:
+        raise RuntimeError("No active browser session")
+
+    if _state.get("macro_recording"):
+        now = time.time()
+        delay_ms = int((now - _state["macro_last_ts"]) * 1000) if _state.get("macro_last_ts") else 1200
+        delay_ms = max(300, min(8000, delay_ms))
+        _state["macro_last_ts"] = now
+
+        meta = await inspect_element_at_point(page, x, y)
+        step = {
+            "id": f"step_{len(_state['macro_events']) + 1}_{int(now * 1000) % 100000}",
+            "type": "click",
+            "x": x,
+            "y": y,
+            "rx": meta.get("rx", round(x / VIEWPORT["width"], 4)),
+            "ry": meta.get("ry", round(y / VIEWPORT["height"], 4)),
+            "label": meta.get("label", f"Click at ({x}, {y})"),
+            "selector": meta.get("selector", ""),
+            "text": meta.get("text", ""),
+            "ariaLabel": meta.get("ariaLabel", ""),
+            "tagName": meta.get("tagName", "div"),
+            "delay_ms": delay_ms,
+        }
+        _state["macro_events"].append(step)
+        _log(f"🔴 [Macro Recorded #{len(_state['macro_events'])}] {step['label']} at ({x}, {y})")
+
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await asyncio.sleep(0.035)
+    await page.mouse.up()
+    _state["last_frame_ts"] = 0.0
 
 
-async def repair_snapchat_session(emit: Callable | None = None) -> dict:
-    """Fix stuck Snapchat Web sessions by clearing corrupted Service Workers/CacheStorage,
-    closing duplicate tabs, re-granting camera/mic permissions, and reloading cleanly."""
-    if not _state.get("active") or not _state.get("page"):
-        _log("🔧 Starting browser session for Snapchat Repair...", emit)
-        await start(emit=emit)
-        for _ in range(30):
-            if _state.get("active") and _state.get("page"):
-                break
-            await asyncio.sleep(0.1)
-
+async def send_text(text: str):
     page: Page | None = _state.get("page")
-    context: BrowserContext | None = _state.get("context")
-    cdp = _state.get("cdp")
     if not page:
-        return {"ok": False, "error": "Browser session could not be started."}
+        raise RuntimeError("No active browser session")
 
-    _log("🔧 Running Snapchat Web Deep Repair (preserving login cookies)...", emit)
-    try:
-        # 1. Close extra tabs that trigger 'Snapchat is open in another tab'
-        if context and len(context.pages) > 1:
-            for p in list(context.pages):
-                if p != page:
-                    try:
-                        await p.close()
-                    except Exception:
-                        pass
-            _log("  ✓ Closed duplicate browser tabs.", emit)
-
-        # 2. Re-grant camera, microphone, and notifications permissions
-        for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com"]:
-            try:
-                if context:
-                    await context.grant_permissions(["camera", "microphone", "notifications"], origin=origin)
-                if cdp:
-                    await cdp.send("Browser.grantPermissions", {
-                        "permissions": ["videoCapture", "audioCapture", "notifications", "durableStorage"],
-                        "origin": origin,
-                    })
-            except Exception:
-                pass
-        _log("  ✓ Re-granted Camera, Microphone & Notification permissions.", emit)
-
-        # 3. Unregister broken Service Workers, clear CacheStorage & sessionStorage (preserves cookies/localStorage/IndexedDB)
-        try:
-            await page.evaluate("""async () => {
-                try {
-                    sessionStorage.clear();
-                    if ('serviceWorker' in navigator) {
-                        const regs = await navigator.serviceWorker.getRegistrations();
-                        for (const r of regs) {
-                            await r.unregister();
-                        }
-                    }
-                    if ('caches' in window) {
-                        const keys = await caches.keys();
-                        for (const k of keys) {
-                            await caches.delete(k);
-                        }
-                    }
-                } catch (e) {}
-            }""")
-            _log("  ✓ Cleared stale Snapchat Service Workers & CacheStorage.", emit)
-        except Exception:
-            pass
-
-        # 4. Reload web.snapchat.com and re-attach virtual camera & extension
-        target = "https://web.snapchat.com/?snapstreak_autoboot=1" if SESSION_FILE.exists() else "https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F"
-        await page.goto(target, timeout=30_000, wait_until="domcontentloaded")
-        await ensure_extension_active(page, force_toggle=False)
-
-        # 5. Immediate blocker dismissal & frame broadcast
-        await page.evaluate("""() => {
-            const btns = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"]'));
-            for (const b of btns) {
-                const t = (b.innerText || b.textContent || '').trim().toLowerCase();
-                if (t === 'use here' || t === 'not now' || t === 'got it' || t === 'allow' || t === 'accept') {
-                    b.click();
-                }
-            }
-        }""")
-
-        try:
-            img = await page.screenshot(type="jpeg", quality=70, timeout=1500)
-            b64 = base64.b64encode(img).decode()
-            _state["last_shot_b64"] = b64
-            _state["url"] = page.url
-            _state["last_frame_ts"] = time.time()
-            if emit:
-                emit(json.dumps({"type": "screencast", "image": b64, "url": page.url}))
-        except Exception:
-            pass
-
-        _log("✓ Snapchat Web Repair complete! Clean session reloaded.", emit)
-        return {"ok": True, "message": "Snapchat Web repaired and reloaded cleanly."}
-    except Exception as ex:
-        _log(f"⚠ Snapchat Repair notice: {ex}", emit)
-        return {"ok": False, "error": str(ex)}
-
-
-async def fill_field(field: str, value: str) -> dict:
-    """Smart field focus, clear, and input with full React property descriptor synchronization."""
-    page: Page | None = _state["page"]
-    if not page:
-        return {"ok": False, "error": "No active browser session"}
-
-    selectors_map = {
-        "username": [
-            "input#accountIdentifier",
-            "input[name='accountIdentifier']",
-            "input[autocomplete='username']",
-            "input[name='username']",
-            "input[type='email']",
-            "input[placeholder*='Username' i]",
-            "input[placeholder*='Email' i]",
-            "input[type='text']",
-        ],
-        "password": [
-            "input#password",
-            "input[name='password']",
-            "input[autocomplete='current-password']",
-            "input[type='password']",
-            "input[placeholder*='Password' i]",
-        ],
-        "code": [
-            "input[name='code']",
-            "input[name='verificationCode']",
-            "input[inputmode='numeric']",
-            "input[type='number']",
-            "input[maxlength='6']",
-            "input[placeholder*='code' i]",
-            "input[type='text']",
-        ],
-    }
-
-    selectors = selectors_map.get(field.lower(), ["input[type='text']", "input"])
-
-    # 1. Try finding input via selectors and filling properly
-    for sel in selectors:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=800):
-                await loc.click()
-                await asyncio.sleep(0.05)
-                # Playwright's native fill() handles focus, clear, and input dispatch
-                await loc.fill(value)
-                # React 16+ controlled input synchronization fallback
-                await page.evaluate("""
-                    ([selector, val]) => {
-                        const el = document.querySelector(selector);
-                        if (el) {
-                            el.focus();
-                            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                            if (setter) {
-                                setter.call(el, val);
-                            } else {
-                                el.value = val;
-                            }
-                            el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-                        }
-                    }
-                """, [sel, value])
-                _log(f"  ✓ Quick filled {field} into '{sel}'.")
-                return {"ok": True, "selector": sel}
-        except Exception:
-            continue
-
-    # 2. Fallback: Type directly into active focused element with React sync
-    try:
-        await page.keyboard.press("Control+A")
-        await page.keyboard.press("Backspace")
-        await page.keyboard.type(value, delay=40)
-        await page.evaluate("""
-            (val) => {
-                const el = document.activeElement;
-                if (el && el.tagName === 'INPUT') {
-                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                    if (setter) setter.call(el, val);
-                    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-                }
-            }
-        """, value)
-        _log(f"  ✓ Typed {field} directly into active focused element.")
-        return {"ok": True, "fallback": "active_element"}
-    except Exception as ex:
-        return {"ok": False, "error": str(ex)}
-
-
-async def click_submit() -> dict:
-    """Click primary submit / Next / Log In button with accurate click event."""
-    page: Page | None = _state["page"]
-    if not page:
-        return {"ok": False, "error": "No active browser session"}
-
-    submit_selectors = [
-        "button[type='submit']",
-        "button:has-text('Next')",
-        "button:has-text('Log In')",
-        "button:has-text('Sign In')",
-        "button:has-text('Continue')",
-        "button:has-text('Submit')",
-        "input[type='submit']",
-        "[data-testid='submit-button']",
-    ]
-    for sel in submit_selectors:
-        try:
-            btn = page.locator(sel).first
-            if await btn.is_visible(timeout=1000):
-                await btn.scroll_into_view_if_needed()
-                await btn.click(delay=80)
-                _log(f"  ✓ Clicked submit button '{sel}'.")
-                return {"ok": True, "selector": sel}
-        except Exception:
-            continue
-
-    # Fallback: Press Enter key
-    try:
-        await page.keyboard.press("Enter")
-        _log("  ✓ Pressed Enter for submission.")
-        return {"ok": True, "fallback": "Enter"}
-    except Exception as ex:
-        return {"ok": False, "error": str(ex)}
-
-
-
-async def type_text(text: str):
-    """Type text into the browser."""
-
-    if _macro["recording"]:
+    if _state.get("macro_recording") and text:
         now = time.time()
-        delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 800
-        _macro["last_time"] = now
-        _macro["events"].append({"type": "type", "text": text, "delay_ms": delay})
+        delay_ms = int((now - _state["macro_last_ts"]) * 1000) if _state.get("macro_last_ts") else 1000
+        _state["macro_last_ts"] = now
+        _state["macro_events"].append({
+            "id": f"step_{len(_state['macro_events']) + 1}_{int(now * 1000) % 100000}",
+            "type": "type",
+            "text": text,
+            "label": f'Type "{text[:24]}"',
+            "delay_ms": max(300, min(6000, delay_ms)),
+        })
 
-    page: Page | None = _state["page"]
-    if page:
-        await page.keyboard.type(text, delay=60)
+    await page.keyboard.type(text, delay=25)
+    _state["last_frame_ts"] = 0.0
 
 
-async def key_press(key: str):
-    """Press a special key (Enter, Tab, Backspace, Escape...)."""
-    if _macro["recording"]:
+async def press_key(key: str):
+    page: Page | None = _state.get("page")
+    if not page:
+        raise RuntimeError("No active browser session")
+
+    if _state.get("macro_recording") and key:
         now = time.time()
-        delay = int((now - _macro["last_time"]) * 1000) if _macro["last_time"] else 800
-        _macro["last_time"] = now
-        _macro["events"].append({"type": "key", "key": key, "delay_ms": delay})
+        delay_ms = int((now - _state["macro_last_ts"]) * 1000) if _state.get("macro_last_ts") else 800
+        _state["macro_last_ts"] = now
+        _state["macro_events"].append({
+            "id": f"step_{len(_state['macro_events']) + 1}_{int(now * 1000) % 100000}",
+            "type": "key",
+            "key": key,
+            "label": f"Press [{key}]",
+            "delay_ms": max(300, min(6000, delay_ms)),
+        })
 
-    page: Page | None = _state["page"]
-    if page:
-        await page.keyboard.press(key)
+    await page.keyboard.press(key)
+    _state["last_frame_ts"] = 0.0
+
+
+async def scroll(delta_x: int = 0, delta_y: int = 300):
+    page: Page | None = _state.get("page")
+    if not page:
+        raise RuntimeError("No active browser session")
+    await page.mouse.wheel(delta_x, delta_y)
+    _state["last_frame_ts"] = 0.0
 
 
 async def navigate(url: str) -> dict:
-    """Navigate the browser to a URL (supports query searches or full URLs)."""
-    page: Page | None = _state["page"]
+    page: Page | None = _state.get("page")
     if not page:
-        return {"ok": False, "error": "No browser active"}
-    url = url.strip()
-    if not url:
-        url = "https://web.snapchat.com/"
-    elif not url.startswith(("http://", "https://", "about:")):
-        if "." in url and " " not in url:
-            url = "https://" + url
-        else:
-            import urllib.parse
-            url = f"https://www.google.com/search?q={urllib.parse.quote(url)}"
-    try:
-        await page.goto(url, timeout=30_000, wait_until="domcontentloaded")
-        _state["url"] = page.url
-        return {"ok": True, "url": page.url}
-    except Exception as ex:
-        return {"ok": False, "error": str(ex)}
+        await start()
+        page = _state.get("page")
+    if not page:
+        raise RuntimeError("No active browser session")
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+    await page.goto(url, wait_until="domcontentloaded", timeout=35_000)
+    await ensure_extension_active(page)
+    _state["last_frame_ts"] = 0.0
+    return {"ok": True, "url": page.url}
 
 
 async def go_back() -> dict:
-    """Navigate back in browser history."""
-    page: Page | None = _state["page"]
-    if page:
-        try:
-            await page.go_back(timeout=10_000)
-            _state["url"] = page.url
-            return {"ok": True, "url": page.url}
-        except Exception as ex:
-            return {"ok": False, "error": str(ex)}
-    return {"ok": False, "error": "No browser active"}
+    page: Page | None = _state.get("page")
+    if not page:
+        raise RuntimeError("No active browser session")
+    await page.go_back(wait_until="domcontentloaded", timeout=15_000)
+    _state["last_frame_ts"] = 0.0
+    return {"ok": True, "url": page.url}
 
 
 async def go_forward() -> dict:
-    """Navigate forward in browser history."""
-    page: Page | None = _state["page"]
-    if page:
-        try:
-            await page.go_forward(timeout=10_000)
-            _state["url"] = page.url
-            return {"ok": True, "url": page.url}
-        except Exception as ex:
-            return {"ok": False, "error": str(ex)}
-    return {"ok": False, "error": "No browser active"}
+    page: Page | None = _state.get("page")
+    if not page:
+        raise RuntimeError("No active browser session")
+    await page.go_forward(wait_until="domcontentloaded", timeout=15_000)
+    _state["last_frame_ts"] = 0.0
+    return {"ok": True, "url": page.url}
 
 
 async def reload_page() -> dict:
-    """Reload the active webpage."""
-    page: Page | None = _state["page"]
-    if page:
-        try:
-            await page.reload(timeout=15_000)
-            _state["url"] = page.url
-            return {"ok": True, "url": page.url}
-        except Exception as ex:
-            return {"ok": False, "error": str(ex)}
-    return {"ok": False, "error": "No browser active"}
-
-
-async def upload_snap_to_chat() -> dict:
-    """Upload snap image to whichever chat is currently open."""
-    page: Page | None = _state["page"]
+    page: Page | None = _state.get("page")
     if not page:
-        return {"ok": False, "error": "No active browser"}
-    
-    from automation import ensure_snap_image, SNAP_IMAGE
-    ensure_snap_image()
+        raise RuntimeError("No active browser session")
+    await page.reload(wait_until="domcontentloaded", timeout=30_000)
+    await ensure_extension_active(page)
+    _state["last_frame_ts"] = 0.0
+    return {"ok": True, "url": page.url}
 
-    for sel in [
-        '[aria-label*="camera" i]',
-        '[aria-label*="photo" i]',
-        '[aria-label*="media" i]',
-        '[aria-label*="attachment" i]',
-        '[data-testid="camera-button"]',
-        '[data-testid="media-button"]',
-    ]:
-        try:
-            btn = await page.wait_for_selector(sel, timeout=1500)
-            if btn:
-                await btn.click()
-                await asyncio.sleep(0.5)
+
+async def quick_fill_login(username: str, password: str, emit: Callable | None = None) -> dict:
+    """Fill Snapchat login inputs without touching existing cookies."""
+    page: Page | None = _state.get("page")
+    if not page:
+        await start(emit=emit)
+        page = _state.get("page")
+    if not page:
+        return {"ok": False, "message": "Browser not active"}
+
+    try:
+        if "accounts.snapchat.com" not in page.url:
+            await page.goto("https://accounts.snapchat.com/accounts/v2/login?continue=https%3A%2F%2Fweb.snapchat.com%2F", wait_until="domcontentloaded")
+            await asyncio.sleep(1.0)
+
+        user_inp = page.locator('input[name="accountIdentifier"], input[autocomplete="username"], input[type="text"], input[type="email"]').first
+        if await user_inp.count() > 0:
+            await user_inp.click()
+            await user_inp.fill(username)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(1.5)
+
+        if password:
+            pw_inp = page.locator('input[type="password"], input[name="password"]').first
+            if await pw_inp.count() > 0:
+                await pw_inp.click()
+                await pw_inp.fill(password)
+                await page.keyboard.press("Enter")
+
+        return {"ok": True, "message": "Login credentials submitted."}
+    except Exception as ex:
+        return {"ok": False, "message": f"Login fill notice: {ex}"}
+
+
+async def repair_snapchat_session(emit: Callable | None = None) -> dict:
+    """
+    Repair Snapchat Web ('Already open in another tab', frozen camera, or blank screen)
+    while strictly keeping all login cookies and IndexedDB intact!
+    """
+    if not is_active():
+        await start(emit=emit)
+
+    page: Page | None = _state.get("page")
+    context: BrowserContext | None = _state.get("context")
+    if not page or not context:
+        return {"ok": False, "message": "Failed to attach to browser session."}
+
+    try:
+        _log("🔧 Repairing Snapchat Web (preserving all login cookies)...", emit)
+        # Save cookies first
+        await save_cookies_from_context(context, emit=emit)
+
+        # Close extra tabs so only 1 Snapchat tab exists
+        pages = list(context.pages)
+        if len(pages) > 1:
+            for extra in pages[1:]:
+                try:
+                    await extra.close()
+                except Exception:
+                    pass
+
+        await page.goto(SNAPCHAT_WEB, wait_until="domcontentloaded", timeout=30_000)
+        await asyncio.sleep(0.8)
+        await ensure_extension_active(page)
+        await dismiss_snapchat_blockers(page, emit=emit)
+        await inject_webcam_frame_into_page(page, force_refresh=True)
+        _state["last_frame_ts"] = 0.0
+        return {"ok": True, "message": "Snapchat Web repaired and SJSU webcam refreshed (all cookies preserved)."}
+    except Exception as ex:
+        return {"ok": False, "message": f"Repair error: {ex}"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MACRO RECORDING & MANAGEMENT API IN LOGIN SESSION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def start_macro_recording():
+    _state["macro_recording"] = True
+    _state["macro_events"] = []
+    _state["macro_last_ts"] = time.time()
+    _log("🔴 Started live Macro Recording! Click the steps on the Snapchat screen.")
+
+
+def stop_macro_recording(macro_name: str = "Custom Recorded Macro") -> list[dict]:
+    _state["macro_recording"] = False
+    events = list(_state.get("macro_events", []))
+    if events:
+        macro_data = config.load_macro_data()
+        name = (macro_name or "Custom Recorded Macro").strip()
+        macro_data["active_macro"] = name
+        macro_data["steps"] = events
+        if "macros" not in macro_data or not isinstance(macro_data["macros"], dict):
+            macro_data["macros"] = {}
+        macro_data["macros"][name] = {
+            "name": name,
+            "steps": events,
+            "is_default": False,
+            "updated_at": int(time.time()),
+        }
+        config.save_macro_data(macro_data)
+        _log(f"✓ Saved macro '{name}' with {len(events)} steps.")
+    return events
+
+
+def get_macro_info() -> dict:
+    macro_data = config.load_macro_data()
+    steps = _state["macro_events"] if _state.get("macro_recording") else macro_data.get("steps", [])
+    return {
+        "recording": bool(_state.get("macro_recording")),
+        "active_macro": macro_data.get("active_macro", "Default Streak Flow"),
+        "count": len(steps),
+        "steps": steps,
+        "macros": macro_data.get("macros", {}),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUN STREAK AUTOMATION IN ACTIVE SESSION (AI STEPS OR MACRO MODE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_streak_in_active_session(
+    friends: list[str] | None = None,
+    emit: Callable | None = None,
+    selection_method: str | None = None,
+    streak_mode: str | None = None,
+    preview_only: bool = False,
+) -> dict[str, str]:
+    """
+    Execute either AI/Expected Steps Mode or Custom Macro Mode directly inside the active
+    Snapchat Web browser session, then auto-save cookies once finished.
+    """
+    if not is_active():
+        await start(emit=emit)
+        for _ in range(30):
+            if is_active():
                 break
-        except Exception:
-            pass
+            await asyncio.sleep(0.2)
 
-    file_input = None
-    for sel in ['input[type="file"][accept*="image"]', 'input[type="file"][accept*="video"]', 'input[type="file"]']:
-        try:
-            file_input = await page.wait_for_selector(sel, timeout=2000)
-            if file_input:
-                break
-        except Exception:
-            pass
-
-    if file_input:
-        await file_input.set_input_files(str(SNAP_IMAGE))
-        await asyncio.sleep(1)
-        return {"ok": True, "message": "Snap image uploaded to active chat."}
-    return {"ok": False, "error": "Could not find upload button on active page."}
-
-
-async def run_streak_in_active_session(friends: list[str] | None = None, is_preview: bool = False, emit: Callable | None = None) -> dict:
-    """Execute streak sequence directly inside the currently visible interactive browser."""
-    if not _state["active"] or not _state["page"]:
-        return {"error": "Browser not active"}
-
-    from automation import MACRO_FILE, replay_macro, send_streaks_flow, ensure_snap_image
-    import config
-    ensure_snap_image()
-    page = _state["page"]
+    page: Page | None = _state.get("page")
+    context: BrowserContext | None = _state.get("context")
+    if not page:
+        return {"status": "error: Browser session is not active"}
 
     cfg = config.load()
-    if not friends:
-        friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
-    selection_method = cfg.get("selection_method", "auto")
-    step_delay = cfg.get("step_delay", 3)
+    target_friends = friends if friends is not None else cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
+    mode = streak_mode or cfg.get("streak_mode", "ai_steps")
+    sel_method = selection_method or cfg.get("selection_method", "direct")
 
-    macro_events = None
-    if MACRO_FILE.exists():
-        try:
-            macro_events = json.loads(MACRO_FILE.read_text(encoding="utf-8"))
-            _log(f"🧠 Loaded custom recorded macro blueprint ({len(macro_events)} events) to guide execution.", emit)
-        except Exception as ex:
-            _log(f"  Notice reading macro file: {ex}", emit)
+    # Make sure we are on Snapchat Web
+    if not ("snapchat.com" in (page.url or "")):
+        await page.goto(SNAPCHAT_WEB, wait_until="domcontentloaded", timeout=30_000)
+        await asyncio.sleep(1.5)
 
-    # 1. Wait for initial browser navigation task if still running
-    if _state.get("nav_task") and not _state["nav_task"].done():
-        _log("Waiting for browser navigation to settle...", emit)
+    await ensure_extension_active(page, force_toggle=False)
+
+    res = await execute_streak_flow_on_page(
+        page=page,
+        friends=target_friends,
+        streak_mode=mode,
+        selection_method=sel_method,
+        preview_only=preview_only,
+        emit=emit,
+    )
+
+    # Save cookies after run so session state stays fresh
+    if context:
         try:
-            await asyncio.wait_for(_state["nav_task"], timeout=15.0)
+            await save_cookies_from_context(context)
         except Exception:
             pass
 
-    # 2. Check current page state - do not attempt automation if on login screen
-    curr_url = page.url or ""
-    if any(x in curr_url for x in ["accounts.snapchat.com", "/login", "original_referrer"]):
-        _log("❌ Snapchat is currently on the login page. Please sign in first via the embedded browser or Google Login.", emit)
-        return {f: "not_logged_in" for f in friends}
+    _state["last_frame_ts"] = 0.0
+    return res
 
-    if "web.snapchat.com" not in curr_url:
-        _log("Navigating active browser session to web.snapchat.com...", emit)
+
+async def cancel():
+    """Stop the active browser session AFTER saving cookies first so login is never lost."""
+    context: BrowserContext | None = _state.get("context")
+    if context:
         try:
-            await page.goto("https://web.snapchat.com/", timeout=30000, wait_until="domcontentloaded")
-            await asyncio.sleep(2.0)
-        except Exception as nav_err:
-            _log(f"  Navigation notice: {nav_err}", emit)
-
-    # 3. Check again if redirected to login page
-    curr_url = page.url or ""
-    if any(x in curr_url for x in ["accounts.snapchat.com", "/login"]):
-        _log("❌ Redirected to login page. Session is unauthenticated. Please sign in first.", emit)
-        return {f: "not_logged_in" for f in friends}
-
-    # 4. Wait for Snapchat Web interface to be loaded
-    _log("Waiting for Snapchat Web interface to be ready...", emit)
-    ready = False
-    for _ in range(15):
-        curr_url = page.url or ""
-        if any(x in curr_url for x in ["accounts.snapchat.com", "/login"]):
-            _log("❌ Redirected to login page. Please sign in to Snapchat first.", emit)
-            return {f: "not_logged_in" for f in friends}
-        try:
-            has_ui = await page.evaluate("""() => {
-                const search = document.querySelector('input[placeholder*="Search" i]');
-                const cam = document.querySelector('[data-testid="camera-view"], video, button[aria-label*="Take" i], button[aria-label*="Camera" i]');
-                const chats = document.querySelector('[aria-label*="Chats" i], [data-testid="chat-list-header"]');
-                return Boolean(search || cam || chats);
-            }""")
-            if has_ui:
-                ready = True
-                break
+            await save_cookies_from_context(context)
         except Exception:
             pass
-        await asyncio.sleep(1.0)
-
-    if not ready:
-        _log(f"❌ Snapchat Web UI not ready (URL: {page.url}). Please ensure the page is loaded and logged in.", emit)
-        return {f: "ui_not_ready" for f in friends}
-
-    action_label = "Sample Preview (Pause before Send)" if is_preview else "Auto Send"
-    _log(f"🚀 Triggering in-page SnapStreak Extension {action_label} (Targets: {friends}, Selection: {selection_method.upper()})...", emit)
-
-    # Ensure in-page extension is injected and ready before triggering
-    try:
-        await ensure_extension_active(page, force_toggle=False)
-    except Exception as ext_init_err:
-        _log(f"  Notice ensuring extension active: {ext_init_err}", emit)
-
-    # 1. Ask the in-page SnapStreak Extension to execute the streak sequence natively
-    try:
-        ext_res = await page.evaluate("""
-            async (opts) => {
-                return new Promise((resolve) => {
-                    let resolved = false;
-                    let hasAck = false;
-
-                    // Fast check: If extension is not injected/responsive within 6s, fail fast to driver
-                    const ackTimer = setTimeout(() => {
-                        if (!hasAck && !resolved) {
-                            resolved = true;
-                            cleanup();
-                            resolve({ success: false, timeout: true, fallback: true, error: 'Extension not responding, switching to direct driver' });
-                        }
-                    }, 6000);
-
-                    const maxTimer = setTimeout(() => {
-                        if (!resolved) {
-                            resolved = true;
-                            cleanup();
-                            resolve({ success: false, timeout: true, error: 'Streak execution timed out' });
-                        }
-                    }, 120000);
-
-                    function cleanup() {
-                        clearTimeout(ackTimer);
-                        clearTimeout(maxTimer);
-                        window.removeEventListener('SNAPSTREAK_RUN_FINISHED', onDone);
-                        window.removeEventListener('message', onMessage);
-                    }
-
-                    function onDone(e) {
-                        if (!resolved) {
-                            resolved = true;
-                            cleanup();
-                            resolve(e.detail || { success: true });
-                        }
-                    }
-
-                    function onMessage(e) {
-                        if (!e || !e.data) return;
-                        if (e.data.type === 'SNAPSTREAK_TRIGGER_ACK') {
-                            hasAck = true;
-                        }
-                        if (e.data.type === 'SNAPSTREAK_RUN_FINISHED' && !resolved) {
-                            resolved = true;
-                            cleanup();
-                            resolve(e.data.result || { success: true });
-                        }
-                    }
-
-                    window.addEventListener('SNAPSTREAK_RUN_FINISHED', onDone);
-                    window.addEventListener('message', onMessage);
-
-                    // Dispatch both CustomEvent and postMessage to reach content script in either world
-                    window.dispatchEvent(new CustomEvent('SNAPSTREAK_TRIGGER_SEND', { detail: opts }));
-                    window.postMessage({ type: 'SNAPSTREAK_TRIGGER_SEND', options: opts }, '*');
-
-                    // If extension object is in page scope, execute directly
-                    if (window.SnapStreakAutomation && typeof window.SnapStreakAutomation.runSendStreaks === 'function') {
-                        hasAck = true;
-                        window.SnapStreakAutomation.runSendStreaks(opts).then((res) => {
-                            if (!resolved) {
-                                resolved = true;
-                                cleanup();
-                                resolve(res);
-                            }
-                        }).catch((err) => {
-                            if (!resolved) {
-                                resolved = true;
-                                cleanup();
-                                resolve({ success: false, error: err.message });
-                            }
-                        });
-                    }
-                });
-            }
-        """, {
-            "friends": friends,
-            "selectionMethod": selection_method,
-            "stepDelay": step_delay,
-            "humanMode": True,
-            "isTest": is_preview,
-            "pauseBeforeFinalSend": is_preview,
-            "maxRetries": 3,
-            "macroEvents": macro_events
-        })
-
-        if ext_res and ext_res.get("success"):
-            if ext_res.get("previewOnly"):
-                _log("🧪 In-page SnapStreak Extension sample preview finished (visual demonstrated, paused before send).", emit)
-                return {"preview": True, "ok": True}
-            _log("🎉 In-page SnapStreak Extension successfully completed streak send! Delivered. 🔥", emit)
-            return {f: "ok" for f in friends}
-        elif ext_res:
-            err_msg = ext_res.get("error", "Streak sequence failed")
-            _log(f"  Notice from in-page extension: {err_msg}. Falling back to direct desktop driver flow...", emit)
-    except Exception as ex:
-        _log(f"  Notice invoking extension: {ex}. Using direct desktop flow...", emit)
-
-    if is_preview:
-        return {"error": "Extension preview requires active extension in browser"}
-
-    # 2. Direct desktop driver flow fallback
-    if macro_events:
-        _log(f"Falling back to custom macro replay flow...", emit)
-        return await replay_macro(page, emit=emit)
-    _log(f"Starting direct desktop send streak sequence (Targets: {friends})...", emit)
-    results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
-    return results
+    await _cleanup_browser_only()
 
 
-async def pause_task(emit: Callable | None = None) -> dict:
-    """Pause the in-progress streak sequence."""
-    if not _state["active"] or not _state["page"]:
-        return {"ok": False, "error": "No active browser session"}
-    try:
-        await _state["page"].evaluate("""() => {
-            window.dispatchEvent(new CustomEvent('SNAPSTREAK_PAUSE_TASK'));
-            window.postMessage({ type: 'SNAPSTREAK_PAUSE_TASK' }, '*');
-            if (window.SnapStreakAutomation && window.SnapStreakAutomation.pause) {
-                window.SnapStreakAutomation.pause();
-            }
-        }""")
-        _log("⏸️ Task pause dispatched to browser.", emit)
-        return {"ok": True, "status": "paused"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-async def resume_task(emit: Callable | None = None) -> dict:
-    """Resume the paused streak sequence."""
-    if not _state["active"] or not _state["page"]:
-        return {"ok": False, "error": "No active browser session"}
-    try:
-        await _state["page"].evaluate("""() => {
-            window.dispatchEvent(new CustomEvent('SNAPSTREAK_RESUME_TASK'));
-            window.postMessage({ type: 'SNAPSTREAK_RESUME_TASK' }, '*');
-            if (window.SnapStreakAutomation && window.SnapStreakAutomation.resume) {
-                window.SnapStreakAutomation.resume();
-            }
-        }""")
-        _log("▶️ Task resume dispatched to browser.", emit)
-        return {"ok": True, "status": "resumed"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-async def stop_task(emit: Callable | None = None) -> dict:
-    """Cancel and stop the running streak sequence."""
-    if not _state["active"] or not _state["page"]:
-        return {"ok": False, "error": "No active browser session"}
-    try:
-        await _state["page"].evaluate("""() => {
-            window.dispatchEvent(new CustomEvent('SNAPSTREAK_STOP_TASK'));
-            window.postMessage({ type: 'SNAPSTREAK_STOP_TASK' }, '*');
-            if (window.SnapStreakAutomation && window.SnapStreakAutomation.cancel) {
-                window.SnapStreakAutomation.cancel();
-            }
-            if (window.SnapStreakOverlay && window.SnapStreakOverlay.setRunning) {
-                window.SnapStreakOverlay.setRunning(false);
-            }
-        }""")
-        _log("⏹️ Task stop/cancel dispatched to browser.", emit)
-        return {"ok": True, "status": "stopped"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-async def confirm_send_task(emit: Callable | None = None) -> dict:
-    """Confirm and trigger final send step from preview state."""
-    if not _state["active"] or not _state["page"]:
-        return {"ok": False, "error": "No active browser session"}
-    try:
-        await _state["page"].evaluate("""() => {
-            window.dispatchEvent(new CustomEvent('SNAPSTREAK_CONFIRM_SEND'));
-            window.postMessage({ type: 'SNAPSTREAK_CONFIRM_SEND' }, '*');
-            if (window.SnapStreakAutomation && window.SnapStreakAutomation.confirmFinalSend) {
-                window.SnapStreakAutomation.confirmFinalSend();
-            }
-        }""")
-        _log("🚀 User confirmed final send! Sending Snap now...", emit)
-        return {"ok": True, "status": "confirmed"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-
-
-async def save(emit: Callable | None = None) -> str:
-    if not _state["active"]:
-        return "No active session."
-    _log("Saving session...", emit)
-    try:
-        storage = await _state["context"].storage_state()
-        SESSION_FILE.write_text(__import__("json").dumps(storage), encoding="utf-8")
-        _log("✓ Session saved.", emit)
-        msg = "Logged in and session saved!"
-    except Exception as ex:
-        msg = f"Error saving: {ex}"
-        _log(msg, emit)
-    await _cleanup()
-    return msg
-
-
-async def cancel(emit: Callable | None = None):
-    _log("Cancelling login session.", emit)
-    await _cleanup()
-
+async def _cleanup_browser_only():
+    _state["active"] = False
+    for key in ("cdp", "context", "browser", "pw"):
+        obj = _state.get(key)
+        _state[key] = None
+        if obj:
+            try:
+                if key == "cdp":
+                    await obj.detach()
+                elif key == "pw":
+                    await obj.stop()
+                else:
+                    await obj.close()
+            except Exception:
+                pass
+    _state["page"] = None

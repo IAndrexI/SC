@@ -699,8 +699,8 @@ textarea {
   let config = {
     friends: ['*//Eric\\\\*', 'Dylan'],
     sendingEngine: 'direct',
-    selectionMethod: 'shortcut',
-    stepDelay: 3,
+    selectionMethod: 'direct',
+    stepDelay: 1.5,
     humanMode: true,
     waitForUIChanges: true,
     scheduleEnabled: true,
@@ -837,6 +837,9 @@ textarea {
   }
 
   async function loadConfig() {
+    if (window.__SNAPSTREAK_SERVER_CONFIG__) {
+      config = { ...config, ...window.__SNAPSTREAK_SERVER_CONFIG__ };
+    }
     return new Promise(resolve => {
       if (typeof chrome !== 'undefined' && chrome.storage?.local) {
         chrome.storage.local.get(['snapstreak_config'], res => {
@@ -885,7 +888,7 @@ textarea {
       btn.textContent = '👁️ View Live SJSU Visual';
       log('Closed webcam preview.', 'info');
     } else {
-      img.src = `${SJSU_WEBCAM_URL}?t=${Date.now()}`;
+      img.src = window.__SNAPSTREAK_SJSU_DATA_URL__ || `${SJSU_WEBCAM_URL}?t=${Date.now()}`;
       box.style.display = 'block';
       btn.textContent = '✕ Close Preview';
       log('Displaying live SJSU Meteorology visual.', 'success');
@@ -1828,7 +1831,7 @@ textarea {
     if (engineSel) engineSel.value = config.sendingEngine || 'direct';
 
     const directTargetSel = shadowRoot.getElementById('sel-direct-target');
-    if (directTargetSel) directTargetSel.value = config.selectionMethod || 'shortcut';
+    if (directTargetSel) directTargetSel.value = config.selectionMethod || 'direct';
 
     // Update visibility of sub-cards
     const boxDirect = shadowRoot.getElementById('box-direct-options');

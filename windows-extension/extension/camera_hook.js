@@ -1,352 +1,299 @@
 /**
- * SnapStreak Camera & Permissions Interceptor (Runs in MAIN world context)
- * Intercepts navigator.mediaDevices.getUserMedia, enumerateDevices, and navigator.permissions.query
- * on web.snapchat.com to route video capture to the user's selected webcam or an automatic
- * hardware-spoofed 30fps HD synthetic stream on headless Linux servers.
+ * camera_hook.js – Live SJSU Meteorology Virtual Webcam Hook (MAIN World)
+ * Intercepts navigator.mediaDevices.getUserMedia & enumerateDevices so Snapchat Web
+ * always receives a 30 FPS 1280x720 video stream displaying the live San José State University
+ * Meteorology camera (https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg) without CORS errors.
  */
 
-(function() {
-  'use strict';
+(function () {
+  if (window.__SNAPSTREAK_CAMERA_HOOKED__) return;
+  window.__SNAPSTREAK_CAMERA_HOOKED__ = true;
 
-  if (window.__SNAPSTREAK_CAM_HOOK_ACTIVE__) return;
-  window.__SNAPSTREAK_CAM_HOOK_ACTIVE__ = true;
+  const SJSU_WEBCAM_URL = 'https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg';
+  const VIRTUAL_CAM_ID = 'snapstreak-sjsu-webcam-id';
+  const VIRTUAL_CAM_LABEL = 'SJSU Meteorology Live Webcam (1080p)';
 
-  function safeGetStorage(key) {
+  let activeCanvas = null;
+  let activeStream = null;
+  let renderInterval = null;
+  let bgLoaded = false;
+  let lastFrameSource = 'initializing';
+
+  const bgImg = new Image();
+  bgImg.onload = () => {
+    if (bgImg.naturalWidth > 0) {
+      bgLoaded = true;
+    }
+  };
+
+  function applyDataUrl(dataUrl, sourceName) {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return false;
+    window.__SNAPSTREAK_SJSU_DATA_URL__ = dataUrl;
+    lastFrameSource = sourceName || 'data_url';
+    bgImg.removeAttribute('crossOrigin');
+    bgImg.src = dataUrl;
+    return true;
+  }
+
+  // Listen for base64 Data URL frames pushed by Python server or content.js/background.js
+  window.addEventListener('SNAPSTREAK_WEBCAM_FRAME', (evt) => {
+    const dataUrl = evt && evt.detail && evt.detail.dataUrl;
+    if (dataUrl) {
+      applyDataUrl(dataUrl, 'injected_event');
+    }
+  });
+
+  async function refreshWebcamFrame() {
+    // 1. Check if server or extension already injected a base64 Data URL
+    if (window.__SNAPSTREAK_SJSU_DATA_URL__ && typeof window.__SNAPSTREAK_SJSU_DATA_URL__ === 'string') {
+      applyDataUrl(window.__SNAPSTREAK_SJSU_DATA_URL__, 'window_data_url');
+    }
+
+    // 2. Request fresh base64 frame from extension content.js -> background.js (bypasses CORS via extension host_permissions)
     try {
-      return localStorage.getItem(key);
-    } catch (e) {
+      window.dispatchEvent(new CustomEvent('SNAPSTREAK_REQUEST_SJSU_FRAME'));
+    } catch (e) {}
+
+    // 3. Try local server CORS-enabled base64 endpoint if running on localhost:8080 or desktop server
+    const apiCandidates = [];
+    if (window.location.port === '8080' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      apiCandidates.push(`${window.location.origin}/api/webcam-b64`);
+    }
+    apiCandidates.push('http://localhost:8080/api/webcam-b64', 'http://127.0.0.1:8080/api/webcam-b64');
+
+    for (const url of apiCandidates) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 2500);
+        const res = await fetch(url, { signal: ctrl.signal, mode: 'cors', cache: 'no-store' });
+        clearTimeout(timer);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.data_url && applyDataUrl(data.data_url, 'local_api_b64')) {
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Initial load + periodic refresh every 30 seconds
+  refreshWebcamFrame();
+  setInterval(refreshWebcamFrame, 30000);
+
+  window.__SNAPSTREAK_REFRESH_WEBCAM__ = refreshWebcamFrame;
+  window.__SNAPSTREAK_WEBCAM_URL__ = SJSU_WEBCAM_URL;
+  window.__SNAPSTREAK_WEBCAM_STATUS__ = () => ({
+    loaded: bgLoaded,
+    source: lastFrameSource,
+    width: bgImg.naturalWidth || 1280,
+    height: bgImg.naturalHeight || 720,
+  });
+
+  function drawFrame(ctx, w, h) {
+    if (bgLoaded && bgImg.complete && bgImg.naturalWidth > 0) {
+      ctx.fillStyle = '#07090e';
+      ctx.fillRect(0, 0, w, h);
+
+      const iw = bgImg.naturalWidth;
+      const ih = bgImg.naturalHeight;
+      const scale = Math.max(w / iw, h / ih);
+      const sw = iw * scale;
+      const sh = ih * scale;
+      const ox = (w - sw) / 2;
+      const oy = (h - sh) / 2;
+
+      ctx.drawImage(bgImg, ox, oy, sw, sh);
+
+      // Subtle micro-pixel keepalive in bottom-right corner so WebRTC encoder continuously emits key/delta frames
+      const pulse = (Date.now() % 1000) / 1000;
+      ctx.fillStyle = `rgba(255, 252, 0, ${0.01 + pulse * 0.02})`;
+      ctx.fillRect(w - 2, h - 2, 2, 2);
+      return;
+    }
+
+    // Fallback while first SJSU frame is loading
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#0f172a');
+    grad.addColorStop(0.5, '#1e293b');
+    grad.addColorStop(1, '#0f172a');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = '#fffc00';
+    ctx.font = 'bold 34px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📷 SJSU Meteorology Live Webcam', w / 2, h / 2 - 20);
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '20px system-ui, -apple-system, sans-serif';
+    ctx.fillText(new Date().toLocaleString(), w / 2, h / 2 + 28);
+  }
+
+  function decorateVideoTrack(videoTrack, w, h) {
+    if (!videoTrack) return;
+    try {
+      Object.defineProperty(videoTrack, 'label', {
+        get: () => VIRTUAL_CAM_LABEL,
+        configurable: true,
+      });
+    } catch (e) {}
+
+    const origGetSettings = videoTrack.getSettings ? videoTrack.getSettings.bind(videoTrack) : () => ({});
+    videoTrack.getSettings = function () {
+      return Object.assign({}, origGetSettings(), {
+        width: w,
+        height: h,
+        frameRate: 30,
+        facingMode: 'user',
+        deviceId: VIRTUAL_CAM_ID,
+        groupId: 'snapstreak-sjsu-group',
+      });
+    };
+
+    const origGetCapabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities.bind(videoTrack) : () => ({});
+    videoTrack.getCapabilities = function () {
+      return Object.assign({}, origGetCapabilities(), {
+        width: { min: 640, max: 1920 },
+        height: { min: 480, max: 1080 },
+        frameRate: { min: 15, max: 60 },
+        facingMode: ['user', 'environment'],
+        deviceId: VIRTUAL_CAM_ID,
+      });
+    };
+
+    videoTrack.stop = function () {};
+  }
+
+  function getOrCreateVirtualStream(width = 1280, height = 720) {
+    try {
+      if (activeStream && activeStream.active) {
+        const tracks = activeStream.getVideoTracks();
+        if (tracks.length > 0 && tracks[0].readyState === 'live') {
+          const out = activeStream.clone ? activeStream.clone() : activeStream;
+          decorateVideoTrack(out.getVideoTracks()[0], activeCanvas ? activeCanvas.width : width, activeCanvas ? activeCanvas.height : height);
+          return out;
+        }
+      }
+
+      if (!activeCanvas) {
+        activeCanvas = document.createElement('canvas');
+        activeCanvas.width = width;
+        activeCanvas.height = height;
+      }
+
+      const ctx = activeCanvas.getContext('2d', { alpha: false });
+      drawFrame(ctx, activeCanvas.width, activeCanvas.height);
+
+      if (renderInterval) clearInterval(renderInterval);
+      renderInterval = setInterval(() => {
+        try {
+          drawFrame(ctx, activeCanvas.width, activeCanvas.height);
+        } catch (e) {}
+      }, 33); // ~30 FPS
+
+      activeStream = activeCanvas.captureStream(30);
+      decorateVideoTrack(activeStream.getVideoTracks()[0], activeCanvas.width, activeCanvas.height);
+
+      const out = activeStream.clone ? activeStream.clone() : activeStream;
+      decorateVideoTrack(out.getVideoTracks()[0], activeCanvas.width, activeCanvas.height);
+      return out;
+    } catch (err) {
       return null;
     }
   }
 
-  function safeSetStorage(key, val) {
-    try {
-      if (val) localStorage.setItem(key, val);
-      else localStorage.removeItem(key);
-    } catch (e) {}
-  }
-
-  let selectedCameraId = safeGetStorage('snapstreak_selected_camera_id') || '';
-  window.__SNAPSTREAK_CAMERA_DEVICE_ID__ = selectedCameraId;
-  let currentActiveStream = null;
-
-  // 1. Hook navigator.permissions.query so Snapchat Web never blocks on Camera/Mic/Notification prompts
-  try {
-    if (typeof navigator !== 'undefined' && navigator.permissions && navigator.permissions.query) {
-      const origQuery = navigator.permissions.query.bind(navigator.permissions);
-      const grantedStatus = {
-        state: 'granted',
-        status: 'granted',
-        onchange: null,
-        addEventListener: function() {},
-        removeEventListener: function() {},
-        dispatchEvent: function() { return false; }
-      };
-      navigator.permissions.query = function( descriptor ) {
-        const name = descriptor && descriptor.name ? String(descriptor.name).toLowerCase() : '';
-        if (
-          name === 'camera' ||
-          name === 'microphone' ||
-          name === 'notifications' ||
-          name === 'persistent-storage' ||
-          name === 'clipboard-read' ||
-          name === 'clipboard-write' ||
-          name === 'video_capture' ||
-          name === 'audio_capture'
-        ) {
-          return Promise.resolve(grantedStatus);
-        }
-        return origQuery(descriptor).catch(() => grantedStatus);
-      };
-    }
-  } catch (e) {}
-
-  // Ensure navigator.mediaDevices exists
-  if (typeof navigator !== 'undefined' && !navigator.mediaDevices) {
+  if (!navigator.mediaDevices) {
     try {
       navigator.mediaDevices = {};
     } catch (e) {}
   }
 
-  /**
-   * Synthesizes an active 30fps 1280x720 MediaStream via an offscreen HTML5 canvas
-   * with full MediaStreamTrack.getSettings() and getCapabilities() hardware spoofing.
-   */
-  function createSyntheticMediaStream(constraints) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1280;
-    canvas.height = 720;
-    const ctx = canvas.getContext('2d');
+  if (navigator.mediaDevices) {
+    const origGetUserMedia = navigator.mediaDevices.getUserMedia
+      ? navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+      : null;
 
-    // Optional background image from SJSU meteorology cam if reachable
-    const bgImg = new Image();
-    bgImg.crossOrigin = 'anonymous';
-    let bgLoaded = false;
-    bgImg.onload = () => { bgLoaded = true; };
+    const customGetUserMedia = async function (constraints) {
+      if (constraints && constraints.video) {
+        let w = 1280;
+        let h = 720;
+        if (typeof constraints.video === 'object') {
+          if (constraints.video.width) {
+            w = constraints.video.width.ideal || constraints.video.width.exact || constraints.video.width || 1280;
+          }
+          if (constraints.video.height) {
+            h = constraints.video.height.ideal || constraints.video.height.exact || constraints.video.height || 720;
+          }
+        }
+        const stream = getOrCreateVirtualStream(
+          Math.min(1920, Math.max(640, Number(w) || 1280)),
+          Math.min(1080, Math.max(480, Number(h) || 720))
+        );
+        if (stream) return stream;
+      }
+      if (origGetUserMedia) {
+        return origGetUserMedia(constraints);
+      }
+      throw new DOMException('Requested device not found', 'NotFoundError');
+    };
+
     try {
-      bgImg.src = 'https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg?t=' + Math.floor(Date.now() / 60000);
+      navigator.mediaDevices.getUserMedia = customGetUserMedia;
+      if (typeof MediaDevices !== 'undefined' && MediaDevices.prototype) {
+        MediaDevices.prototype.getUserMedia = customGetUserMedia;
+      }
     } catch (e) {}
 
-    let frame = 0;
-    function render() {
-      frame++;
-      if (bgLoaded) {
-        try {
-          ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
-          ctx.fillStyle = 'rgba(8, 12, 22, 0.28)';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        } catch (e) {
-          bgLoaded = false;
-        }
-      }
-      if (!bgLoaded) {
-        const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-        grad.addColorStop(0, '#090d16');
-        grad.addColorStop(0.5, '#1e1b4b');
-        grad.addColorStop(1, '#020617');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        const pulse = Math.sin(frame * 0.08) * 8;
-        ctx.beginPath();
-        ctx.arc(canvas.width / 2, canvas.height / 2 - 35, 95 + pulse, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 252, 0, 0.12)';
-        ctx.fill();
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = '#fffc00';
-        ctx.stroke();
-
-        ctx.fillStyle = '#fffc00';
-        ctx.font = 'bold 56px system-ui, -apple-system, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('🔥', canvas.width / 2, canvas.height / 2 - 35);
-
-        ctx.fillStyle = '#f8fafc';
-        ctx.font = 'bold 28px system-ui, -apple-system, sans-serif';
-        ctx.fillText('SnapStreak Virtual HD Camera', canvas.width / 2, canvas.height / 2 + 85);
-      }
-
-      // Subtle live timestamp badge in bottom corner
-      ctx.fillStyle = 'rgba(10, 14, 23, 0.72)';
-      ctx.fillRect(24, canvas.height - 56, 410, 34);
-      ctx.fillStyle = '#fffc00';
-      ctx.font = 'bold 15px monospace';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-      ctx.fillText(`⚡ SNAPSTREAK HD LIVE • ${ts}`, 36, canvas.height - 39);
-    }
-
-    render();
-    const animInterval = setInterval(render, 1000 / 30);
-
-    const stream = canvas.captureStream ? canvas.captureStream(30) : null;
-    if (!stream) {
-      clearInterval(animInterval);
-      throw new Error('HTMLCanvasElement.captureStream not supported in this browser');
-    }
-
-    const vTracks = stream.getVideoTracks();
-    if (vTracks.length > 0) {
-      const vt = vTracks[0];
-      const origStop = vt.stop.bind(vt);
-      vt.stop = function() {
-        clearInterval(animInterval);
-        return origStop();
-      };
-      // Spoof hardware track metadata for Snapchat Web camera validation
-      try {
-        Object.defineProperty(vt, 'label', {
-          get: () => 'SnapStreak HD Virtual Webcam (046d:082d)',
-          configurable: true
-        });
-      } catch (e) {}
-      vt.getSettings = function() {
-        return {
-          width: 1280,
-          height: 720,
-          aspectRatio: 1280 / 720,
-          frameRate: 30,
-          facingMode: 'user',
-          resizeMode: 'none',
-          deviceId: 'snapstreak-virtual-cam-0',
-          groupId: 'snapstreak-default-group'
-        };
-      };
-      vt.getCapabilities = function() {
-        return {
-          width: { min: 320, max: 1920 },
-          height: { min: 240, max: 1080 },
-          aspectRatio: { min: 0.5, max: 2.0 },
-          frameRate: { min: 1, max: 60 },
-          facingMode: ['user', 'environment'],
-          resizeMode: ['none', 'crop-and-scale'],
-          deviceId: 'snapstreak-virtual-cam-0',
-          groupId: 'snapstreak-default-group'
-        };
-      };
-    }
-
-    // Synthesize silent audio track if requested
-    if (constraints && constraints.audio) {
-      try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (AudioCtx) {
-          const audioCtx = new AudioCtx();
-          const osc = audioCtx.createOscillator();
-          const dst = audioCtx.createMediaStreamDestination();
-          const gain = audioCtx.createGain();
-          gain.gain.value = 0;
-          osc.connect(gain);
-          gain.connect(dst);
-          osc.start();
-          const aTrack = dst.stream.getAudioTracks()[0];
-          if (aTrack) stream.addTrack(aTrack);
-        }
-      } catch (e) {}
-    }
-
-    return stream;
-  }
-
-  // 2. Polyfill & Hook enumerateDevices to guarantee a valid videoinput + audioinput device
-  if (navigator.mediaDevices) {
-    const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices
+    const origEnumerate = navigator.mediaDevices.enumerateDevices
       ? navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices)
       : null;
 
-    navigator.mediaDevices.enumerateDevices = async function() {
+    const customEnumerateDevices = async function () {
       let devices = [];
-      if (originalEnumerateDevices) {
+      if (origEnumerate) {
         try {
-          devices = await originalEnumerateDevices();
-        } catch (e) {
-          devices = [];
-        }
+          devices = await origEnumerate();
+        } catch (e) {}
       }
-
       const virtualCam = {
-        deviceId: 'snapstreak-virtual-cam-0',
+        deviceId: VIRTUAL_CAM_ID,
         kind: 'videoinput',
-        label: 'SnapStreak HD Virtual Webcam (046d:082d)',
-        groupId: 'snapstreak-default-group',
-        toJSON: function() {
+        label: VIRTUAL_CAM_LABEL,
+        groupId: 'snapstreak-sjsu-group',
+        toJSON() {
           return {
             deviceId: this.deviceId,
             kind: this.kind,
             label: this.label,
-            groupId: this.groupId
+            groupId: this.groupId,
           };
-        }
+        },
       };
-
-      const hasVirtual = devices.some(d => d.deviceId === 'snapstreak-virtual-cam-0');
-      const hasVideo = devices.some(d => d.kind === 'videoinput');
-      if (!hasVideo) {
-        devices = [virtualCam, ...devices];
-      } else if (!hasVirtual) {
-        devices = [...devices, virtualCam];
-      }
-
-      const hasAudio = devices.some(d => d.kind === 'audioinput');
-      if (!hasAudio) {
-        devices.push({
-          deviceId: 'default',
-          kind: 'audioinput',
-          label: 'Default Virtual Microphone',
-          groupId: 'snapstreak-default-group',
-          toJSON: function() {
-            return { deviceId: this.deviceId, kind: this.kind, label: this.label, groupId: this.groupId };
-          }
-        });
-      }
-
-      return devices;
+      return [virtualCam, ...devices.filter((d) => d.deviceId !== VIRTUAL_CAM_ID)];
     };
-  }
 
-  // 3. Hook getUserMedia with automatic synthetic stream fallback
-  if (navigator.mediaDevices) {
-    const originalGetUserMedia = navigator.mediaDevices.getUserMedia
-      ? navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
-      : null;
-
-    navigator.mediaDevices.getUserMedia = async function(constraints) {
-      const activeId = window.__SNAPSTREAK_CAMERA_DEVICE_ID__ || selectedCameraId;
-
-      if (activeId === 'snapstreak-virtual-cam-0' || !originalGetUserMedia) {
-        const synthetic = createSyntheticMediaStream(constraints);
-        currentActiveStream = synthetic;
-        return synthetic;
-      }
-
-      const activeConstraints = constraints ? { ...constraints } : { video: true };
-      if (activeId && activeConstraints.video) {
-        if (typeof activeConstraints.video === 'boolean') {
-          activeConstraints.video = { deviceId: { exact: activeId } };
-        } else if (typeof activeConstraints.video === 'object') {
-          activeConstraints.video = { ...activeConstraints.video, deviceId: { exact: activeId } };
-        }
-      }
-
-      try {
-        const stream = await originalGetUserMedia(activeConstraints);
-        const vTracks = stream.getVideoTracks();
-        if (vTracks.length > 0 && vTracks[0].readyState === 'live') {
-          currentActiveStream = stream;
-          return stream;
-        }
-        throw new Error('Physical video track not live');
-      } catch (err) {
-        try {
-          if (activeConstraints.video && typeof activeConstraints.video === 'object' && activeConstraints.video.deviceId) {
-            const relaxedConstraints = { ...activeConstraints, video: { ...activeConstraints.video } };
-            delete relaxedConstraints.video.deviceId;
-            const stream = await originalGetUserMedia(relaxedConstraints);
-            if (stream.getVideoTracks().length > 0) {
-              currentActiveStream = stream;
-              return stream;
-            }
-          }
-        } catch (fallbackErr) {}
-
-        // Fallback to synthetic 30fps HD canvas stream so Snapchat Web viewfinder always mounts
-        const synthetic = createSyntheticMediaStream(constraints);
-        currentActiveStream = synthetic;
-        return synthetic;
-      }
-    };
-  }
-
-  window.addEventListener('snapstreak_set_camera', (event) => {
-    const newId = event.detail?.deviceId || '';
-    selectedCameraId = newId;
-    window.__SNAPSTREAK_CAMERA_DEVICE_ID__ = newId;
-    safeSetStorage('snapstreak_selected_camera_id', newId);
-
-    if (event.detail?.restart && currentActiveStream) {
-      try {
-        currentActiveStream.getTracks().forEach(track => track.stop());
-      } catch (e) {}
-    }
-  });
-
-  window.addEventListener('snapstreak_query_devices', async () => {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices
-        .filter(d => d.kind === 'videoinput')
-        .map(d => ({
-          deviceId: d.deviceId,
-          label: d.label || (d.deviceId.includes('snapstreak') ? 'SnapStreak Virtual HD Camera' : 'Webcam Camera'),
-          groupId: d.groupId
-        }));
-
-      window.dispatchEvent(new CustomEvent('snapstreak_devices_found', {
-        detail: { devices: videoDevices, activeId: window.__SNAPSTREAK_CAMERA_DEVICE_ID__ }
-      }));
+      navigator.mediaDevices.enumerateDevices = customEnumerateDevices;
+      if (typeof MediaDevices !== 'undefined' && MediaDevices.prototype) {
+        MediaDevices.prototype.enumerateDevices = customEnumerateDevices;
+      }
     } catch (e) {}
-  });
+  }
+
+  if (navigator.permissions && navigator.permissions.query) {
+    const origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = async function (desc) {
+      if (desc && (desc.name === 'camera' || desc.name === 'microphone' || desc.name === 'notifications')) {
+        return {
+          state: 'granted',
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        };
+      }
+      return origQuery(desc);
+    };
+  }
 })();

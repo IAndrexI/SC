@@ -1,53 +1,60 @@
-# SnapStreak (SC)
+# 👻 SnapStreak Studio — Snapchat Web Auto Streak Maker & Live SJSU Camera
 
-Automated streak management service and personal task scheduler for Snapchat Web, featuring live synthetic webcam streaming and smart anti-detection.
-
-This project is organized into **two distinct variants** depending on where you want to run it:
+A complete, self-contained Snapchat Web automation studio featuring **persistent Login Cookie Vault protection**, a **Dual-Mode Auto Streak Maker** (**🧠 AI / Expected Steps Mode** + **🎬 Custom Macro Mode**), and **Live San José State University (SJSU) Meteorology Webcam** injection.
 
 ---
 
-## 🚀 Choose Your Variant
+## ✨ Key Features
 
-| Feature | 🪟 [Windows Extension](./windows-extension/) | 🐧 [Linux Server (LXC / Docker)](./linux-server/) |
-| :--- | :--- | :--- |
-| **Best For** | Running on your daily desktop/laptop | 24/7 dedicated home server / Proxmox |
-| **Platform** | Windows 10/11 | Debian 12, Proxmox LXC, Docker, Ubuntu |
-| **Requires PC On?** | Yes | No (runs on your server 24/7) |
-| **Display Mode** | Regular browser window with overlay HUD | Virtual X11 (`Xvfb`) + embedded noVNC viewer |
-| **Remote Access** | Local desktop | Web UI accessible from any PC/phone (`:8080`) |
-| **IP Footprint** | 100% Residential PC IP | Local home network / Homelab IP |
-| **Quick Start** | Double-click `install_extension.bat` | `curl -fsSL .../install.sh \| bash` |
+### 1. 🌐 Full Interactive Access to Snapchat Web (`https://web.snapchat.com/`)
+- Embedded real-time interactive Snapchat Web viewport on **Port 8080** (`http://localhost:8080`).
+- **Click, Scroll & Direct Keyboard Mode**: Click anywhere on the live Snapchat screen, scroll with your mouse wheel, or toggle **Direct Keyboard** to type directly into Snapchat Web.
+- **1-Click Session Repair**: Automatically resolves *"Snapchat is already open in another tab"* (`Use Here`) without ever touching your login cookies.
+
+### 2. 🍪 Persistent Cookie Vault (Zero Cookie Loss)
+- Automatically syncs and backs up all Snapchat & Google authentication cookies (`sc_at`, `__Host-sc-a-auth-session`, `__Host-X-Snap-Client-Cookie`, `sc-a-nonce`, `sc-a-csrf`) plus `IndexedDB` and `localStorage` across `browser_profile/`, `session.json`, and `session_backup.json`.
+- **Non-Destructive Save**: Clicking **Save Cookies** snapshots your live browser cookies immediately *without* closing or interrupting your open Snapchat session.
+- **Import / Export / Restore**: Supports importing cookies from Cookie-Editor JSON, Playwright `storage_state`, or raw `Cookie:` headers.
+
+### 3. 🔥 Dual-Mode Auto Streak Maker
+Switch seamlessly between two execution engines in the Studio UI or via `/api/config`:
+
+- **🧠 Mode A — AI / Expected Steps Mode (`streak_mode: "ai_steps"`)**:
+  - **Step 1 (Prepare)**: Dismisses blockers (`Use Here` / `Not now`) and injects the latest SJSU webcam frame.
+  - **Step 2 (Open Camera)**: Detects screen state and activates the camera viewfinder.
+  - **Step 3 (Capture Snap)**: Performs a zero-drag quick click on the center shutter circle (ignoring filter lenses).
+  - **Step 4 (Open Send To)**: Clicks `"Send To"` on the captured snap preview.
+  - **Step 5 (Select Friends & Safety Audit)**: Supports **Direct Friend Search & Click** (`direct`), **Snapchat Shortcut Pill + Select All** (`shortcut`), or **Smart Hybrid** (`auto`). Runs a mandatory safety audit that forcibly unchecks `My AI`, `My Story`, `Spotlight`, and `Team Snapchat`.
+  - **Step 6 (Final Send)**: Clicks the final `"Send"` button (or pauses before sending in **Sample Preview** mode).
+
+- **🎬 Mode B — Custom Macro Mode (`streak_mode: "macro"`)**:
+  - **Smart Live Recording**: Click **🔴 Record Clicks on Screen** and perform your steps on the live Snapchat viewport. Every click records both DOM metadata (`selector`, `text`, `aria-label`) and relative/absolute coordinates (`rx`, `ry`, `x`, `y`).
+  - **Visual Macro Step Editor**: Inspect, reorder, or delete individual steps, reset to the built-in **5-Step Default Streak Template**, and replay with configurable step delay (`0.5s`–`10s`).
+
+### 4. 📡 SJSU Meteorology Live Webcam (`met.sjsu.edu`)
+- Fetches live frames from `https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg`.
+- **CORS-Immune WebRTC Canvas Stream**: Injects the live frame as a base64 Data URL (`data:image/jpeg;base64,...`) into `camera_hook.js` so `navigator.mediaDevices.getUserMedia` streams a 30 FPS 1280×720 SJSU camera feed with zero CORS tainting, alongside native Chromium `.y4m` video capture.
 
 ---
 
-### 🪟 Variant 1: Windows Extension
-*Located in [`windows-extension/`](./windows-extension/)*
+## 🚀 Quick Start
 
-Runs directly inside your Windows Brave or Google Chrome browser as an unpacked Manifest V3 extension.
-- **Floating HUD**: Interactive on-screen overlay showing streak countdowns, target friend list, and real-time step progress.
-- **Synthetic SJSU Camera**: Injects a live SJSU Meteorology camera feed directly into Snapchat's WebRTC device pipeline.
-- **Autologon support**: Includes optional scripts to boot your Windows PC directly into the browser on startup.
+### Windows (Local Studio Server on Port 8080)
+Run [`windows-extension/run_server.bat`](windows-extension/run_server.bat) or:
+```powershell
+python windows-extension/run_server.py
+```
+Then open **`http://localhost:8080`** in your browser.
 
-👉 **[See Windows Extension Setup Guide](./windows-extension/README.md)**
-
----
-
-### 🐧 Variant 2: Linux Server (LXC / Headless)
-*Located in [`linux-server/`](./linux-server/)*
-
-Runs as a lightweight, 24/7 background daemon on Linux (Debian 12, Proxmox LXC, or Docker).
-- **Embedded noVNC Remote Desktop**: View and interact with the real Linux browser window directly from any browser on your other PC or phone via port `8080`.
-- **Full Headful Emulation**: Runs Google Chrome in a RAM-only virtual display (`Xvfb :99`) with real GPU/WebGL pipelines to evade bot detection.
-- **Built-in APScheduler**: Automatically fires your streak routine daily at your chosen time without needing any PC turned on.
-
-#### Quick Install (Proxmox Host):
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/IAndrexI/SC/main/proxmox-lxc.sh)"
+### Windows (Direct Desktop Runner)
+```powershell
+python windows-extension/run_desktop.py --mode ai_steps --method direct
+# Or run in Macro mode:
+python windows-extension/run_desktop.py --mode macro
 ```
 
-#### Quick Install (Inside Debian LXC / Linux Server):
+### Linux / Proxmox LXC Server
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IAndrexI/SC/main/install.sh | bash
+cd linux-server
+bash install.sh
 ```
-
-👉 **[See Linux Server Setup Guide](./linux-server/README.md)**

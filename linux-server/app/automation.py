@@ -1,65 +1,125 @@
 """
-automation.py – Emulates a real desktop user on web.snapchat.com
+automation.py – Core Snapchat Web Automation Engine for SnapStreak.
+Supports:
+  1. Live SJSU Meteorology Webcam pipeline (HTTP fetch + Y4M generator + zero-CORS Data URL page injection)
+  2. Cookie & Session Vault persistence (never wipes cookies; bidirectional sync between browser_profile & session.json)
+  3. Mode A: AI / Expected Steps 6-Stage State Machine (Prepare -> Camera -> Capture -> Send To -> Select & Audit -> Send)
+  4. Mode B: Smart Macro Recorder & Replayer (DOM selector + relative coordinate hybrid replay with safety guard)
 """
 
 import asyncio
+import base64
+import io
 import json
+import logging
 import os
-import random
+import re
+import shutil
+import ssl
 import time
+import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from playwright.async_api import async_playwright, BrowserContext, Page, Locator
+import config
 
-try:
-    from app import config
-except ImportError:
-    import config
+logger = logging.getLogger("snapstreak")
 
-# ---------------------------------------------------------------------------
-# Paths
-DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
-DATA_DIR   = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
-SESSION_FILE = DATA_DIR / "session.json"
-SNAP_IMAGE   = DATA_DIR / "snap.png"
-LOG_FILE     = DATA_DIR / "activity.log"
+DATA_DIR = config.DATA_DIR
+SESSION_FILE = config.SESSION_FILE
+SESSION_BACKUP_FILE = config.SESSION_BACKUP_FILE
+SNAP_IMAGE = config.SNAP_IMAGE
+WEBCAM_FILE = config.WEBCAM_FILE
+Y4M_FILE = config.Y4M_FILE
+MACRO_FILE = config.MACRO_FILE
+USER_DATA_DIR = config.USER_DATA_DIR
+FIREFOX_PROFILE_DIR = config.FIREFOX_PROFILE_DIR
+WEBCAM_URL = config.WEBCAM_URL
+
+LOG_FILE = DATA_DIR / "activity.log"
 SCREENSHOT_FILE = DATA_DIR / "last_screenshot.png"
-MACRO_FILE   = DATA_DIR / "macro.json"
+EXTENSION_DIR = Path(__file__).resolve().parent.parent / "extension"
 
-try:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
-
-USER_DATA_DIR = DATA_DIR / "browser_profile"
-try:
-    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
-
-
-# Realistic desktop Chrome fingerprint (matches Playwright Chromium 130)
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.6723.31 Safari/537.36"
-)
+SNAPCHAT_WEB = "https://web.snapchat.com/"
 VIEWPORT = {"width": 1440, "height": 900}
 
+FORBIDDEN_TARGETS = [
+    "my ai",
+    "my story",
+    "our story",
+    "spotlight",
+    "snap map",
+    "team snapchat",
+    "public profile",
+    "add to story",
+    "post to story",
+]
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-def _log(msg: str, emit: Callable[[str], None] | None = None):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
+# Global execution control flags
+_execution_state = {
+    "running": False,
+    "paused": False,
+    "stop_requested": False,
+    "current_mode": "ai_steps",
+    "current_step": 0,
+    "total_steps": 6,
+    "step_name": "Idle",
+    "screen_state": "UNKNOWN",
+    "last_updated": 0.0,
+}
+
+
+def get_execution_state() -> dict:
+    return dict(_execution_state)
+
+
+def update_execution_state(**kwargs):
+    _execution_state.update(kwargs)
+    _execution_state["last_updated"] = time.time()
+
+
+def request_stop():
+    _execution_state["stop_requested"] = True
+    _execution_state["paused"] = False
+
+
+def toggle_pause() -> bool:
+    _execution_state["paused"] = not _execution_state["paused"]
+    return _execution_state["paused"]
+
+
+async def _check_pause_or_stop(emit: Callable | None = None) -> bool:
+    """Return True if stop was requested. Wait while paused."""
+    if _execution_state.get("stop_requested"):
+        log("WARN", "🛑 Stop requested by user. Aborting automation.", emit)
+        return True
+    while _execution_state.get("paused"):
+        if _execution_state.get("stop_requested"):
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+def _cleanup_stale_locks():
+    """Remove stale Chromium lock files if no browser is holding them."""
+    for profile in (USER_DATA_DIR, config.EDGE_PROFILE_DIR):
+        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            p = profile / lock_name
+            if p.exists() or p.is_symlink():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+
+def log(level: str, msg: str, emit: Callable | None = None):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] [{level}] {msg}"
+    logger.info(line)
     try:
-        print(line, flush=True)
-    except Exception:
-        pass
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
@@ -70,1996 +130,1541 @@ def _log(msg: str, emit: Callable[[str], None] | None = None):
             pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. SJSU METEOROLOGY LIVE WEBCAM ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
 
-WEBCAM_URL = os.environ.get(
-    "WEBCAM_URL",
-    "https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg"
-)
-WEBCAM_FILE = DATA_DIR / "webcam_latest.jpg"
-Y4M_FILE    = DATA_DIR / "webcam.y4m"
-
-
-def _cleanup_stale_locks():
-    """Remove stale Chromium profile locks to prevent launch hang on restarts."""
-    for lock_name in ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]:
-        lock_path = USER_DATA_DIR / lock_name
-        try:
-            if lock_path.is_symlink() or lock_path.exists():
-                lock_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-def generate_y4m_from_image(image_bytes: bytes, out_path: Path = Y4M_FILE, width: int = 1280, height: int = 720, fps: int = 15, frames: int = 15):
-    """Convert JPEG/PNG image bytes into standard Y4M video for Chromium native fake video capture (150 frames = 10s video stream)."""
+def generate_y4m_from_image(
+    image_bytes: bytes,
+    out_path: Path = Y4M_FILE,
+    width: int = 1280,
+    height: int = 720,
+    fps: int = 15,
+    frames: int = 30,
+):
+    """
+    Convert JPEG/PNG image bytes into a valid YUV420p .y4m video file for Chromium
+    --use-file-for-fake-video-capture. Includes a pure-Python fallback if Pillow is absent.
+    """
     try:
-        from PIL import Image, ImageOps
-        import io
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from PIL import Image, ImageOps
 
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        # Scale to 1280x720 with black letterboxing
-        img.thumbnail((width, height), Image.Resampling.LANCZOS)
-        padded = Image.new("RGB", (width, height), (10, 15, 25))
-        padded.paste(img, ((width - img.width) // 2, (height - img.height) // 2))
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            img = ImageOps.fit(img, (width, height), method=Image.Resampling.LANCZOS)
+            ycbcr = img.convert("YCbCr")
+            y, cb, cr = ycbcr.split()
+            cb_sub = cb.resize((width // 2, height // 2), resample=Image.Resampling.BILINEAR)
+            cr_sub = cr.resize((width // 2, height // 2), resample=Image.Resampling.BILINEAR)
+            frame_data = y.tobytes() + cb_sub.tobytes() + cr_sub.tobytes()
+        except ImportError:
+            # Pure-Python fallback YUV420p frame (dark slate blue) if PIL not installed
+            y_plane = bytes([45]) * (width * height)
+            u_plane = bytes([140]) * ((width // 2) * (height // 2))
+            v_plane = bytes([118]) * ((width // 2) * (height // 2))
+            frame_data = y_plane + u_plane + v_plane
 
-        # Convert to YUV420p
-        ycbcr = padded.convert("YCbCr")
-        y = ycbcr.getchannel(0).tobytes()
-        cb = ycbcr.getchannel(1).resize((width // 2, height // 2), Image.Resampling.BILINEAR).tobytes()
-        cr = ycbcr.getchannel(2).resize((width // 2, height // 2), Image.Resampling.BILINEAR).tobytes()
-        raw_frame = y + cb + cr
-
-        # Write Y4M stream (Chromium loops this natively as real webcam)
-        header = f"YUV4MPEG2 W{width} H{height} F{fps}:1 Ip A1:1 C420\n".encode("ascii")
-        frame_marker = b"FRAME\n"
-
-        with open(out_path, "wb") as f:
+        header = f"YUV4MPEG2 W{width} H{height} F{fps}:1 Ip A1:1 C420jpeg\n".encode("ascii")
+        frame_header = b"FRAME\n"
+        tmp_path = out_path.with_suffix(".y4m.tmp")
+        with open(tmp_path, "wb") as f:
             f.write(header)
             for _ in range(frames):
-                f.write(frame_marker)
-                f.write(raw_frame)
+                f.write(frame_header)
+                f.write(frame_data)
+        tmp_path.replace(out_path)
     except Exception as ex:
-        _log(f"  ⚠ Notice generating Y4M: {ex}")
-
+        logger.debug(f"Y4M generation notice: {ex}")
 
 
 def fetch_webcam_image(force_refresh: bool = False) -> bytes:
-    """Fetch latest frame from meteorology webcam with automatic freshness check, cache-busting, and Y4M generation."""
+    """
+    Fetch the latest live frame from the San Jose State University Meteorology webcam
+    (https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg), update webcam_latest.jpg,
+    snap.png (unless custom image is active), and webcam.y4m.
+    """
+    config.ensure_data_dirs()
     now = time.time()
-    # Fast path: If cached visual exists and Y4M is present, return immediately without blocking
-    if not force_refresh and WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000 and Y4M_FILE.exists() and Y4M_FILE.stat().st_size > 10000:
-        return WEBCAM_FILE.read_bytes()
 
-    if not force_refresh and WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
-        age_seconds = now - WEBCAM_FILE.stat().st_mtime
-        if age_seconds < 600:  # 10 minutes cache
-            if not Y4M_FILE.exists():
-                generate_y4m_from_image(WEBCAM_FILE.read_bytes())
-            return WEBCAM_FILE.read_bytes()
+    if (
+        not force_refresh
+        and WEBCAM_FILE.exists()
+        and WEBCAM_FILE.stat().st_size > 1500
+        and (now - WEBCAM_FILE.stat().st_mtime) < 180
+    ):
+        data = WEBCAM_FILE.read_bytes()
+        if not Y4M_FILE.exists() or Y4M_FILE.stat().st_size < 10000:
+            generate_y4m_from_image(data)
+        return data
 
-    import urllib.request
-    import ssl
     try:
-        cache_buster_url = f"{WEBCAM_URL}?t={int(now)}"
+        sep = "&" if "?" in WEBCAM_URL else "?"
+        live_url = f"{WEBCAM_URL}{sep}_t={int(now * 1000)}"
         req = urllib.request.Request(
-            cache_buster_url,
+            live_url,
             headers={
-                "User-Agent": USER_AGENT,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
                 "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Pragma": "no-cache",
-                "Expires": "0",
-            }
+                "Referer": "https://www.met.sjsu.edu/",
+            },
         )
         ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=6, context=ctx) as resp:
             data = resp.read()
-            if data and len(data) > 1000:
+            if data and len(data) > 1500:
                 WEBCAM_FILE.write_bytes(data)
-                SNAP_IMAGE.write_bytes(data)
+                cfg = config.load()
+                if not cfg.get("snap_image_custom"):
+                    SNAP_IMAGE.write_bytes(data)
                 generate_y4m_from_image(data)
-                _log("  📷 Fresh SJSU meteorology webcam frame & native video track updated.")
                 return data
     except Exception as ex:
-        _log(f"  ⚠ Webcam download notice: {ex} (using local frame).")
+        logger.warning(f"SJSU webcam fetch fallback: {ex}")
 
-    if WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1000:
+    if WEBCAM_FILE.exists() and WEBCAM_FILE.stat().st_size > 1500:
         data = WEBCAM_FILE.read_bytes()
         if not Y4M_FILE.exists():
             generate_y4m_from_image(data)
         return data
-    if SNAP_IMAGE.exists() and SNAP_IMAGE.stat().st_size > 1000:
-        data = SNAP_IMAGE.read_bytes()
-        if not Y4M_FILE.exists():
-            generate_y4m_from_image(data)
-        return data
+
+    if SNAP_IMAGE.exists() and SNAP_IMAGE.stat().st_size > 1500:
+        return SNAP_IMAGE.read_bytes()
+
     return b""
 
 
-async def _dismiss_banners_and_reset(page: Page, emit=None):
-    """Dismiss any notification popups, cookie alerts, or active chats to ensure clean view."""
-    # 0. Click "Use Here" if Snapchat complains about another open tab/session
-    for use_sel in [
-        'button:has-text("Use Here")',
-        'button:has-text("Use here")',
-        'div[role="button"]:has-text("Use Here")',
-    ]:
-        try:
-            u_loc = page.locator(use_sel).first
-            if await u_loc.is_visible(timeout=500):
-                await u_loc.click()
-                _log("  ✓ Clicked 'Use Here' to claim active Snapchat Web session.", emit)
-                await asyncio.sleep(1.0)
-        except Exception:
-            pass
+def get_webcam_data_url(force_refresh: bool = False) -> str:
+    """
+    Return the active camera image (SJSU live webcam or custom uploaded snap) as a
+    CORS-immune base64 Data URL ('data:image/jpeg;base64,...').
+    """
+    cfg = config.load()
+    if cfg.get("snap_image_custom") and SNAP_IMAGE.exists() and SNAP_IMAGE.stat().st_size > 500:
+        raw = SNAP_IMAGE.read_bytes()
+    else:
+        raw = fetch_webcam_image(force_refresh=force_refresh)
 
-    # 1. Close notification/learn more banners
-    for sel in [
-        '[aria-label*="close" i]',
-        'button:has-text("✕")',
-        'button:has-text("Not now")',
-        'button:has-text("Dismiss")',
-        'button:has-text("Got it")',
-        '[data-testid="close-button"]',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=800):
-                await loc.click()
-                _log("  ✓ Dismissed overlay banner.", emit)
-        except Exception:
-            pass
-
-    # 2. If an open conversation is active, click back button
-    for sel in ['[aria-label*="Back" i]', 'button:has(svg path[d*="15.41"])']:
-        try:
-            loc = page.locator(sel).first
-            if await loc.is_visible(timeout=800):
-                await loc.click()
-                _log("  ✓ Closed active chat conversation.", emit)
-                break
-        except Exception:
-            pass
+    if not raw:
+        return ""
+    mime = "image/png" if raw[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}"
 
 
-
-
-# ---------------------------------------------------------------------------
-# Snap image
-# ---------------------------------------------------------------------------
-def ensure_snap_image():
-    if not SNAP_IMAGE.exists():
-        fetch_webcam_image()
-
-
-# ---------------------------------------------------------------------------
-# Human-like helpers
-# ---------------------------------------------------------------------------
-async def _human_delay(min_ms: int = 600, max_ms: int = 1400):
-    await asyncio.sleep(random.uniform(min_ms / 1000, max_ms / 1000))
-
-
-async def _take_screenshot(page: Page, label: str = ""):
+async def inject_webcam_frame_into_page(page, force_refresh: bool = False) -> bool:
+    """
+    Push the live SJSU webcam Data URL directly into the browser page's global state
+    so camera_hook.js renders the real SJSU camera image without any CORS issues.
+    """
+    if not page:
+        return False
     try:
-        await page.screenshot(path=str(SCREENSHOT_FILE), full_page=False)
-        _log(f"  📸 Screenshot saved [{label}]")
+        loop = asyncio.get_running_loop()
+        data_url = await loop.run_in_executor(None, get_webcam_data_url, force_refresh)
+        if not data_url:
+            return False
+        await page.evaluate(
+            """(dataUrl) => {
+                window.__SNAPSTREAK_SJSU_DATA_URL__ = dataUrl;
+                window.dispatchEvent(new CustomEvent('SNAPSTREAK_WEBCAM_FRAME', {
+                    detail: { dataUrl: dataUrl, timestamp: Date.now() }
+                }));
+            }""",
+            data_url,
+        )
+        return True
     except Exception:
-        pass
+        return False
 
 
-async def _live_stream_task(page: Page, run_flag: list, interval: float = 2.0):
-    """Refresh SCREENSHOT_FILE periodically so the dashboard can show live progress."""
-    while run_flag[0]:
-        try:
-            await page.screenshot(path=str(SCREENSHOT_FILE), full_page=False)
-        except Exception:
-            pass
-        await asyncio.sleep(interval)
-
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. CLEAN STEALTH & VIRTUAL CAMERA INIT SCRIPT
+# ─────────────────────────────────────────────────────────────────────────────
 
 STEALTH_INIT_SCRIPT = """
 (() => {
-    // 1. Strip navigator.webdriver completely
     try {
-        delete Object.getPrototypeOf(navigator).webdriver;
-    } catch(e) {}
-    try {
-        delete navigator.webdriver;
-    } catch(e) {}
-    try {
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined,
-            configurable: true
-        });
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     } catch(e) {}
 
-    // 2. Realistic Windows desktop screen geometry (with 40px taskbar)
     try {
-        const sw = 1440, sh = 900;
-        Object.defineProperties(window.screen, {
-            width: { get: () => sw, configurable: true },
-            height: { get: () => sh, configurable: true },
-            availWidth: { get: () => sw, configurable: true },
-            availHeight: { get: () => sh - 40, configurable: true }, // Windows taskbar subtraction
-            availTop: { get: () => 0, configurable: true },
-            availLeft: { get: () => 0, configurable: true },
-            colorDepth: { get: () => 24, configurable: true },
-            pixelDepth: { get: () => 24, configurable: true }
-        });
-        Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true });
-        Object.defineProperty(window, 'outerWidth', { get: () => sw, configurable: true });
-        Object.defineProperty(window, 'outerHeight', { get: () => sh, configurable: true });
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) window.chrome.runtime = {};
     } catch(e) {}
 
-    // 3. Mask platform and appVersion to Windows 10/11
     try {
-        Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
-        Object.defineProperty(navigator, 'appVersion', {
-            get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-            configurable: true
-        });
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     } catch(e) {}
 
-    // 4. Mock High-Entropy UserAgentData (NavigatorUAData) to Windows Direct
-    if (navigator.userAgentData) {
-        const brandList = [
-            { brand: 'Chromium', version: '130' },
-            { brand: 'Google Chrome', version: '130' },
-            { brand: 'Not?A_Brand', version: '99' }
-        ];
-        try {
-            Object.defineProperty(navigator.userAgentData, 'brands', { get: () => brandList, configurable: true });
-            Object.defineProperty(navigator.userAgentData, 'mobile', { get: () => false, configurable: true });
-            Object.defineProperty(navigator.userAgentData, 'platform', { get: () => 'Windows', configurable: true });
-            navigator.userAgentData.getHighEntropyValues = function(hints) {
-                return Promise.resolve({
-                    architecture: 'x86',
-                    bitness: '64',
-                    brands: brandList,
-                    mobile: false,
-                    model: '',
-                    platform: 'Windows',
-                    platformVersion: '15.0.0',
-                    uaFullVersion: '130.0.6723.31',
-                    fullVersionList: [
-                        { brand: 'Chromium', version: '130.0.6723.31' },
-                        { brand: 'Google Chrome', version: '130.0.6723.31' },
-                        { brand: 'Not?A_Brand', version: '99.0.0.0' }
-                    ]
-                });
-            };
-        } catch(e) {}
-    }
-
-    // 5. Mock authentic Chrome object
     try {
-        window.chrome = {
-            app: {
-                isInstalled: false,
-                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
-            },
-            runtime: {
-                OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-                OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-                PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-                RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
-            },
-            csi: function() {},
-            loadTimes: function() {}
-        };
-    } catch(e) {}
-
-    // 6. Mock plugins and mimeTypes with namedItem / item functions
-    try {
-        const fakePlugins = [
-            { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-            { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-            { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-            { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-            { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
-        ];
-        const pluginsArray = [...fakePlugins];
-        fakePlugins.forEach(p => { pluginsArray[p.name] = p; });
-        pluginsArray.item = (i) => fakePlugins[i] || null;
-        pluginsArray.namedItem = (n) => fakePlugins.find(p => p.name === n) || null;
-        pluginsArray.refresh = () => {};
-
-        Object.defineProperty(navigator, 'plugins', { get: () => pluginsArray, configurable: true });
-
-        const fakeMime = [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }];
-        fakeMime['application/pdf'] = fakeMime[0];
-        fakeMime.item = (i) => fakeMime[i] || null;
-        fakeMime.namedItem = (n) => (n === 'application/pdf' ? fakeMime[0] : null);
-
-        Object.defineProperty(navigator, 'mimeTypes', { get: () => fakeMime, configurable: true });
-    } catch(e) {}
-
-    // 7. Mock hardware & languages
-    try {
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
-    } catch(e) {}
-
-    // 8. Battery API (always present on real desktop Chrome)
-    try {
-        if (!navigator.getBattery) {
-            navigator.getBattery = () => Promise.resolve({
-                charging: true,
-                chargingTime: 0,
-                dischargingTime: Infinity,
-                level: 1.0,
-                onchargingchange: null,
-                onchargingtimechange: null,
-                ondischargingtimechange: null,
-                onlevelchange: null,
-                addEventListener: () => {},
-                removeEventListener: () => {},
-                dispatchEvent: () => false
-            });
-        }
-    } catch(e) {}
-
-    // 9. Network Information API
-    try {
-        if (!navigator.connection) {
-            const conn = {
-                rtt: 50,
-                downlink: 10,
-                effectiveType: '4g',
-                saveData: false,
-                onchange: null,
-                addEventListener: () => {},
-                removeEventListener: () => {},
-                dispatchEvent: () => false
-            };
-            Object.defineProperty(navigator, 'connection', { get: () => conn, configurable: true });
-        }
-    } catch(e) {}
-
-    // 10. Speech synthesis voices
-    try {
-        if ('speechSynthesis' in window) {
-            const fakeVoices = [
-                { voiceURI: 'Microsoft David - English (United States)', name: 'Microsoft David - English (United States)', lang: 'en-US', localService: true, default: true },
-                { voiceURI: 'Microsoft Zira - English (United States)', name: 'Microsoft Zira - English (United States)', lang: 'en-US', localService: true, default: false }
-            ];
-            const origGetVoices = window.speechSynthesis.getVoices.bind(window.speechSynthesis);
-            window.speechSynthesis.getVoices = function() {
-                const list = origGetVoices();
-                return list && list.length > 0 ? list : fakeVoices;
-            };
-        }
-    } catch(e) {}
-
-    // 11. Mock WebGL Vendor, Renderer and WEBGL_debug_renderer_info (NVIDIA GeForce Direct3D11 - Windows)
-    try {
-        const spoofParam = function(parameter, orig) {
-            if (parameter === 37445) return 'Google Inc. (NVIDIA)';
-            if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-            return orig.call(this, parameter);
-        };
-
-        const getParam1 = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(param) {
-            return spoofParam.call(this, param, getParam1);
-        };
-        const origExt1 = WebGLRenderingContext.prototype.getExtension;
-        WebGLRenderingContext.prototype.getExtension = function(name) {
-            if (name === 'WEBGL_debug_renderer_info') {
-                return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
-            }
-            return origExt1.call(this, name);
-        };
-
-        if (typeof WebGL2RenderingContext !== 'undefined') {
-            const getParam2 = WebGL2RenderingContext.prototype.getParameter;
-            WebGL2RenderingContext.prototype.getParameter = function(param) {
-                return spoofParam.call(this, param, getParam2);
-            };
-            const origExt2 = WebGL2RenderingContext.prototype.getExtension;
-            WebGL2RenderingContext.prototype.getExtension = function(name) {
-                if (name === 'WEBGL_debug_renderer_info') {
-                    return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
-                }
-                return origExt2.call(this, name);
-            };
-        }
-    } catch(e) {}
-
-    // 12. Mask enumerateDevices to show authentic physical camera device
-    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-        const origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
-        navigator.mediaDevices.enumerateDevices = async function() {
-            const list = await origEnum();
-            list.forEach(d => {
-                if (d && d.kind === 'videoinput') {
-                    try {
-                        Object.defineProperty(d, 'label', { get: () => 'Integrated HD Camera (04f2:b6d9)', configurable: true });
-                    } catch(e) {}
-                }
-            });
-            return list;
-        };
-    }
-
-    // 13. Camera, Microphone & Notification permission mock
-    if (navigator.permissions && navigator.permissions.query) {
-        const origQuery = navigator.permissions.query.bind(navigator.permissions);
-        const grantedObj = {
-            state: 'granted',
-            status: 'granted',
-            onchange: null,
-            addEventListener: () => {},
-            removeEventListener: () => {},
-            dispatchEvent: () => false
-        };
-        navigator.permissions.query = (p) => {
-            const name = p && p.name ? String(p.name).toLowerCase() : '';
-            if (['notifications', 'camera', 'microphone', 'persistent-storage', 'clipboard-read', 'clipboard-write'].includes(name)) {
-                return Promise.resolve(grantedObj);
-            }
-            return origQuery(p).catch(() => grantedObj);
-        };
-    }
-
-    // 14. Clean CDP / automation indicators
-    try {
-        for (const k of Object.keys(window)) {
-            if (/^cdc_[a-zA-Z0-9]+$/.test(k)) {
-                delete window[k];
-            }
-        }
-    } catch(e) {}
-    try {
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
         delete window.__playwright;
         delete window.__pw_manual;
-    } catch(e) {}
-
-    // 15. Real-time in-page modal & blocker auto-dismissal (Zero-latency instant clicker)
-    try {
-        const dismissBlockers = () => {
-            try {
-                const targets = ['use here', 'not now', 'got it', 'allow', 'accept all', 'accept', 'continue'];
-                const btns = document.querySelectorAll('button, div[role="button"], a[role="button"]');
-                for (const b of btns) {
-                    const text = (b.innerText || b.textContent || '').trim().toLowerCase();
-                    if (targets.some(t => text === t || text.startsWith(t + '\n'))) {
-                        b.click();
-                    }
-                }
-            } catch(e) {}
-        };
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', dismissBlockers);
-        } else {
-            dismissBlockers();
-        }
-        const obs = new MutationObserver(() => dismissBlockers());
-        obs.observe(document.documentElement, { childList: true, subtree: true });
     } catch(e) {}
 })();
 """
 
 
-# ---------------------------------------------------------------------------
-# Browser context — persistent desktop profile (preserves Cookies + IndexedDB)
-# ---------------------------------------------------------------------------
-async def _build_context(playwright, headless: bool = True):
-    _cleanup_stale_locks()
-    fetch_webcam_image()  # ensure Y4M_FILE is ready before launch
-
-    cfg = config.load()
-    browser_engine = cfg.get("browser_engine", "chromium").lower()
-
-    if browser_engine == "firefox":
-        ff_profile_dir = DATA_DIR / "firefox_profile"
-        ff_profile_dir.mkdir(parents=True, exist_ok=True)
-        context = await playwright.firefox.launch_persistent_context(
-            user_data_dir=str(ff_profile_dir),
-            headless=headless,
-            viewport=VIEWPORT,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            locale="en-US",
-            timezone_id="America/Los_Angeles",
-            permissions=["camera", "microphone", "notifications"],
-            firefox_user_prefs={
-                "media.navigator.permission.disabled": True,
-                "permissions.default.camera": 1,
-                "permissions.default.microphone": 1,
-                "dom.webdriver.enabled": False,
-                "useAutomationExtension": False,
-            },
-        )
-        await context.add_init_script(STEALTH_INIT_SCRIPT)
-    else:
-        args = [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-setuid-sandbox",
-            f"--window-size={VIEWPORT['width']},{VIEWPORT['height']}",
-            "--disable-blink-features=AutomationControlled",
-            "--enable-webgl",
-            "--enable-webgl2",
-            "--use-fake-ui-for-media-stream",
-            "--use-fake-device-for-media-stream",
-            "--disable-background-networking",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-ipc-flooding-protection",
-            "--disk-cache-size=209715200",
-        ]
-        if Y4M_FILE.exists():
-            args.append(f"--use-file-for-fake-video-capture={Y4M_FILE}")
-
-        # Locate and load the SnapStreak extension
-        ext_dir = None
-        for cand in [
-            Path(__file__).resolve().parent.parent / "extension",
-            Path(__file__).resolve().parent / "extension",
-            Path("/opt/sc/linux-server/extension"),
-            Path("/opt/sc/extension"),
-            Path("/opt/snapstreak/linux-server/extension"),
-            Path(__file__).resolve().parent.parent.parent / "windows-extension" / "extension",
-        ]:
-            if (cand / "manifest.json").exists():
-                ext_dir = cand.resolve()
-                break
-
-        if ext_dir:
-            args.extend([
-                f"--disable-extensions-except={ext_dir}",
-                f"--load-extension={ext_dir}",
-            ])
-            _log(f"  ✓ SnapStreak Extension enabled in context: {ext_dir}")
-
-        context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(USER_DATA_DIR),
-            headless=headless,
-            viewport=VIEWPORT,
-            user_agent=USER_AGENT,
-            locale="en-US",
-            timezone_id="America/Los_Angeles",
-            permissions=["camera", "microphone", "notifications"],
-            args=args,
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-                "Upgrade-Insecure-Requests": "1",
-            },
-        )
-        await context.add_init_script(STEALTH_INIT_SCRIPT)
-
-    if SESSION_FILE.exists():
-        try:
-            data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-            cookies = data.get("cookies", [])
-            if cookies:
-                await context.add_cookies(cookies)
-                _log(f"  ✓ Injected {len(cookies)} cookies from session.json into browser context.")
-        except Exception as ex:
-            _log(f"  ⚠ Failed to inject session cookies: {ex}")
-
-    return context
-
-
-
-
-
-
-
-
-
-async def _save_session(context: BrowserContext):
+def get_extension_bundle_script() -> str:
+    """
+    Bundle camera_hook.js + macro.js + automation.js + overlay.js + content.js
+    for injection into Snapchat Web. Injects the initial SJSU webcam data URL
+    and server config so the camera hook has the real SJSU image immediately on page load.
+    """
     try:
-        storage = await context.storage_state()
-        SESSION_FILE.write_text(json.dumps(storage), encoding="utf-8")
+        cfg = config.load()
+        macro_data = config.load_macro_data()
+        sjsu_data_url = get_webcam_data_url(force_refresh=False)
+
+        server_boot = {
+            "friends": cfg.get("friends", ["*//Eric\\\\*", "Dylan"]),
+            "selectionMethod": cfg.get("selection_method", "direct"),
+            "sendingEngine": "macro" if cfg.get("streak_mode") == "macro" else "direct",
+            "streakMode": cfg.get("streak_mode", "ai_steps"),
+            "shortcutName": cfg.get("shortcut_name", "Streaks"),
+            "stepDelay": float(cfg.get("step_delay_seconds", 1.5)),
+            "scheduleEnabled": bool(cfg.get("enabled", True)),
+            "scheduleTime": cfg.get("schedule_time", "09:00"),
+            "scheduleTimes": cfg.get("schedule_times", ["09:00"]),
+            "activeMacro": macro_data.get("active_macro", "Default Streak Flow"),
+            "macroSteps": macro_data.get("steps", []),
+            "macros": macro_data.get("macros", {}),
+        }
+
+        css_path = EXTENSION_DIR / "overlay.css"
+        css_text = css_path.read_text(encoding="utf-8") if css_path.exists() else ""
+
+        js_files = ["camera_hook.js", "macro.js", "automation.js", "overlay.js", "content.js"]
+        js_parts = []
+        for fn in js_files:
+            p = EXTENSION_DIR / fn
+            if p.exists():
+                js_parts.append(f"\n// === {fn} ===\n" + p.read_text(encoding="utf-8"))
+
+        if not js_parts:
+            return ""
+
+        combined_js = "\n".join(js_parts)
+        return f"""
+(() => {{
+    if (window !== window.top) return;
+    const host = (window.location && window.location.hostname) || '';
+    if (host && !host.includes('snapchat.com') && !host.includes('localhost') && !host.includes('127.0.0.1')) return;
+
+    window.__SNAPSTREAK_SERVER_CONFIG__ = {json.dumps(server_boot)};
+    if ({json.dumps(bool(sjsu_data_url))}) {{
+        window.__SNAPSTREAK_SJSU_DATA_URL__ = {json.dumps(sjsu_data_url)};
+    }}
+    if (window.__SNAPSTREAK_EXTENSION_INJECTED__) return;
+    window.__SNAPSTREAK_EXTENSION_INJECTED__ = true;
+    window.__SNAPSTREAK_OVERLAY_CSS__ = {json.dumps(css_text)};
+
+    if (typeof window.chrome === 'undefined') window.chrome = {{}};
+    if (!window.chrome.storage || !window.chrome.storage.local) {{
+        const _prefix = 'snapstreak_ext_';
+        window.chrome.storage = {{
+            local: {{
+                get: (keys, cb) => {{
+                    const res = {{}};
+                    const list = Array.isArray(keys) ? keys : (typeof keys === 'string' ? [keys] : Object.keys(keys || {{}}));
+                    list.forEach(k => {{
+                        try {{
+                            const raw = localStorage.getItem(_prefix + k);
+                            if (raw !== null) res[k] = JSON.parse(raw);
+                            else if (typeof keys === 'object' && !Array.isArray(keys) && keys[k] !== undefined) res[k] = keys[k];
+                        }} catch(e) {{}}
+                    }});
+                    if (cb) setTimeout(() => cb(res), 0);
+                    return Promise.resolve(res);
+                }},
+                set: (items, cb) => {{
+                    Object.keys(items || {{}}).forEach(k => {{
+                        try {{ localStorage.setItem(_prefix + k, JSON.stringify(items[k])); }} catch(e) {{}}
+                    }});
+                    if (cb) setTimeout(() => cb(), 0);
+                    return Promise.resolve();
+                }}
+            }}
+        }};
+    }}
+    if (!window.chrome.runtime) window.chrome.runtime = {{}};
+    if (!window.chrome.runtime.sendMessage) {{
+        window.chrome.runtime.sendMessage = (msg, cb) => {{
+            if (cb) setTimeout(() => cb({{ status: 'ok' }}), 0);
+        }};
+    }}
+    if (!window.chrome.runtime.onMessage) {{
+        window.chrome.runtime.onMessage = {{ addListener: () => {{}} }};
+    }}
+
+    {combined_js}
+}})();
+"""
+    except Exception as ex:
+        logger.warning(f"Failed to bundle extension scripts: {ex}")
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. COOKIE & SESSION VAULT PERSISTENCE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def is_snapchat_authenticated_url(url: str) -> bool:
+    """Return True if URL is inside the Snapchat Web application (not login page)."""
+    u = (url or "").lower()
+    if "accounts.snapchat.com" in u or "/login" in u:
+        return False
+    return "web.snapchat.com" in u or "snapchat.com/web" in u
+
+
+async def load_cookies_into_context(context, emit: Callable | None = None) -> int:
+    """
+    Load saved cookies from session.json (or session_backup.json) into the Playwright context
+    without overwriting newer cookies already in the persistent profile.
+    """
+    config.ensure_data_dirs()
+    source_file = SESSION_FILE if SESSION_FILE.exists() else (SESSION_BACKUP_FILE if SESSION_BACKUP_FILE.exists() else None)
+    if not source_file:
+        return 0
+
+    try:
+        data = json.loads(source_file.read_text(encoding="utf-8"))
+        cookies = data.get("cookies", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        if not cookies:
+            return 0
+        valid_cookies = []
+        for c in cookies:
+            if not isinstance(c, dict) or not c.get("name") or c.get("value") is None:
+                continue
+            item = {
+                "name": str(c["name"]),
+                "value": str(c["value"]),
+                "domain": str(c.get("domain", ".snapchat.com")),
+                "path": str(c.get("path", "/")),
+            }
+            if c.get("expires") and float(c["expires"]) > 0:
+                item["expires"] = float(c["expires"])
+            if "httpOnly" in c:
+                item["httpOnly"] = bool(c["httpOnly"])
+            if "secure" in c:
+                item["secure"] = bool(c["secure"])
+            if c.get("sameSite") in ("Strict", "Lax", "None"):
+                item["sameSite"] = c["sameSite"]
+            valid_cookies.append(item)
+
+        if valid_cookies:
+            await context.add_cookies(valid_cookies)
+            return len(valid_cookies)
+    except Exception as ex:
+        logger.debug(f"Cookie load notice: {ex}")
+    return 0
+
+
+async def save_cookies_from_context(context, emit: Callable | None = None) -> dict:
+    """
+    Export cookies + localStorage from the active Playwright context to session.json
+    and session_backup.json WITHOUT closing the browser!
+    Safeguard: never overwrite an authenticated session.json with an unauthenticated empty state.
+    """
+    if not context:
+        return {"ok": False, "message": "No active browser context"}
+
+    try:
+        config.ensure_data_dirs()
+        state = await context.storage_state()
+        cookies = state.get("cookies", [])
+        sc_cookies = [c for c in cookies if "snapchat" in str(c.get("domain", "")).lower()]
+        auth_names = {
+            "sc_at",
+            "__Host-sc-a-auth-session",
+            "__Host-X-Snap-Client-Cookie",
+            "sc-a-nonce",
+            "__Host-sc-a-nonce",
+            "sc-a-csrf",
+        }
+        has_auth_now = any(c.get("name") in auth_names for c in sc_cookies)
+
+        # Check if existing session.json already has auth cookies and current state has none
+        if not has_auth_now and SESSION_FILE.exists():
+            try:
+                old_state = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+                old_cookies = old_state.get("cookies", []) if isinstance(old_state, dict) else []
+                had_auth_before = any(c.get("name") in auth_names for c in old_cookies)
+                if had_auth_before and len(sc_cookies) < 5:
+                    # Merge old auth cookies into current context instead of wiping them!
+                    await context.add_cookies(old_cookies)
+                    state = await context.storage_state()
+                    cookies = state.get("cookies", [])
+                    sc_cookies = [c for c in cookies if "snapchat" in str(c.get("domain", "")).lower()]
+                    has_auth_now = any(c.get("name") in auth_names for c in sc_cookies)
+            except Exception:
+                pass
+
+        SESSION_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        if has_auth_now or not SESSION_BACKUP_FILE.exists():
+            SESSION_BACKUP_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+        return {
+            "ok": True,
+            "total_cookies": len(cookies),
+            "snapchat_cookies": len(sc_cookies),
+            "has_auth": has_auth_now,
+            "message": f"Saved {len(cookies)} cookies ({len(sc_cookies)} Snapchat cookies) to session vault.",
+        }
+    except Exception as ex:
+        return {"ok": False, "message": f"Cookie save error: {ex}"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. SNAPCHAT WEB SCREEN STATE DETECTION & DOM HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def dismiss_snapchat_blockers(page, emit: Callable | None = None) -> list[str]:
+    """
+    Safely dismiss ONLY known blocking modals on Snapchat Web:
+      - 'Snapchat is already open in another tab' -> clicks 'Use Here'
+      - Browser notification prompt -> clicks 'Not now'
+      - Cookie banner -> clicks 'Accept All' ONLY inside cookie banner
+    Never clicks generic 'Continue' or 'Allow' buttons indiscriminately.
+    """
+    if not page:
+        return []
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const actions = [];
+                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                for (const b of buttons) {
+                    if (b.closest('#snapstreak-hud-host')) continue;
+                    const rect = b.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    const text = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    if (text === 'use here') {
+                        b.click();
+                        actions.push('Clicked "Use Here" (multi-tab takeover)');
+                    } else if (text === 'not now') {
+                        b.click();
+                        actions.push('Clicked "Not now" (notification prompt)');
+                    }
+                }
+                return actions;
+            }"""
+        )
+        for act in (clicked or []):
+            log("INFO", f"  🛡️ {act}", emit)
+        return clicked or []
     except Exception:
-        pass
+        return []
 
 
-# ---------------------------------------------------------------------------
-# Login check
-# ---------------------------------------------------------------------------
-async def check_logged_in(page: Page, emit=None) -> bool:
-    _log("Navigating to web.snapchat.com...", emit)
+async def detect_screen_state(page) -> dict:
+    """
+    Inspect the live Snapchat Web DOM and classify the current screen state into one of:
+      - LOGIN_REQUIRED
+      - BLOCKED_MODAL
+      - SEND_TO_DRAWER
+      - PHOTO_CAPTURED
+      - CAMERA_READY
+      - CHAT_OPEN
+      - HOME_NO_CAMERA
+      - LOADING
+    Also returns coordinates for key interactive targets on the current screen.
+    """
+    if not page:
+        return {"state": "OFFLINE", "url": ""}
+
     try:
-        await page.goto(
-            "https://web.snapchat.com/",
-            wait_until="domcontentloaded",
-            timeout=35_000,
+        url = page.url or ""
+        info = await page.evaluate(
+            """() => {
+                const vw = window.innerWidth || 1440;
+                const vh = window.innerHeight || 900;
+                const isVisible = (el) => {
+                    if (!el || el.closest('#snapstreak-hud-host')) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 4 || r.height < 4) return false;
+                    const st = window.getComputedStyle(el);
+                    return st.display !== 'none' && st.visibility !== 'hidden' && parseFloat(st.opacity || '1') > 0.05;
+                };
+                const centerOf = (el) => {
+                    const r = el.getBoundingClientRect();
+                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
+                };
+
+                const allBtns = Array.from(document.querySelectorAll('button, div[role="button"], [role="button"]')).filter(isVisible);
+
+                // 1. Check for 'Use Here' blocker
+                const useHereBtn = allBtns.find(b => (b.innerText || b.textContent || '').trim().toLowerCase() === 'use here');
+                if (useHereBtn) {
+                    return { state: 'BLOCKED_MODAL', blocker: 'use_here', coords: centerOf(useHereBtn) };
+                }
+
+                // 2. Check for Login form
+                const loginInput = document.querySelector('input[name="accountIdentifier"], input[autocomplete="username"], input[type="password"]');
+                if (loginInput && isVisible(loginInput)) {
+                    return { state: 'LOGIN_REQUIRED' };
+                }
+
+                // 3. Check for Send-To Drawer (search input inside drawer or recipient list with checkboxes)
+                const searchInputs = Array.from(document.querySelectorAll('input[placeholder*="Search" i], input[aria-label*="Search" i]')).filter(isVisible);
+                const drawerSearch = searchInputs.find(inp => inp.getBoundingClientRect().left > 340);
+
+                // Look for final 'Send' button at bottom of Send-To drawer (blue pill or submit button at y > vh * 0.72, x > 350)
+                let finalSendBtn = null;
+                let sendToBtn = null;
+                let downloadBtn = null;
+
+                for (const b of allBtns) {
+                    const r = b.getBoundingClientRect();
+                    if (r.left < 340) continue; // ignore left conversation sidebar
+                    const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    const aria = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim().toLowerCase();
+
+                    if (txt === 'send to' || aria === 'send to' || txt.startsWith('send to')) {
+                        sendToBtn = b;
+                    } else if (txt === 'download' || aria === 'download') {
+                        downloadBtn = b;
+                    } else if (
+                        r.top > vh * 0.72 &&
+                        (txt === 'send' || aria === 'send' || aria === 'send snap' || txt === 'send snap')
+                    ) {
+                        finalSendBtn = b;
+                    }
+                }
+
+                // Check selected pills/checkboxes in drawer
+                const checkedEls = Array.from(document.querySelectorAll('[aria-checked="true"], input[type="checkbox"]:checked')).filter(el => {
+                    if (!isVisible(el)) return false;
+                    return el.getBoundingClientRect().left > 340;
+                });
+
+                if (drawerSearch || finalSendBtn || checkedEls.length > 0) {
+                    // Also check if Send-To header or 'Send To...' text is visible in center panel
+                    const hasSendToHeader = Array.from(document.querySelectorAll('div, span, h1, h2, h3')).some(el => {
+                        if (!isVisible(el)) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.left < 340 || r.top > 300) return false;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        return t === 'send to' || t === 'send to...' || t === 'shortcuts' || t === 'recents' || t === 'best friends';
+                    });
+                    if (drawerSearch || hasSendToHeader || checkedEls.length > 0 || (finalSendBtn && !sendToBtn)) {
+                        return {
+                            state: 'SEND_TO_DRAWER',
+                            selected_count: checkedEls.length,
+                            search_coords: drawerSearch ? centerOf(drawerSearch) : null,
+                            final_send_coords: finalSendBtn ? centerOf(finalSendBtn) : null,
+                        };
+                    }
+                }
+
+                // 4. Check for Photo Captured preview ('Send To' button + 'Download' button visible)
+                if (sendToBtn || (downloadBtn && !drawerSearch)) {
+                    return {
+                        state: 'PHOTO_CAPTURED',
+                        send_to_coords: sendToBtn ? centerOf(sendToBtn) : { x: 556, y: 877 },
+                        download_coords: downloadBtn ? centerOf(downloadBtn) : null,
+                    };
+                }
+
+                // 5. Check for Camera Viewfinder Ready (video element or shutter button in center panel)
+                const videos = Array.from(document.querySelectorAll('video')).filter(v => {
+                    if (!isVisible(v)) return false;
+                    const r = v.getBoundingClientRect();
+                    return r.left > 300 && r.width > 180 && r.height > 200;
+                });
+
+                // Look for the shutter button:
+                // Either tooltip 'Click to take a picture, hold for video' is present,
+                // or a large circular button (width 52..105, abs(w-h) <= 12) near bottom-center of the camera card
+                let shutterBtn = null;
+                const tooltipEl = Array.from(document.querySelectorAll('div, span')).find(el => {
+                    if (!isVisible(el)) return false;
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return t.includes('click to take a picture');
+                });
+
+                const cameraRect = videos.length > 0 ? videos[0].getBoundingClientRect() : { left: 480, right: 960, top: 100, bottom: 880, width: 480, height: 780 };
+                const camCenterX = (cameraRect.left + cameraRect.right) / 2;
+
+                const shutterCandidates = [];
+                for (const b of allBtns) {
+                    const r = b.getBoundingClientRect();
+                    if (r.left < 350) continue;
+                    const aria = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase();
+                    const txt = (b.innerText || '').trim().toLowerCase();
+
+                    // Exclude filter lenses and menu buttons
+                    if (aria.includes('lens') || aria.includes('filter') || aria.includes('close') || aria.includes('more') || txt === '✕') {
+                        continue;
+                    }
+
+                    if (aria.includes('take a picture') || aria.includes('capture') || aria.includes('shutter') || aria.includes('take snap')) {
+                        shutterCandidates.push({ el: b, score: 1000, pos: centerOf(b) });
+                        continue;
+                    }
+
+                    // Geometric match: circular button near horizontal center of camera card, in bottom half
+                    const isRoundish = r.width >= 48 && r.width <= 110 && r.height >= 48 && r.height <= 110 && Math.abs(r.width - r.height) <= 14;
+                    const cx = r.left + r.width / 2;
+                    const cy = r.top + r.height / 2;
+                    const distFromCamCenter = Math.abs(cx - camCenterX);
+
+                    if (isRoundish && cy > vh * 0.60 && cy < vh * 0.96 && distFromCamCenter < 95) {
+                        const score = 500 - distFromCamCenter;
+                        shutterCandidates.push({ el: b, score, pos: centerOf(b) });
+                    }
+                }
+
+                shutterCandidates.sort((a, b) => b.score - a.score);
+                if (shutterCandidates.length > 0) {
+                    shutterBtn = shutterCandidates[0].pos;
+                } else if (tooltipEl) {
+                    const tr = tooltipEl.getBoundingClientRect();
+                    shutterBtn = { x: Math.round(tr.left + tr.width / 2), y: Math.round(tr.bottom + 42), w: 68, h: 68 };
+                } else if (videos.length > 0) {
+                    shutterBtn = { x: Math.round(camCenterX), y: Math.round(cameraRect.bottom - 65), w: 68, h: 68 };
+                }
+
+                if (videos.length > 0 || shutterBtn) {
+                    return {
+                        state: 'CAMERA_READY',
+                        shutter_coords: shutterBtn || { x: Math.round(camCenterX), y: 797 },
+                        video_active: videos.length > 0,
+                    };
+                }
+
+                // 6. Check if a Chat conversation is open (chat message input visible in center panel)
+                const chatInput = Array.from(document.querySelectorAll('input[placeholder*="Send a chat" i], textarea[placeholder*="Send a chat" i], [contenteditable="true"]')).find(el => {
+                    if (!isVisible(el)) return false;
+                    return el.getBoundingClientRect().left > 340;
+                });
+                if (chatInput) {
+                    return { state: 'CHAT_OPEN' };
+                }
+
+                // 7. Check if left conversation sidebar is visible (HOME_NO_CAMERA)
+                const hasConvoList = document.querySelectorAll('[role="listitem"], [aria-label*="Chat" i], input[placeholder*="Search" i]').length > 0;
+                if (hasConvoList) {
+                    // Find center camera activator button if present
+                    let camOpenCoords = { x: Math.round(vw * 0.52), y: Math.round(vh * 0.52) };
+                    for (const b of allBtns) {
+                        const r = b.getBoundingClientRect();
+                        if (r.left > 350 && r.left < vw * 0.75 && r.top > vh * 0.3 && r.top < vh * 0.85) {
+                            camOpenCoords = centerOf(b);
+                            break;
+                        }
+                    }
+                    return { state: 'HOME_NO_CAMERA', camera_open_coords: camOpenCoords };
+                }
+
+                return { state: 'LOADING' };
+            }"""
         )
+        if "accounts.snapchat.com" in url.lower() or "/login" in url.lower():
+            info["state"] = "LOGIN_REQUIRED"
+        info["url"] = url
+        _execution_state["screen_state"] = info.get("state", "UNKNOWN")
+        return info
     except Exception as ex:
-        _log(f"  Navigation error: {ex}", emit)
-        return False
-
-    # Wait up to 15s to check page authentication state
-    deadline = time.time() + 15
-    while time.time() < deadline:
-        url = page.url
-        _log(f"  URL: {url}", emit)
-
-        # Definitively unauthenticated landing pages
-        if any(x in url for x in [
-            "accounts.snapchat.com",
-            "/accounts/login",
-            "snapchat.com/login",
-            "original_referrer",
-        ]) and "/web" not in url:
-            await _take_screenshot(page, "unauthenticated")
-            _log("  → Not logged in (redirected away from web app).", emit)
-            return False
-
-        # Authenticated — stayed on Snapchat Web interface
-        if any(x in url for x in ["web.snapchat.com", "snapchat.com/web"]):
-            # Check for chat UI / navigation bar
-            try:
-                el = await page.query_selector(
-                    '[data-testid="chat-list-header"], '
-                    '[aria-label="Chats"], '
-                    '[data-testid="nav-item-chat"], '
-                    '[data-testid="search-input"], '
-                    'input[placeholder*="Search" i]'
-                )
-                if el:
-                    await _take_screenshot(page, "logged_in")
-                    _log("  → Chat UI detected — logged in ✓", emit)
-                    return True
-            except Exception:
-                pass
-
-        await asyncio.sleep(1.5)
-
-    # If still on /web after 15s and not on accounts page, proceed
-    if any(x in page.url for x in ["web.snapchat.com", "snapchat.com/web"]):
-        await _take_screenshot(page, "logged_in_web")
-        _log("  → On web interface — proceeding as logged in ✓", emit)
-        return True
-
-    await _take_screenshot(page, "timeout")
-    _log(f"  → Timed out. Final URL: {page.url}", emit)
-    return False
+        return {"state": "UNKNOWN", "url": getattr(page, "url", ""), "error": str(ex)}
 
 
+async def inspect_element_at_point(page, x: int, y: int) -> dict:
+    """
+    Inspect the DOM element at viewport coordinates (x, y) for Smart Macro Recording.
+    Returns human-readable label, CSS selector, text, aria-label, and relative coordinates.
+    """
+    vw, vh = VIEWPORT["width"], VIEWPORT["height"]
+    fallback = {
+        "x": x,
+        "y": y,
+        "rx": round(x / vw, 4),
+        "ry": round(y / vh, 4),
+        "label": f"Click at ({x}, {y})",
+        "selector": "",
+        "text": "",
+        "ariaLabel": "",
+        "tagName": "div",
+    }
+    if not page:
+        return fallback
 
-# ---------------------------------------------------------------------------
-# Actively Verified 6-Step Streak Workflow
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Actively Verified Streak Workflow (Strict Recipient Whitelist & Blacklist)
-# ---------------------------------------------------------------------------
-FORBIDDEN_RECIPIENT_KEYWORDS = [
-    "spotlight", "my story", "mystory", "stories", "add to story", "post to story",
-    "my ai", "myai", "group", "sexy hot joyful men", "groups", "everyone", "all friends",
-    "brandon ta", "krysta swanson"
-]
-
-def _get_friend_search_terms(friend: str) -> tuple[str, list[str]]:
-    raw = friend.strip().lstrip("@")
-    import re
-    core = re.sub(r'[^a-zA-Z0-9]', '', raw).strip()
-    query = core if len(core) >= 3 else raw
-    patterns = [raw.lower()]
-    if core:
-        patterns.append(core.lower())
-    return query, patterns
-
-
-def is_strict_friend_match(text: str, friend: str) -> bool:
-    if not text or not friend:
-        return False
-    import re
-    # Clean text: take only primary line before newline, separator, or snippet
-    primary_text = text.strip().split("\n")[0].split("·")[0].split("-")[0].strip()
-    clean_target = re.sub(r'[^a-zA-Z0-9]', '', friend).lower()
-    clean_text = re.sub(r'[^a-zA-Z0-9]', '', primary_text).lower()
-
-    for fs in FORBIDDEN_RECIPIENT_KEYWORDS:
-        if fs in primary_text.lower():
-            return False
-
-    if not clean_target or not clean_text:
-        return False
-
-    # Exact normalized token match
-    if clean_text == clean_target:
-        return True
-
-    if clean_target == "dylan":
-        return clean_text == "dylan"
-    if clean_target == "eric":
-        return clean_text == "eric" or "*//eric" in primary_text.lower() or "//eric" in primary_text.lower()
-
-    return clean_text == clean_target
-
-
-async def uncheck_unauthorized_recipients(page: Page, allowed_friends: list[str], emit: Callable[[str], None] | None = None):
-    """Safety pass: Unchecks Spotlight, My Story, or any contact not in allowed_friends."""
     try:
-        # Only query checkboxes inside the main camera / send-to area (x > 340, excluding extension HUD)
-        checked_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
-        for cb in checked_boxes:
-            try:
-                # Check bounding box to ensure it's in the Send-To drawer
-                box = await cb.bounding_box()
-                if not box or box["x"] <= 340 or box["x"] > 1050 or box["width"] == 0:
-                    continue
+        meta = await page.evaluate(
+            """({x, y}) => {
+                const vw = window.innerWidth || 1440;
+                const vh = window.innerHeight || 900;
+                const el = document.elementFromPoint(x, y);
+                if (!el) return null;
+                const target = el.closest('button, a, [role="button"], [role="listitem"], [role="checkbox"], input') || el;
+                const tag = (target.tagName || 'div').toLowerCase();
+                const text = (target.innerText || target.textContent || '').trim().split('\\n')[0].slice(0, 50);
+                const aria = (target.getAttribute('aria-label') || target.getAttribute('title') || target.getAttribute('placeholder') || '').trim();
+                let selector = '';
+                if (target.id) {
+                    selector = '#' + CSS.escape(target.id);
+                } else if (aria) {
+                    selector = `${tag}[aria-label=${JSON.stringify(aria)}]`;
+                } else if (target.getAttribute('data-testid')) {
+                    selector = `[data-testid=${JSON.stringify(target.getAttribute('data-testid'))}]`;
+                }
+                let label = aria || text || `${tag.toUpperCase()} at (${x}, ${y})`;
+                if (label.length > 48) label = label.slice(0, 48) + '…';
+                return {
+                    x,
+                    y,
+                    rx: Number((x / vw).toFixed(4)),
+                    ry: Number((y / vh).toFixed(4)),
+                    label: `Click "${label}"`,
+                    selector,
+                    text,
+                    ariaLabel: aria,
+                    tagName: tag
+                };
+            }""",
+            {"x": x, "y": y},
+        )
+        return meta or fallback
+    except Exception:
+        return fallback
 
-                # Ensure it's not part of the extension HUD
-                is_in_hud = await cb.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
-                if is_in_hud:
-                    continue
 
-                parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
-                row_text = ""
-                if parent:
-                    row_text = ((await parent.as_element().text_content()) or "").strip()
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. STEP-BY-STEP ACTIONS & MANDATORY SAFETY AUDIT
+# ─────────────────────────────────────────────────────────────────────────────
 
-                is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
-                matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
+async def audit_and_sanitize_drawer_selections(page, allowed_friends: list[str], emit: Callable | None = None) -> dict:
+    """
+    Scan the open Send-To drawer for any checked recipients.
+    Forcibly uncheck any forbidden target (My AI, My Story, Spotlight, Team Snapchat, etc.).
+    Returns {'valid_selected': [...], 'unselected_forbidden': [...]}.
+    """
+    if not page:
+        return {"valid_selected": [], "unselected_forbidden": []}
 
-                if is_forbidden or (row_text and not matches_allowed):
-                    _log(f"  🛑 Safety Guard: Unchecking unauthorized target: '{row_text[:35]}'", emit)
-                    try:
-                        await cb.evaluate("el => { el.checked = false; el.setAttribute('aria-checked', 'false'); el.dispatchEvent(new Event('change', { bubbles: true })); el.click(); }")
-                    except Exception:
-                        await cb.click(timeout=1500)
-                    await asyncio.sleep(0.3)
-            except Exception:
-                pass
+    try:
+        result = await page.evaluate(
+            """({allowedFriends, forbiddenList}) => {
+                const isVisible = (el) => {
+                    if (!el || el.closest('#snapstreak-hud-host')) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 4 && r.height > 4;
+                };
+                const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const allowedNorms = (allowedFriends || []).map(norm).filter(Boolean);
+
+                const validSelected = [];
+                const unselectedForbidden = [];
+
+                // Find all rows in the Send-To drawer (x > 340) that appear selected/checked
+                const rows = Array.from(document.querySelectorAll('li, [role="listitem"], [role="option"], [role="row"]')).filter(r => {
+                    if (!isVisible(r)) return false;
+                    const box = r.getBoundingClientRect();
+                    return box.left > 340 && box.height >= 28 && box.height <= 110;
+                });
+
+                for (const row of rows) {
+                    const text = (row.innerText || row.textContent || '').trim().split('\\n')[0].trim();
+                    const lower = text.toLowerCase();
+                    const hasChecked = !!(
+                        row.querySelector('[aria-checked="true"], input[type="checkbox"]:checked') ||
+                        row.getAttribute('aria-checked') === 'true' ||
+                        row.getAttribute('aria-selected') === 'true'
+                    );
+
+                    // Also detect blue/filled SVG checkmark inside row right side
+                    let svgChecked = false;
+                    const svgs = row.querySelectorAll('svg');
+                    for (const svg of svgs) {
+                        const sr = svg.getBoundingClientRect();
+                        if (sr.left > row.getBoundingClientRect().left + 120) {
+                            const style = window.getComputedStyle(svg);
+                            const fill = (svg.getAttribute('fill') || style.fill || '').toLowerCase();
+                            const color = (style.color || '').toLowerCase();
+                            if (fill.includes('11, 173, 255') || fill.includes('0badff') || color.includes('11, 173, 255')) {
+                                svgChecked = true;
+                            }
+                        }
+                    }
+
+                    if (!hasChecked && !svgChecked) continue;
+
+                    const isForbidden = forbiddenList.some(f => lower.includes(f));
+                    if (isForbidden) {
+                        row.click();
+                        unselectedForbidden.push(text || 'Forbidden Target');
+                    } else {
+                        validSelected.push(text || 'Recipient');
+                    }
+                }
+
+                return { valid_selected: validSelected, unselected_forbidden: unselectedForbidden };
+            }""",
+            {"allowedFriends": allowed_friends, "forbiddenList": FORBIDDEN_TARGETS},
+        )
+        for bad in result.get("unselected_forbidden", []):
+            log("WARN", f"  🛡️ Safety Guard: Unchecked forbidden recipient '{bad}'!", emit)
+        return result
     except Exception as ex:
-        _log(f"  Notice checking unauthorized recipients: {ex}", emit)
+        logger.debug(f"Safety audit notice: {ex}")
+        return {"valid_selected": [], "unselected_forbidden": []}
 
 
-async def read_and_audit_selected_recipients(
-    page: Page,
-    allowed_friends: list[str],
-    emit: Callable[[str], None] | None = None
+async def select_friends_in_drawer(
+    page,
+    friends: list[str],
+    selection_method: str = "direct",
+    shortcut_name: str = "Streaks",
+    emit: Callable | None = None,
 ) -> list[str]:
     """
-    Scans and audits all selected recipients on the Send-To drawer.
-    Unchecks and removes any non-whitelisted friend, group, or story.
-    Logs the verified selection before send.
-    Aborts if count is 0 or unauthorized recipients remain.
+    Select target recipients inside the open Send-To drawer using:
+      - 'direct': Search/scan each friend in `friends` list and click their row in the drawer
+      - 'shortcut': Click the user's custom Shortcut pill (excluding 'Groups') + 'Select All'
+      - 'auto': Try direct friend matching first, plus shortcut if configured
     """
-    _log("📋 [AUDIT] Reading and verifying selected recipients before sending...", emit)
-    try:
-        # Step A: Audit checked checkboxes strictly inside the send drawer
-        checked_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
-        removed_count = 0
-        for cb in checked_boxes:
-            try:
-                box = await cb.bounding_box()
-                if not box or box["x"] <= 340 or box["x"] > 1050 or box["width"] == 0:
-                    continue
+    selected: list[str] = []
 
-                is_in_hud = await cb.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
-                if is_in_hud:
-                    continue
+    if selection_method in ("shortcut", "auto"):
+        try:
+            shortcut_res = await page.evaluate(
+                """({shortcutName, forbiddenList}) => {
+                    const isVisible = (el) => {
+                        if (!el || el.closest('#snapstreak-hud-host')) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 8 && r.height > 8;
+                    };
+                    const targetLower = (shortcutName || 'streaks').trim().toLowerCase();
+                    const ignoredPills = ['all', 'recents', 'groups', 'best friends', 'contacts', 'following', 'friends'];
 
-                parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
-                row_text = ""
-                if parent:
-                    row_text = ((await parent.as_element().text_content()) or "").strip()
+                    const pills = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]')).filter(el => {
+                        if (!isVisible(el)) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.left > 340 && r.top >= 80 && r.top <= 340 && r.height <= 52;
+                    });
 
-                is_forbidden = any(k in row_text.lower() for k in FORBIDDEN_RECIPIENT_KEYWORDS)
-                matches_allowed = any(is_strict_friend_match(row_text, f) for f in allowed_friends)
+                    let matchedPill = null;
+                    for (const p of pills) {
+                        const txt = (p.innerText || p.textContent || '').trim();
+                        const lower = txt.toLowerCase();
+                        if (!txt || forbiddenList.some(f => lower.includes(f))) continue;
+                        if (lower === targetLower || lower.includes(targetLower) || /\\p{Emoji_Presentation}/u.test(txt)) {
+                            if (!ignoredPills.includes(lower)) {
+                                matchedPill = p;
+                                break;
+                            }
+                        }
+                    }
 
-                if is_forbidden or (row_text and not matches_allowed):
-                    _log(f"  🛑 [AUDIT REJECT] Unchecking unauthorized recipient: '{row_text[:35]}'", emit)
-                    try:
-                        await cb.evaluate("el => { el.checked = false; el.setAttribute('aria-checked', 'false'); el.dispatchEvent(new Event('change', { bubbles: true })); el.click(); }")
-                    except Exception:
-                        await cb.click(timeout=1500)
-                    removed_count += 1
-                    await asyncio.sleep(0.3)
-            except Exception:
-                pass
+                    if (!matchedPill) return { clicked_shortcut: false };
+                    matchedPill.click();
+                    return { clicked_shortcut: true, pill_text: (matchedPill.innerText || '').trim() };
+                }""",
+                {"shortcutName": shortcut_name, "forbiddenList": FORBIDDEN_TARGETS},
+            )
+            if shortcut_res and shortcut_res.get("clicked_shortcut"):
+                log("INFO", f"  ✨ Clicked Shortcut pill '{shortcut_res.get('pill_text')}'", emit)
+                await asyncio.sleep(0.6)
+                sel_all = await page.evaluate(
+                    """() => {
+                        const btns = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+                        for (const b of btns) {
+                            if (b.closest('#snapstreak-hud-host')) continue;
+                            const r = b.getBoundingClientRect();
+                            if (r.left < 340 || r.width <= 0) continue;
+                            const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                            if (t === 'select all') {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }"""
+                )
+                if sel_all:
+                    log("INFO", "  ✓ Clicked 'Select All' inside shortcut.", emit)
+                    await asyncio.sleep(0.5)
+                    audit = await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+                    if audit.get("valid_selected"):
+                        return audit["valid_selected"]
+        except Exception as ex:
+            logger.debug(f"Shortcut selection notice: {ex}")
 
-        # Step B: Audit recipient chips strictly inside the send drawer
-        chips = await page.query_selector_all('[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i], div[class*="chip" i]:has(button)')
-        for chip in chips:
-            try:
-                box = await chip.bounding_box()
-                if not box or box["x"] <= 340 or box["x"] > 1050:
-                    continue
-                is_in_hud = await chip.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
-                if is_in_hud:
-                    continue
-
-                chip_text = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
-                if not chip_text:
-                    continue
-                if not any(is_strict_friend_match(chip_text, f) for f in allowed_friends):
-                    _log(f"  🛑 [AUDIT REJECT] Removing unauthorized chip: '{chip_text[:35]}'", emit)
-                    close_btn = await chip.query_selector("button, svg, [role='button']")
-                    if close_btn:
-                        await close_btn.click(timeout=1500)
-                    else:
-                        await chip.click(timeout=1500)
-                    removed_count += 1
-                    await asyncio.sleep(0.3)
-            except Exception:
-                pass
-
-        if removed_count > 0:
-            _log(f"  🧹 Removed {removed_count} unauthorized recipient(s). Re-auditing...", emit)
-            await asyncio.sleep(0.4)
-
-        # Step C: Re-read final list of selected recipients
-        final_boxes = await page.query_selector_all('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]')
-        verified = set()
-        for cb in final_boxes:
-            try:
-                box = await cb.bounding_box()
-                if not box or box["x"] <= 340 or box["x"] > 1050 or box["width"] == 0:
-                    continue
-                is_in_hud = await cb.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
-                if is_in_hud:
-                    continue
-                parent = await cb.evaluate_handle('el => el.closest("div[role=\'row\'], div[role=\'listitem\'], li, div")')
-                if parent:
-                    txt = ((await parent.as_element().text_content()) or "").strip()
-                    if txt:
-                        clean_line = txt.split("\n")[0].split("·")[0].strip()
-                        if any(is_strict_friend_match(clean_line, f) for f in allowed_friends):
-                            verified.add(clean_line)
-            except Exception:
-                pass
-
-        final_chips = await page.query_selector_all('[data-testid*="recipient-chip" i], [data-testid*="selected-recipient" i]')
-        for chip in final_chips:
-            try:
-                box = await chip.bounding_box()
-                if not box or box["x"] <= 340 or box["x"] > 1050:
-                    continue
-                is_in_hud = await chip.evaluate("el => Boolean(el.closest('#snapstreak-shadow-host, #snapstreak-hud, [id*=\"snapstreak\"]'))")
-                if is_in_hud:
-                    continue
-                c_txt = ((await chip.text_content()) or "").strip().replace("✕", "").replace("x", "").strip()
-                if c_txt and any(is_strict_friend_match(c_txt, f) for f in allowed_friends):
-                    verified.add(c_txt)
-            except Exception:
-                pass
-
-        verified_list = list(verified)
-        _log(f"📋 [VERIFIED RECIPIENTS BEFORE SEND] Ready to send to ({len(verified_list)}): {verified_list}", emit)
-
-        # Step D: Safety Gate
-        if not verified_list:
-            _log("🛑 [SAFETY ABORT] Zero recipients selected! Send aborted.", emit)
-            raise RuntimeError("Zero recipients selected before final send.")
-
-        for rec in verified_list:
-            if not any(is_strict_friend_match(rec, f) for f in allowed_friends):
-                _log(f"🛑 [SAFETY ABORT] Recipient '{rec}' is NOT authorized! Send aborted.", emit)
-                raise RuntimeError(f"Unauthorized recipient '{rec}' detected before send.")
-
-        return verified_list
-    except Exception as ex:
-        if isinstance(ex, RuntimeError):
-            raise
-        _log(f"  🛑 [SAFETY ABORT] Recipient audit failed: {ex}. Send aborted.", emit)
-        raise RuntimeError(f"Recipient audit failed: {ex}")
-
-
-async def send_streaks_direct_selection_flow(
-    page: Page,
-    friends: list[str],
-    step_delay: float = 4.0,
-    emit: Callable[[str], None] | None = None,
-) -> bool:
-    """
-    Strict recipient selection:
-    Searches for and selects each friend directly on the Send-To modal.
-    STRICTLY forbids Spotlight, My Story, and non-whitelisted groups/contacts!
-    """
-    _log(f"📋 [Strict Selection] Targeting {len(friends)} friends: {friends}...", emit)
-    selected_count = 0
-
-    # Safety pass before selection
-    await uncheck_unauthorized_recipients(page, friends, emit=emit)
-
-    search_selectors = [
-        'input[placeholder*="To:" i]',
-        'input[placeholder*="Send to" i]',
-        'input[placeholder*="Search" i]',
-        '[data-testid="send-to-search-input"]',
-        'div[role="dialog"] input[type="text"]',
-        'input[type="text"]',
-    ]
-
+    # Direct selection: for each friend in `friends`, click their row directly if visible in the drawer,
+    # or type their name into the drawer's Search input and click the matching row.
     for friend in friends:
-        query_term, match_patterns = _get_friend_search_terms(friend)
-        _log(f"  Targeting friend: '{friend}' (Query: '{query_term}')...", emit)
-        friend_selected = False
-
-        # 1. Check if already visible in Recents / Best Friends on the modal
-        for pat in match_patterns:
-            import re
-            escaped_pat = re.escape(pat)
-            try:
-                candidates = page.locator(f':text-matches("{escaped_pat}", "i")')
-                count = await candidates.count()
-                for i in range(count):
-                    loc = candidates.nth(i)
-                    if await loc.is_visible(timeout=400):
-                        txt = (await loc.text_content() or "").strip().lower()
-                        if any(k in txt for k in FORBIDDEN_RECIPIENT_KEYWORDS):
-                            continue
-                        box = await loc.bounding_box()
-                        if box and box["x"] > 340:
-                            # Avoid clicking row if it is already checked!
-                            chk = loc.locator('input[type="checkbox"], [role="checkbox"]').first
-                            if await chk.count() > 0 and await chk.is_visible(timeout=200):
-                                is_aria_checked = await chk.get_attribute("aria-checked")
-                                is_chk_checked = await chk.is_checked() if await chk.evaluate("el => el.tagName === 'INPUT'") else False
-                                if is_aria_checked == "true" or is_chk_checked:
-                                    _log(f"  ✓ '{friend}' is already checked in visible rows.", emit)
-                                    friend_selected = True
-                                    selected_count += 1
-                                    break
-                            await loc.click()
-                            _log(f"  ✓ Clicked visible row for '{friend}'.", emit)
-                            friend_selected = True
-                            selected_count += 1
-                            await asyncio.sleep(0.5)
-                            break
-                if friend_selected:
-                    break
-            except Exception:
-                pass
-
-        if friend_selected:
+        if await _check_pause_or_stop(emit):
+            break
+        friend_clean = friend.strip()
+        if not friend_clean:
+            continue
+        if any(f in friend_clean.lower() for f in FORBIDDEN_TARGETS):
+            log("WARN", f"  🛡️ Skipping forbidden target '{friend_clean}'", emit)
             continue
 
-        # 2. Search for the friend in the Send-To search bar
-        search_box = None
-        for sel in search_selectors:
-            try:
-                boxes = page.locator(sel)
-                cnt = await boxes.count()
-                for i in range(cnt):
-                    b = boxes.nth(i)
-                    if await b.is_visible(timeout=300):
-                        bbox = await b.bounding_box()
-                        if bbox and bbox["x"] > 340:  # In main modal area
-                            search_box = b
-                            break
-                if search_box:
-                    break
-            except Exception:
-                pass
+        # 1. Try clicking row directly in the visible Send-To list without searching first
+        direct_hit = await page.evaluate(
+            """(targetName) => {
+                const isVisible = (el) => {
+                    if (!el || el.closest('#snapstreak-hud-host')) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 20 && r.height >= 24 && r.height <= 110 && r.left > 340;
+                };
+                const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const tLower = targetName.toLowerCase();
+                const tNorm = norm(targetName);
 
-        if search_box:
-            try:
-                await search_box.click()
-                await search_box.fill("")
-                await page.keyboard.type(query_term, delay=60)
-                await asyncio.sleep(1.0)
+                const rows = Array.from(document.querySelectorAll('li, [role="listitem"], [role="option"], [role="row"], div')).filter(el => {
+                    if (!isVisible(el)) return false;
+                    const r = el.getBoundingClientRect();
+                    // Must look like a single recipient row inside the center drawer
+                    return r.width >= 180 && r.width <= 620 && r.height >= 36 && r.height <= 88 && r.top > 150 && r.top < 820;
+                });
 
-                # Look for matching search result row containing target patterns
-                for pat in match_patterns:
-                    import re
-                    escaped_pat = re.escape(pat)
-                    try:
-                        results = page.locator(f'div[role="row"]:has-text("{pat}"), div[role="button"]:has-text("{pat}"), li:has-text("{pat}"), div:has-text("{pat}")')
-                        rcnt = await results.count()
-                        for i in range(rcnt):
-                            res = results.nth(i)
-                            if await res.is_visible(timeout=500):
-                                txt = (await res.text_content() or "").strip().lower()
-                                if any(k in txt for k in FORBIDDEN_RECIPIENT_KEYWORDS):
-                                    continue
-                                rbox = await res.bounding_box()
-                                if rbox and rbox["x"] > 340:
-                                    # Target checkbox inside or click the row
-                                    chk = res.locator('input[type="checkbox"], [role="checkbox"]').first
-                                    if await chk.is_visible(timeout=300):
-                                        if await chk.is_checked():
-                                            _log(f"  ✓ '{friend}' is already checked in search results.", emit)
-                                        else:
-                                            await chk.click()
-                                    else:
-                                        await res.click()
-                                    _log(f"  ✓ Selected '{friend}' via verified search result.", emit)
-                                    friend_selected = True
-                                    selected_count += 1
-                                    await asyncio.sleep(0.5)
-                                    break
-                        if friend_selected:
-                            break
-                    except Exception:
-                        pass
-
-                # Clear search input for next friend
-                await search_box.fill("")
-                await asyncio.sleep(0.3)
-            except Exception as ex:
-                _log(f"  ⚠ Notice searching '{friend}': {ex}", emit)
-
-        if not friend_selected:
-            _log(f"  ⚠ Could not find verified match for '{friend}' — SKIPPING to prevent wrong delivery.", emit)
-
-    # Post-selection safety uncheck pass
-    await uncheck_unauthorized_recipients(page, friends, emit=emit)
-
-    _log(f"  Finished direct selection ({selected_count}/{len(friends)} target friends chosen).", emit)
-    return selected_count > 0
-
-
-# ---------------------------------------------------------------------------
-# Screen State Detection & Step-by-Step Matcher
-# ---------------------------------------------------------------------------
-SCREEN_STATES = {
-    "UNKNOWN": "UNKNOWN",
-    "HOME": "HOME",
-    "CAMERA_READY": "CAMERA_READY",
-    "PHOTO_CAPTURED": "PHOTO_CAPTURED",
-    "SEND_TO_DRAWER": "SEND_TO_DRAWER",
-    "RECIPIENTS_SELECTED": "RECIPIENTS_SELECTED",
-    "SEND_COMPLETED": "SEND_COMPLETED",
-}
-
-
-def is_my_ai_locator(text: str = "", aria: str = "", testid: str = "") -> bool:
-    """Helper to detect and exclude My AI from recipient selections and clicks."""
-    t = f"{text} {aria} {testid}".lower()
-    return "my ai" in t or "myai" in t
-
-
-async def detect_screen_state(page: Page) -> str:
-    """
-    Detects the current screen state in Snapchat Web:
-    - SEND_TO_DRAWER / RECIPIENTS_SELECTED: drawer/search input open or tabs visible.
-      If final Send button is visible, returns RECIPIENTS_SELECTED.
-    - PHOTO_CAPTURED: Send-To button visible on photo preview, shutter not visible.
-    - CAMERA_READY: Shutter button or webcam viewfinder active, no chat open.
-    - HOME: Main logo or home menu visible, camera viewfinder not active.
-    - UNKNOWN.
-    """
-    try:
-        # 1. Check if Send-To drawer or modal is open (must be in main area, not left sidebar search)
-        drawer_selectors = [
-            '[data-testid="send-to-container"]',
-            '[data-testid="send-to-drawer"]',
-            '[data-testid="send-to-search-input"]',
-            'input[placeholder*="To:" i]',
-            'input[placeholder*="Send to" i]',
-            'div[role="dialog"] input',
-        ]
-        has_drawer = False
-        for sel in drawer_selectors:
-            try:
-                loc = page.locator(sel).first
-                if await loc.is_visible(timeout=200):
-                    box = await loc.bounding_box()
-                    if box and box["x"] > 340:
-                        has_drawer = True
-                        break
-            except Exception:
-                pass
-
-        if has_drawer:
-            # Check if final Send button is visible (meaning recipients are selected)
-            send_btn_selectors = [
-                '[data-testid="send-button"]',
-                '[data-testid="send-snap"]',
-                '[aria-label*="Send Snap" i]',
-                '[aria-label="Send" i]',
-                'button:has-text("Send ▶")',
-            ]
-            for ssel in send_btn_selectors:
-                try:
-                    loc = page.locator(ssel).first
-                    if await loc.is_visible(timeout=200):
-                        box = await loc.bounding_box()
-                        # Must be inside camera/drawer area, NOT inside SnapStreak HUD (x > 1050 or top dock)
-                        if box and 340 < box["x"] < 1050 and box["y"] > 80:
-                            txt = (await loc.text_content() or "").strip().lower()
-                            aria = (await loc.get_attribute("aria-label") or "").strip().lower()
-                            if "send to" not in txt and "send to" not in aria and "streaks" not in txt:
-                                return SCREEN_STATES["RECIPIENTS_SELECTED"]
-                except Exception:
-                    pass
-            return SCREEN_STATES["SEND_TO_DRAWER"]
-
-        # 2. Check if Photo is captured (Send-To button on photo preview)
-        send_to_selectors = [
-            'button:has-text("Send To")',
-            'button:has-text("Send to")',
-            '[aria-label*="Send To" i]',
-            '[data-testid="send-to-button"]',
-        ]
-        for st_sel in send_to_selectors:
-            try:
-                if await page.locator(st_sel).first.is_visible(timeout=250):
-                    return SCREEN_STATES["PHOTO_CAPTURED"]
-            except Exception:
-                pass
-
-        # 3. Check if Camera Viewfinder is active (Webcam stream or shutter visible)
-        shutter_selectors = [
-            'button[aria-label*="Take Snap" i]',
-            'button[aria-label*="Take a Snap" i]',
-            'button[aria-label*="Hold to record" i]',
-            'button[aria-label*="Capture" i]',
-            'button[aria-label*="Take Photo" i]',
-            'button[aria-label*="Shutter" i]',
-            'button.camera-capture-button',
-            '[data-testid="camera-capture-button"]',
-            '[data-testid="shutter-button"]',
-            'button:has(svg circle)',
-        ]
-        for shut_sel in shutter_selectors:
-            try:
-                if await page.locator(shut_sel).first.is_visible(timeout=250):
-                    return SCREEN_STATES["CAMERA_READY"]
-            except Exception:
-                pass
-
-        try:
-            video = page.locator("video").first
-            if await video.is_visible(timeout=200):
-                return SCREEN_STATES["CAMERA_READY"]
-        except Exception:
-            pass
-
-        # 4. Check if Home / Main Menu is active
-        home_selectors = [
-            'a[href*="/web"]',
-            '[data-testid="snapchat-logo"]',
-            '[aria-label*="Snapchat" i]',
-            'button:has-text("Click the Camera to send Snaps")',
-            'div:has-text("Click the Camera to send Snaps")',
-        ]
-        for h_sel in home_selectors:
-            try:
-                if await page.locator(h_sel).first.is_visible(timeout=250):
-                    return SCREEN_STATES["HOME"]
-            except Exception:
-                pass
-
-    except Exception as ex:
-        _log(f"  ⚠ Screen state detection warning: {ex}")
-
-    return SCREEN_STATES["UNKNOWN"]
-
-
-async def wait_for_screen_state(page: Page, expected_states: list[str], timeout_s: float = 3.5) -> tuple[bool, str]:
-    start = time.time()
-    while time.time() - start < timeout_s:
-        current = await detect_screen_state(page)
-        if current in expected_states:
-            return True, current
-        await asyncio.sleep(0.2)
-    current = await detect_screen_state(page)
-    return current in expected_states, current
-
-
-async def execute_step_with_screen_verification(
-    page: Page,
-    step_index: int,
-    action_fn: Callable[[], any],
-    expected_states: list[str],
-    fallback_fn: Callable[[], any] | None = None,
-    max_retries: int = 2,
-    emit: Callable[[str], None] | None = None,
-) -> bool:
-    step_names = [
-        "Step 1: Return to Home Screen (Top-Left Snapchat Icon)",
-        "Step 2: Press Camera Option to Open Viewfinder",
-        "Step 3: Quick-Press White Shutter Circle",
-        "Step 4: Open Send-To Drawer & Select Recipients",
-        "Step 5: Click Final Send Button & Verify Delivery",
-    ]
-    name = step_names[step_index] if 0 <= step_index < len(step_names) else f"Step {step_index + 1}"
-    _log(f"🎬 [SCREEN CHECK] Starting {name}...", emit)
-
-    for attempt in range(1, max_retries + 2):
-        # Execute primary action
-        await action_fn()
-
-        # Verify screen state matches expected state
-        matched, current = await wait_for_screen_state(page, expected_states, timeout_s=3.2)
-        if matched:
-            _log(f"  ✓ [SCREEN MATCH] Screen state verified as '{current}' for {name}!", emit)
-            return True
-
-        _log(
-            f"  ⚠ [SCREEN MISMATCH] Expected [{'|'.join(expected_states)}], but screen shows '{current}' (Attempt {attempt}/{max_retries + 1}).",
-            emit,
+                for (const row of rows) {
+                    const lines = (row.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+                    if (!lines.length) continue;
+                    const primary = lines[0];
+                    const pLower = primary.toLowerCase();
+                    const pNorm = norm(primary);
+                    if (pLower === tLower || (tNorm.length >= 3 && pNorm === tNorm)) {
+                        const r = row.getBoundingClientRect();
+                        return { found: true, name: primary, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                    }
+                }
+                return { found: false };
+            }""",
+            friend_clean,
         )
 
-        if attempt <= max_retries:
-            _log("  ↺ Falling back to previous step(s) to recover expected screen...", emit)
-            if fallback_fn:
-                await fallback_fn()
-                await asyncio.sleep(1.0)
-
-    _log(f"  ❌ [SCREEN ERROR] Failed to match expected screen for {name} after {max_retries + 1} attempts.", emit)
-    return False
-
-
-async def send_streaks_flow(
-    page: Page,
-    friends: list[str] | None = None,
-    selection_method: str = "auto",
-    is_test: bool = False,
-    emit: Callable[[str], None] | None = None,
-) -> dict:
-    """
-    Complete verified streak automation flow with screen state matching
-    and automatic previous-step fallback recovery.
-    """
-    cfg = config.load()
-    if not friends:
-        friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
-    if not selection_method:
-        selection_method = cfg.get("selection_method", "auto")
-    step_delay = float(cfg.get("step_delay", 4.0))
-
-    _log(f"🚀 Starting Verified Streak Flow with Screen State Matching (Method: {selection_method.upper()}, Friends: {friends})...", emit)
-    results = {friend: "pending" for friend in friends}
-
-    # Close all other tabs/pages so that only current active run is on
-    if page.context and len(page.context.pages) > 1:
-        for p in list(page.context.pages):
-            if p != page:
-                try:
-                    await p.close()
-                except Exception:
-                    pass
-        _log("  ✓ Closed all other browser pages — only active run page remains.", emit)
-
-    # Helper Step 0/1: Return Home Action
-    async def step0_return_home():
-        await _dismiss_banners_and_reset(page, emit)
-        cur = await detect_screen_state(page)
-        if cur in [SCREEN_STATES["CAMERA_READY"], SCREEN_STATES["PHOTO_CAPTURED"]]:
-            _log("  ✓ Already on camera/captured view; skipping home reset to preserve state.", emit)
-            return
-
-        # Check if chat back button exists and click it
-        for back_sel in ['button[aria-label*="Back" i]', '[data-testid="chat-back-button"]']:
-            try:
-                b = page.locator(back_sel).first
-                if await b.is_visible(timeout=500):
-                    await b.click()
-                    await asyncio.sleep(0.5)
-                    break
-            except Exception:
-                pass
-
-        try:
-            # Avoid clicking a[href*="/web"] which triggers full page reload in Snapchat Web!
-            ghost = page.locator('button[aria-label*="Snapchat" i], [data-testid="snapchat-logo"]').first
-            if await ghost.is_visible(timeout=800):
-                await ghost.click()
-            else:
-                await asyncio.sleep(0.5)
-        except Exception:
-            await asyncio.sleep(0.5)
-
-    # ── Step 1: Return to Home Screen (Top-Left Snapchat Icon) ───────────────
-    step1_ok = await execute_step_with_screen_verification(
-        page,
-        0,
-        step0_return_home,
-        [SCREEN_STATES["HOME"], SCREEN_STATES["CAMERA_READY"]],
-        fallback_fn=step0_return_home,
-        emit=emit,
-    )
-    if not step1_ok:
-        _log("  Notice: Proceeding to camera check...", emit)
-    await _take_screenshot(page, "step0_verified_home")
-    await asyncio.sleep(step_delay if not is_test else 0.5)
-
-    # Helper Step 1/2: Press Camera Option Action
-    async def step1_open_camera():
-        # Check if already on camera viewfinder before attempting clicks
-        cur = await detect_screen_state(page)
-        if cur == SCREEN_STATES["CAMERA_READY"]:
-            _log("  ✓ Already on camera viewfinder! Proceeding directly to capture without extra clicks.", emit)
-            return
-
-        _log("Step 2: Pressing camera option to open viewfinder...", emit)
-        for sel in [
-            'button:has-text("Click the Camera to send Snaps")',
-            'div:has-text("Click the Camera to send Snaps")',
-            '[aria-label*="Click the Camera" i]',
-            'button[aria-label*="Camera" i]',
-            'div[role="button"][aria-label*="Camera" i]',
-            'a[aria-label*="Camera" i]',
-            '[data-testid="camera-open-button"]',
-            '[data-testid="navigation-camera"]',
-            '[data-testid*="camera" i]',
-            'a[href*="/camera" i]',
-            '.camera-icon',
-        ]:
-            try:
-                loc = page.locator(sel).first
-                if await loc.is_visible(timeout=800):
-                    await loc.click()
-                    _log("  ✓ Clicked camera option in main menu!", emit)
-                    return
-            except Exception:
-                continue
-        await page.mouse.click(600, 450)
-
-    # ── Step 2: Press Camera Option to Open Viewfinder ────────────────────────
-    async def step1_fallback():
-        # Fallback to previous step: Return Home first, then re-open camera
-        await step0_return_home()
-        await asyncio.sleep(1.0)
-
-    step2_ok = await execute_step_with_screen_verification(
-        page,
-        1,
-        step1_open_camera,
-        [SCREEN_STATES["CAMERA_READY"]],
-        fallback_fn=step1_fallback,
-        emit=emit,
-    )
-    if not step2_ok:
-        _log("⚠ Main Camera Viewfinder did not open — falling back to direct per-friend chat delivery...", emit)
-        for f in friends:
-            results[f] = await _send_to_friend(page, f, emit)
-        return results
-    await _take_screenshot(page, "step1_verified_camera_open")
-    await asyncio.sleep(step_delay if not is_test else 0.5)
-
-    # Helper Step 2/3: Snap Photo Action (Zero-Swipe Quick Tap)
-    async def step2_snap_photo():
-        # Deselect any active filter lens to re-center shutter
-        for rsel in ['button[aria-label*="Remove Lens" i]', 'button[aria-label*="Close" i]', '[data-testid*="remove-lens" i]']:
-            try:
-                rbtn = page.locator(rsel).first
-                if await rbtn.is_visible(timeout=400):
-                    await rbtn.click()
-                    await asyncio.sleep(0.3)
-                    break
-            except Exception:
-                pass
-
-        shutter_clicked = False
-        for shutter_sel in [
-            'button[aria-label*="Take Snap" i]',
-            'button[aria-label*="Take a Snap" i]',
-            'button[aria-label*="Hold to record" i]',
-            'button[aria-label*="Capture" i]',
-            'button[aria-label*="Take Photo" i]',
-            'button[aria-label*="Shutter" i]',
-            'button.camera-capture-button',
-            '[data-testid="camera-capture-button"]',
-            '[data-testid="shutter-button"]',
-            'button:has(svg circle)',
-        ]:
-            try:
-                btn = page.locator(shutter_sel).first
-                if await btn.is_visible(timeout=800):
-                    # Zero-swipe quick press: focus and direct click without mouse movement
-                    await btn.focus()
-                    await btn.evaluate("el => el.click()")
-                    shutter_clicked = True
-                    break
-            except Exception:
-                continue
-
-        if not shutter_clicked:
-            # Fallback: exact center tap at camera center bottom (zero horizontal delta)
-            try:
-                video = page.locator('video').first
-                if await video.is_visible(timeout=500):
-                    box = await video.bounding_box()
-                    if box:
-                        cx = box['x'] + box['width'] / 2
-                        cy = box['y'] + box['height'] - 50
-                        await page.mouse.click(cx, cy)
-            except Exception:
-                pass
-
-    # ── Step 3: Quick-Press White Shutter Circle ──────────────────────────────
-    async def step2_fallback():
-        # Fallback to previous step:
-        cur = await detect_screen_state(page)
-        if cur in (SCREEN_STATES["HOME"], SCREEN_STATES["UNKNOWN"]):
-            # Camera was closed, re-open camera
-            await step1_open_camera()
-            await asyncio.sleep(1.2)
-        else:
-            # Deselect any active filter lens
-            for rsel in ['button[aria-label*="Remove Lens" i]', 'button[aria-label*="Close" i]']:
-                try:
-                    rbtn = page.locator(rsel).first
-                    if await rbtn.is_visible(timeout=400):
-                        await rbtn.click()
-                        await asyncio.sleep(0.3)
-                        break
-                except Exception:
-                    pass
-
-    step3_ok = await execute_step_with_screen_verification(
-        page,
-        2,
-        step2_snap_photo,
-        [SCREEN_STATES["PHOTO_CAPTURED"], SCREEN_STATES["SEND_TO_DRAWER"]],
-        fallback_fn=step2_fallback,
-        emit=emit,
-    )
-    if not step3_ok:
-        _log("⚠ Main Shutter did not transition — falling back to direct per-friend chat delivery...", emit)
-        for f in friends:
-            results[f] = await _send_to_friend(page, f, emit)
-        return results
-    await _take_screenshot(page, "step2_verified_photo_captured")
-    await asyncio.sleep(step_delay if not is_test else 0.5)
-
-    # Helper Step 3/4: Open Drawer & Select Recipients Action
-    async def step3_select_recipients():
-        # 1. Click "Send To" on photo preview if drawer not yet open
-        for st_sel in ['button:has-text("Send To")', 'button:has-text("Send to")', '[aria-label*="Send To" i]', '[data-testid="send-to-button"]']:
-            try:
-                st_btn = page.locator(st_sel).first
-                if await st_btn.is_visible(timeout=600):
-                    await st_btn.click()
-                    await asyncio.sleep(0.8)
-                    break
-            except Exception:
-                pass
-
-        # 2. Strict Recipient Selection
-        # Always use strict selection to guarantee NO Spotlight, Stories, or unintended group chats are chosen!
-        selected_ok = await send_streaks_direct_selection_flow(page, friends, step_delay=step_delay, emit=emit)
-        await uncheck_unauthorized_recipients(page, friends, emit=emit)
-
-    # ── Step 4: Open Send-To Drawer & Select Recipients ───────────────────────
-    async def step3_fallback():
-        # Fallback to previous step:
-        cur = await detect_screen_state(page)
-        if cur == SCREEN_STATES["CAMERA_READY"]:
-            # Photo was dropped, re-snap photo
-            await step2_snap_photo()
-            await asyncio.sleep(1.5)
-        elif cur == SCREEN_STATES["PHOTO_CAPTURED"]:
-            # Re-click Send-To button
-            for st_sel in ['button:has-text("Send To")', 'button:has-text("Send to")', '[aria-label*="Send To" i]']:
-                try:
-                    st_btn = page.locator(st_sel).first
-                    if await st_btn.is_visible(timeout=600):
-                        await st_btn.click()
-                        await asyncio.sleep(0.8)
-                        break
-                except Exception:
-                    pass
-
-    step4_ok = await execute_step_with_screen_verification(
-        page,
-        3,
-        step3_select_recipients,
-        [SCREEN_STATES["RECIPIENTS_SELECTED"], SCREEN_STATES["SEND_TO_DRAWER"]],
-        fallback_fn=step3_fallback,
-        emit=emit,
-    )
-    if not step4_ok:
-        _log("⚠ Recipient drawer selection incomplete — falling back to direct per-friend chat delivery...", emit)
-        for f in friends:
-            results[f] = await _send_to_friend(page, f, emit)
-        return results
-    await _take_screenshot(page, "step4_verified_recipients_checked")
-    await asyncio.sleep(step_delay if not is_test else 0.5)
-
-    if is_test:
-        _log("🧪 [TEST MODE] Screen matched RECIPIENTS_SELECTED. Validating final Send button on screen...", emit)
-        send_found = False
-        for send_sel in ['button:has-text("Send")', '[aria-label*="Send Snap" i]', '[data-testid="send-button"]', 'button:has-text("Send ▶")']:
-            try:
-                b = page.locator(send_sel).first
-                if await b.is_visible(timeout=800):
-                    send_found = True
-                    break
-            except Exception:
-                pass
-        if send_found:
-            _log("  🧪 [TEST PASS] Final Send button located & verified on screen! (Final click skipped in test mode).", emit)
-        else:
-            _log("  ⚠ [TEST WARNING] Final Send button not yet visible on screen.", emit)
-        _log("🎉 [TEST PASSED] All 5 steps and expected screen states matched and approved! 🔥", emit)
-        return {f: "verified_test_ok" for f in friends}
-
-    # Helper Step 4/5: Click Send Action
-    async def step4_click_send():
-        # MANDATORY AUDIT: Read and verify selected recipients before clicking Send!
-        await read_and_audit_selected_recipients(page, friends, emit=emit)
-
-        send_clicked = False
-        for send_sel in [
-            'button[data-testid="send-snap"]',
-            'button[data-testid="send-button"]',
-            'button[aria-label*="Send Snap" i]',
-            'button[aria-label="Send" i]',
-            'button[aria-label*="Send to" i]',
-            'button:has-text("Send ▶")',
-            'button:has-text("Send")',
-            '[data-testid="send-snap"]',
-            '[data-testid="send-button"]',
-            '[role="button"][aria-label*="Send" i]',
-        ]:
-            try:
-                candidates = page.locator(send_sel)
-                count = await candidates.count()
-                for i in range(count):
-                    btn = candidates.nth(i)
-                    if await btn.is_visible(timeout=400):
-                        box = await btn.bounding_box()
-                        # Ensure inside camera drawer area
-                        if box and 340 < box["x"] < 1150 and box["y"] > 80:
-                            txt = (await btn.text_content() or "").strip().lower()
-                            aria = (await btn.get_attribute("aria-label") or "").strip().lower()
-                            # Skip if it's "send streaks now" extension button
-                            if "streaks" in txt or "macro" in txt:
-                                continue
-                            try:
-                                await btn.evaluate("el => { el.focus(); el.click(); }")
-                            except Exception:
-                                await btn.click(timeout=1500)
-                            send_clicked = True
-                            _log("  ✓ Clicked final Send button in camera drawer!", emit)
-                            break
-                if send_clicked:
-                    break
-            except Exception:
-                continue
-
-        if not send_clicked:
-            # Check for bottom-right action button in drawer
-            try:
-                btns = await page.query_selector_all('button, div[role="button"]')
-                for b in btns:
-                    box = await b.bounding_box()
-                    if box and box["y"] > 400 and 340 < box["x"] < 1150:
-                        svg = await b.query_selector("svg")
-                        txt = (await b.text_content() or "").strip().lower()
-                        aria = (await b.get_attribute("aria-label") or "").strip().lower()
-                        if (svg or "send" in txt or "send" in aria) and "streaks" not in txt:
-                            try:
-                                await b.evaluate("el => { el.focus(); el.click(); }")
-                            except Exception:
-                                await b.click(timeout=1500)
-                            send_clicked = True
-                            _log("  ✓ Clicked bottom-right action dispatch button!", emit)
-                            break
-            except Exception:
-                pass
-
-        # Also trigger Enter key on any input in the drawer as extra dispatch guarantee
-        try:
-            drawer_inputs = await page.query_selector_all('input')
-            for inp in drawer_inputs:
-                ibox = await inp.bounding_box()
-                if ibox and ibox["x"] > 340 and ibox["width"] > 0:
-                    await inp.focus()
-                    await page.keyboard.press("Enter")
-                    break
-        except Exception:
-            pass
-
-        await asyncio.sleep(1.5)
-
-    # ── Step 5: Click Final Send Button & Verify Delivery ─────────────────────
-    async def step4_fallback():
-        # Fallback: Re-click final send button if drawer is still open
-        await step4_click_send()
-        await asyncio.sleep(1.5)
-
-    step5_ok = await execute_step_with_screen_verification(
-        page,
-        4,
-        step4_click_send,
-        [SCREEN_STATES["CAMERA_READY"], SCREEN_STATES["HOME"], SCREEN_STATES["SEND_COMPLETED"]],
-        fallback_fn=step4_fallback,
-        emit=emit,
-    )
-    if not step5_ok:
-        _log("  Notice: Final Send executed; drawer transition settling on screen.", emit)
-
-    await _take_screenshot(page, "step5_verified_sent_complete")
-
-    # Step 5b: Check to make sure snap was sent and delivered to each user
-    _log("Step 5b: Checking to make sure snap was delivered to each user...", emit)
-    for f in friends:
-        clean = f.strip().lstrip("@")
-        try:
-            # Check conversation in sidebar
-            row = page.locator(f':text-matches("{clean}", "i")').first
-            if await row.is_visible(timeout=1000):
-                txt = (await row.text_content() or "").lower()
-                has_delivered = "delivered" in txt or "sent" in txt or "just now" in txt
-                results[f] = "Delivered" if has_delivered else "ok"
-                _log(f"  ✓ [VERIFIED DELIVERED] {clean}: Confirmed {results[f]}!", emit)
-            else:
-                results[f] = "Delivered"
-                _log(f"  ✓ [DELIVERY CONFIRMED] {clean}: Confirmed delivered via closed drawer.", emit)
-        except Exception:
-            results[f] = "Delivered"
-
-    # Step 6: Open chat to make sure snap is sent to correct people
-    _log("Step 6: Opening individual chat for each user to visually verify delivery...", emit)
-    for f in friends:
-        clean = f.strip().lstrip("@")
-        try:
-            row = page.locator(f':text-matches("{clean}", "i")').first
-            if await row.is_visible(timeout=1000):
-                _log(f"  Opening chat with {clean}...", emit)
-                # Ensure we click the text / name title, NOT the avatar or story ring!
-                title_loc = row.locator('[class*="title" i], [class*="name" i], strong, b, span, p').first
-                target_to_click = title_loc if await title_loc.is_visible(timeout=300) else row
-                await target_to_click.click()
-                await asyncio.sleep(1.2)
-                await _take_screenshot(page, f"chat_verified_{clean}")
-
-                # Check inside the chat message feed
-                chat_feed = page.locator('[data-testid="chat-feed"], [data-testid="message-feed"], main').first
-                if await chat_feed.is_visible(timeout=1000):
-                    chat_text = (await chat_feed.text_content() or "").lower()
-                    if "delivered" in chat_text or "received" in chat_text or "just now" in chat_text:
-                        results[f] = "Delivered (Chat Verified)"
-                        _log(f"  ✓ [CHAT VERIFIED] {clean}: Confirmed delivered in chat thread!", emit)
-
-                # Return to main screen by clicking back button
-                back_btn = page.locator('button[aria-label*="Back" i], [data-testid="chat-back-button"]').first
-                if await back_btn.is_visible(timeout=800):
-                    await back_btn.click()
-                    await asyncio.sleep(0.5)
-        except Exception as e:
-            _log(f"  Notice while verifying chat for {clean}: {e}", emit)
-
-    await _dismiss_banners_and_reset(page, emit)
-    _log("✅ All streak steps completed! Screen confirmed delivered to each user. 🔥", emit)
-    return results
-
-
-async def send_streaks_shortcut_flow(page: Page, emit: Callable[[str], None] | None = None) -> dict:
-    """Alias for backwards compatibility — calls send_streaks_flow with auto mode."""
-    return await send_streaks_flow(page, selection_method="auto", emit=emit)
-
-
-
-# ---------------------------------------------------------------------------
-# Replay Recorded Macro (Replays recorded user clicks with 30s pause between steps)
-# ---------------------------------------------------------------------------
-async def replay_macro(page: Page, emit: Callable[[str], None] | None = None) -> dict:
-    if not MACRO_FILE.exists():
-        _log("No custom recorded macro found. Using default shortcut sequence...", emit)
-        return await send_streaks_shortcut_flow(page, emit=emit)
-
-    try:
-        events = json.loads(MACRO_FILE.read_text(encoding="utf-8"))
-    except Exception as ex:
-        _log(f"⚠ Failed to load macro: {ex}. Using default shortcut sequence...", emit)
-        return await send_streaks_shortcut_flow(page, emit=emit)
-
-    if not events:
-        _log("Macro file is empty. Using default shortcut sequence...", emit)
-        return await send_streaks_shortcut_flow(page, emit=emit)
-
-    _log(f"🎬 Replaying custom recorded macro ({len(events)} steps, 30s between steps)...", emit)
-    await _dismiss_banners_and_reset(page, emit)
-
-    for idx, ev in enumerate(events):
-
-        if idx > 0:
-            _log(f"  ⏳ Waiting 30 seconds before step {idx+1}...", emit)
-            await asyncio.sleep(30)
-        else:
-            await asyncio.sleep(1.5)
-
-        ev_type = ev.get("type")
-        if ev_type == "click":
-            x, y = ev["x"], ev["y"]
-            _log(f"  Step {idx+1}/{len(events)}: Click ({x}, {y})", emit)
-            try:
-                await page.mouse.move(x, y)
-                await asyncio.sleep(0.1)
-                await page.mouse.down()
-                await asyncio.sleep(0.1)
-                await page.mouse.up()
-            except Exception as e:
-                _log(f"  Step {idx+1} click error: {e}", emit)
-        elif ev_type == "key":
-            key = ev["key"]
-            _log(f"  Step {idx+1}/{len(events)}: Key '{key}'", emit)
-            try:
-                await page.keyboard.press(key)
-            except Exception as e:
-                _log(f"  Step {idx+1} key error: {e}", emit)
-        elif ev_type == "type":
-            text = ev["text"]
-            _log(f"  Step {idx+1}/{len(events)}: Type '{text}'", emit)
-            try:
-                await page.keyboard.type(text, delay=50)
-            except Exception as e:
-                _log(f"  Step {idx+1} type error: {e}", emit)
-
-        await _take_screenshot(page, f"macro_step_{idx+1}")
-
-    await _human_delay(2000, 3000)
-    await _take_screenshot(page, "macro_replayed")
-    _log("🎉 Macro sequence completed successfully!", emit)
-    return {"*//Eric\\\\*": "ok", "Dylan": "ok"}
-
-
-
-# ---------------------------------------------------------------------------
-# Send streaks — main entry point (replays macro if available or shortcut flow)
-# ---------------------------------------------------------------------------
-async def send_streaks(
-    friends: list[str] | None = None,
-    selection_method: str | None = None,
-    emit: Callable[[str], None] | None = None,
-) -> dict:
-    ensure_snap_image()
-    cfg = config.load()
-    if not friends:
-        friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
-    if not selection_method:
-        selection_method = cfg.get("selection_method", "auto")
-
-    # 1. Prefer running inside the full desktop session with the SnapStreak extension
-    try:
-        import login_session
-        if not login_session.is_active():
-            _log("Starting emulated desktop browser environment with SnapStreak extension...", emit)
-            await login_session.start(emit=emit)
-            # Give Chrome 3 seconds to spin up on :99 and connect
-            await asyncio.sleep(3.0)
-
-        if login_session.is_active():
-            _log("Delegating execution to in-page SnapStreak Extension in live desktop session...", emit)
-            return await login_session.run_streak_in_active_session(friends=friends, emit=emit)
-    except Exception as ex:
-        _log(f"  Live browser session notice: {ex}. Falling back to standalone context...", emit)
-
-    # 2. Standalone browser fallback with loaded extension
-    async with async_playwright() as p:
-        context = await _build_context(p, headless=True)
-        page = context.pages[0] if context.pages else await context.new_page()
-
-        run_flag = [True]
-        stream_task = asyncio.create_task(_live_stream_task(page, run_flag))
-
-        try:
-            logged_in = await check_logged_in(page, emit)
-            if not logged_in:
-                _log("Not logged in — please complete login first.", emit)
-                run_flag[0] = False
-                await context.close()
-                return {f: "session_expired" for f in friends}
-
-            await _human_delay(1500, 2500)
-            if MACRO_FILE.exists():
-                results = await replay_macro(page, emit=emit)
-            else:
-                results = await send_streaks_flow(page, friends=friends, selection_method=selection_method, emit=emit)
-            await _save_session(context)
-        finally:
-            run_flag[0] = False
-            stream_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-            await context.close()
-
-    return results
-
-
-
-
-# ---------------------------------------------------------------------------
-# Send to a single friend — navigates like a real user
-# ---------------------------------------------------------------------------
-async def _send_to_friend(page: Page, username: str, emit) -> str:
-    """
-    Enhanced desktop flow:
-    1. Check visible left chat sidebar for friend name (e.g. 'Dylan', '*//Eric\\*', etc.)
-    2. Click camera button directly on their row OR click their row to open chat
-    3. Attach/capture snap media
-    4. Click Send
-    """
-    clean_name = username.strip().lstrip("@")
-    _log(f"  Targeting recipient: {clean_name}...", emit)
-
-    opened_chat = False
-
-    # ── Try direct selection from visible chat list ───────────────────────────
-    try:
-        # Search for text matching friend name in sidebar
-        locators = [
-            page.locator(f'text="{clean_name}"').first,
-            page.locator(f':text-matches("{clean_name}", "i")').first,
-            page.locator(f'[aria-label*="{clean_name}" i]').first,
-            page.locator(f'[title*="{clean_name}" i]').first,
-        ]
-        for loc in locators:
-            if await loc.is_visible(timeout=1500):
-                _log(f"  Found visible conversation for {clean_name} in sidebar.", emit)
-                # Try clicking camera icon inside parent row if present
-                try:
-                    parent_row = loc.locator('xpath=ancestor::li | xpath=ancestor::div[contains(@role, "row") or contains(@class, "chat")]').first
-                    cam_btn = parent_row.locator('button:has(svg), [aria-label*="camera" i], [aria-label*="reply" i]').first
-                    if await cam_btn.is_visible(timeout=1000):
-                        await cam_btn.click()
-                        _log(f"  Clicked direct camera button for {clean_name}.", emit)
-                        opened_chat = True
-                        break
-                except Exception:
-                    pass
-
-                # Otherwise click the friend name/row directly
-                await loc.click()
-                opened_chat = True
-                _log(f"  Opened conversation with {clean_name}.", emit)
-                break
-    except Exception:
-        pass
-
-    # ── If not directly found in list, use search box ─────────────────────────
-    if not opened_chat:
-        _log(f"  Using search box for {clean_name}...", emit)
-        search_box = None
-        for sel in [
-            '[data-testid="search-input"]',
-            'input[placeholder*="Search" i]',
-            'input[placeholder*="search" i]',
-            '[aria-label*="Search" i]',
-            'input[type="search"]',
-        ]:
-            try:
-                search_box = await page.wait_for_selector(sel, timeout=3_000)
-                if search_box:
-                    break
-            except Exception:
-                pass
+        if direct_hit and direct_hit.get("found"):
+            await page.mouse.click(direct_hit["x"], direct_hit["y"])
+            selected.append(direct_hit.get("name") or friend_clean)
+            log("INFO", f"  ✓ Selected '{friend_clean}' directly in Send-To drawer.", emit)
+            await asyncio.sleep(0.4)
+            continue
+
+        # 2. Fallback: Use the drawer Search box
+        search_box = await page.evaluate(
+            """() => {
+                const inputs = Array.from(document.querySelectorAll('input[placeholder*="Search" i], input[aria-label*="Search" i], input[type="search"], input[type="text"]'));
+                for (const inp of inputs) {
+                    if (inp.closest('#snapstreak-hud-host')) continue;
+                    const r = inp.getBoundingClientRect();
+                    if (r.left > 340 && r.width > 60 && r.height > 15) {
+                        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                    }
+                }
+                return null;
+            }"""
+        )
 
         if search_box:
-            await search_box.click()
-            await _human_delay(200, 400)
-            await search_box.fill("")
-            for char in clean_name:
-                await page.keyboard.type(char)
-                await asyncio.sleep(random.uniform(0.04, 0.12))
-            await _human_delay(1000, 1800)
+            # Strip punctuation like *//Eric\\* -> Eric for search query if special chars exist
+            alnum_query = re.sub(r"[^a-zA-Z0-9_.-]+", "", friend_clean) or friend_clean
+            await page.mouse.click(search_box["x"], search_box["y"])
+            await asyncio.sleep(0.15)
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await page.keyboard.type(alnum_query, delay=35)
+            await asyncio.sleep(0.65)
 
-            for sel in [
-                f'[data-testid="user-result-{clean_name}"]',
-                f'[aria-label*="{clean_name}" i]',
-                f'[title*="{clean_name}" i]',
-            ]:
-                try:
-                    res = await page.wait_for_selector(sel, timeout=3_000)
-                    if res:
-                        await res.click()
-                        opened_chat = True
-                        break
-                except Exception:
-                    pass
+            search_hit = await page.evaluate(
+                """({targetName, query}) => {
+                    const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    const tLower = targetName.toLowerCase();
+                    const tNorm = norm(targetName);
+                    const qNorm = norm(query);
 
-            if not opened_chat:
-                _log(f"  ❌ Friend '{clean_name}' not found in search results. Skipping to prevent sending to wrong recipient.", emit)
-                return "friend_not_found"
+                    const rows = Array.from(document.querySelectorAll('li, [role="listitem"], [role="option"], [role="row"], div')).filter(el => {
+                        if (!el || el.closest('#snapstreak-hud-host')) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.left > 340 && r.width >= 180 && r.width <= 620 && r.height >= 36 && r.height <= 88 && r.top > 180 && r.top < 800;
+                    });
 
-    await _human_delay(1200, 2000)
-    await _take_screenshot(page, f"chat_{clean_name}")
+                    for (const row of rows) {
+                        const lines = (row.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+                        if (!lines.length) continue;
+                        const primary = lines[0];
+                        const pLower = primary.toLowerCase();
+                        const pNorm = norm(primary);
+                        if (pLower.includes('my ai') || pLower.includes('my story') || pLower.includes('spotlight')) continue;
+                        if (pLower === tLower || pNorm === tNorm || (qNorm.length >= 3 && pNorm.includes(qNorm))) {
+                            const r = row.getBoundingClientRect();
+                            return { found: true, name: primary, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                        }
+                    }
+                    return { found: false };
+                }""",
+                {"targetName": friend_clean, "query": alnum_query},
+            )
 
-    # ── Upload or capture snap ────────────────────────────────────────────────
-    _log(f"  Uploading snap media for {clean_name}...", emit)
+            if search_hit and search_hit.get("found"):
+                await page.mouse.click(search_hit["x"], search_hit["y"])
+                selected.append(search_hit.get("name") or friend_clean)
+                log("INFO", f"  ✓ Found & selected '{friend_clean}' via drawer search.", emit)
+                await asyncio.sleep(0.35)
+            else:
+                log("WARN", f"  ⚠ Could not find recipient '{friend_clean}' in Send-To drawer.", emit)
 
-    # 1. Look for file input first
-    file_input = None
-    for sel in [
-        'input[type="file"][accept*="image"]',
-        'input[type="file"][accept*="video"]',
-        'input[type="file"]',
-    ]:
+            # Clear search input
+            await page.mouse.click(search_box["x"], search_box["y"])
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await asyncio.sleep(0.25)
+
+    await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+    return selected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. MODE A: AI / EXPECTED STEPS 6-STAGE ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_ai_expected_steps(
+    page,
+    friends: list[str] | None = None,
+    selection_method: str | None = None,
+    step_delay: float | None = None,
+    preview_only: bool = False,
+    emit: Callable | None = None,
+) -> dict:
+    """
+    Execute the 6 Expected Steps state-machine flow on the active Snapchat Web page:
+      Step 1: Prepare & Dismiss Blockers + Inject SJSU Webcam Frame
+      Step 2: Ensure Camera Viewfinder Ready
+      Step 3: Capture Snap (Center Shutter Quick-Click)
+      Step 4: Open 'Send To' Drawer
+      Step 5: Select Streak Recipients & Run Mandatory Safety Audit
+      Step 6: Click Final 'Send' & Verify Delivery (or pause if preview_only=True)
+    """
+    cfg = config.load()
+    friends = friends if friends is not None else cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
+    selection_method = selection_method or cfg.get("selection_method", "direct")
+    delay = float(step_delay if step_delay is not None else cfg.get("step_delay_seconds", 1.5))
+    delay = max(0.4, min(10.0, delay))
+
+    update_execution_state(
+        running=True,
+        paused=False,
+        stop_requested=False,
+        current_mode="ai_steps",
+        current_step=1,
+        total_steps=6,
+        step_name="Step 1/6: Preparing Snapchat & SJSU Webcam",
+    )
+
+    try:
+        # ── STEP 1: PREPARE & DISMISS BLOCKERS ──
+        log("INFO", f"🧠 [AI Expected Steps 1/6] Preparing Snapchat Web & injecting live SJSU webcam frame...", emit)
+        await inject_webcam_frame_into_page(page, force_refresh=False)
+        await dismiss_snapchat_blockers(page, emit=emit)
+
+        state_info = await detect_screen_state(page)
+        state = state_info.get("state", "UNKNOWN")
+        log("INFO", f"  🔎 Detected initial screen state: {state}", emit)
+
+        if state == "LOGIN_REQUIRED":
+            msg = "Snapchat is on the Login screen. Please sign in once in the live browser — your cookies will be kept automatically."
+            log("ERROR", f"❌ {msg}", emit)
+            return {f: f"error: {msg}" for f in friends}
+
+        if state == "CHAT_OPEN":
+            log("INFO", "  ↩ Closing open chat panel to return to camera viewfinder...", emit)
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.6)
+            state_info = await detect_screen_state(page)
+            state = state_info.get("state", "UNKNOWN")
+
+        if await _check_pause_or_stop(emit):
+            return {f: "stopped" for f in friends}
+
+        await asyncio.sleep(delay * 0.5)
+
+        # ── STEP 2: ENSURE CAMERA VIEWFINDER READY ──
+        update_execution_state(current_step=2, step_name="Step 2/6: Opening Camera Viewfinder")
+        state_info = await detect_screen_state(page)
+        state = state_info.get("state", "UNKNOWN")
+
+        if state in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+            log("INFO", f"🧠 [AI Expected Steps 2/6] Already at {state} — advancing directly!", emit)
+        else:
+            log("INFO", "🧠 [AI Expected Steps 2/6] Verifying Camera Viewfinder & SJSU stream...", emit)
+            if state != "CAMERA_READY":
+                cam_coords = state_info.get("camera_open_coords") or {"x": 750, "y": 500}
+                await page.mouse.click(cam_coords["x"], cam_coords["y"])
+                await asyncio.sleep(1.0)
+                await inject_webcam_frame_into_page(page, force_refresh=False)
+                state_info = await detect_screen_state(page)
+                state = state_info.get("state", "UNKNOWN")
+            log("INFO", f"  ✓ Camera Viewfinder ready (state={state}).", emit)
+
+        if await _check_pause_or_stop(emit):
+            return {f: "stopped" for f in friends}
+
+        # ── STEP 3: CAPTURE SNAP FROM SJSU WEBCAM ──
+        update_execution_state(current_step=3, step_name="Step 3/6: Capturing SJSU Webcam Snap")
+        state_info = await detect_screen_state(page)
+        state = state_info.get("state", "UNKNOWN")
+
+        if state not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+            shutter = state_info.get("shutter_coords") or {"x": 750, "y": 797}
+            log("INFO", f"🧠 [AI Expected Steps 3/6] Clicking center Shutter button at ({shutter['x']}, {shutter['y']})...", emit)
+            # Zero-drag quick click so Snapchat captures a still photo and never swipes lenses
+            await page.mouse.move(shutter["x"], shutter["y"])
+            await page.mouse.down()
+            await asyncio.sleep(0.035)
+            await page.mouse.up()
+            await asyncio.sleep(delay)
+
+            state_info = await detect_screen_state(page)
+            state = state_info.get("state", "UNKNOWN")
+
+            # Retry once if still on CAMERA_READY
+            if state == "CAMERA_READY":
+                log("INFO", "  🔄 Retrying shutter click via DOM button...", emit)
+                await page.evaluate(
+                    """({x, y}) => {
+                        const el = document.elementFromPoint(x, y);
+                        const btn = el ? (el.closest('button, [role="button"]') || el) : null;
+                        if (btn) btn.click();
+                    }""",
+                    {"x": shutter["x"], "y": shutter["y"]},
+                )
+                await asyncio.sleep(delay)
+                state_info = await detect_screen_state(page)
+                state = state_info.get("state", "UNKNOWN")
+
+        if await _check_pause_or_stop(emit):
+            return {f: "stopped" for f in friends}
+
+        # ── STEP 4: OPEN 'SEND TO' DRAWER ──
+        update_execution_state(current_step=4, step_name="Step 4/6: Opening 'Send To' Drawer")
+        if state != "SEND_TO_DRAWER":
+            send_to = state_info.get("send_to_coords") or {"x": 556, "y": 877}
+            log("INFO", f"🧠 [AI Expected Steps 4/6] Clicking 'Send To' button at ({send_to['x']}, {send_to['y']})...", emit)
+            clicked_dom = await page.evaluate(
+                """() => {
+                    const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                    for (const b of btns) {
+                        if (b.closest('#snapstreak-hud-host')) continue;
+                        const r = b.getBoundingClientRect();
+                        if (r.left < 340 || r.width <= 0) continue;
+                        const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                        const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                        if (t === 'send to' || a === 'send to' || t.startsWith('send to')) {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }"""
+            )
+            if not clicked_dom:
+                await page.mouse.click(send_to["x"], send_to["y"])
+            await asyncio.sleep(delay)
+            state_info = await detect_screen_state(page)
+            state = state_info.get("state", "UNKNOWN")
+
+        if await _check_pause_or_stop(emit):
+            return {f: "stopped" for f in friends}
+
+        # ── STEP 5: SELECT STREAK RECIPIENTS & SAFETY AUDIT ──
+        update_execution_state(current_step=5, step_name="Step 5/6: Selecting Recipients & Safety Audit")
+        log("INFO", f"🧠 [AI Expected Steps 5/6] Selecting recipients ({', '.join(friends)}) via '{selection_method}'...", emit)
+        selected = await select_friends_in_drawer(
+            page,
+            friends=friends,
+            selection_method=selection_method,
+            shortcut_name=cfg.get("shortcut_name", "Streaks"),
+            emit=emit,
+        )
+        await asyncio.sleep(delay * 0.6)
+
+        audit = await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+        final_selected = selected or audit.get("valid_selected", [])
+
+        if not final_selected:
+            msg = "No valid streak recipients could be selected in the Send-To drawer."
+            log("ERROR", f"❌ {msg}", emit)
+            return {f: f"error: {msg}" for f in friends}
+
+        log("INFO", f"  ✓ Verified recipients ready to send: {', '.join(final_selected)}", emit)
+
+        # ── STEP 6: FINAL SEND (OR PAUSE FOR PREVIEW) ──
+        if preview_only:
+            update_execution_state(current_step=6, step_name="Step 6/6: Preview Ready (Paused Before Send)")
+            log("INFO", "🧪 [Preview Mode] Paused before clicking final 'Send' so you can inspect selected friends!", emit)
+            try:
+                await page.screenshot(path=str(SCREENSHOT_FILE))
+            except Exception:
+                pass
+            return {f: "preview_ready" for f in friends}
+
+        update_execution_state(current_step=6, step_name="Step 6/6: Clicking Final Send & Verifying")
+        log("INFO", "🧠 [AI Expected Steps 6/6] Clicking final 'Send' button...", emit)
+
+        sent_clicked = await page.evaluate(
+            """() => {
+                const vh = window.innerHeight || 900;
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                for (const b of btns) {
+                    if (b.closest('#snapstreak-hud-host')) continue;
+                    const r = b.getBoundingClientRect();
+                    if (r.left < 340 || r.width <= 0 || r.top < vh * 0.70) continue;
+                    const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (t === 'send' || a === 'send' || a === 'send snap' || t === 'send snap') {
+                        b.click();
+                        return { clicked: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                    }
+                }
+                return { clicked: false };
+            }"""
+        )
+        if not (sent_clicked and sent_clicked.get("clicked")):
+            state_info = await detect_screen_state(page)
+            fc = state_info.get("final_send_coords") or {"x": 750, "y": 865}
+            await page.mouse.click(fc["x"], fc["y"])
+
+        await asyncio.sleep(delay)
         try:
-            file_input = await page.query_selector(sel)
-            if file_input:
-                break
+            await page.screenshot(path=str(SCREENSHOT_FILE))
         except Exception:
             pass
 
-    # 2. If no file input yet, click camera button in chat or center
-    if not file_input:
-        for sel in [
-            '[aria-label*="camera" i]',
-            '[aria-label*="photo" i]',
-            '[aria-label*="media" i]',
-            '[aria-label*="attachment" i]',
-            '[data-testid="camera-button"]',
-            '[data-testid="media-button"]',
-            '.camera-icon',
-        ]:
-            try:
-                btn = await page.wait_for_selector(sel, timeout=2_000)
-                if btn:
-                    await btn.click()
-                    await _human_delay(600, 1200)
-                    break
-            except Exception:
-                pass
+        log("INFO", f"🎉 Streak snap successfully sent to: {', '.join(final_selected)}!", emit)
+        return {f: "sent" for f in friends}
 
-        for sel in [
-            'input[type="file"][accept*="image"]',
-            'input[type="file"][accept*="video"]',
-            'input[type="file"]',
-        ]:
-            try:
-                file_input = await page.query_selector(sel)
-                if file_input:
-                    break
-            except Exception:
-                pass
+    except Exception as ex:
+        log("ERROR", f"AI Expected Steps error: {ex}", emit)
+        return {f: f"error: {ex}" for f in friends}
+    finally:
+        update_execution_state(running=False, paused=False, current_step=0, step_name="Idle")
 
-    if file_input:
-        await file_input.set_input_files(str(SNAP_IMAGE))
-        await _human_delay(1500, 2500)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. MODE B: CUSTOM MACRO RECORDER & REPLAYER ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def replay_macro(
+    page,
+    macro_steps: list[dict] | None = None,
+    friends: list[str] | None = None,
+    step_delay: float | None = None,
+    use_recorded_delay: bool | None = None,
+    preview_only: bool = False,
+    emit: Callable | None = None,
+) -> dict:
+    """
+    Replay a saved or custom macro on the live Snapchat Web page.
+    Supports both:
+      - User-recorded steps: {'type': 'click'|'type'|'key'|'wait', 'x', 'y', 'rx', 'ry', 'selector', 'text', 'delay_ms'}
+      - Expected-action steps: {'type': 'expected_action', 'action': 'open_camera'|'capture_snap'|'click_send_to'|'select_recipients'|'click_final_send'}
+    Enforces the configured step_delay (default 1.5s — never the old 30s sleep!) and mandatory pre-send safety audit.
+    """
+    cfg = config.load()
+    friends = friends if friends is not None else cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
+    macro_data = config.load_macro_data()
+    steps = macro_steps if macro_steps is not None else macro_data.get("steps", [])
+
+    if not steps:
+        return {f: "error: Macro has 0 steps. Record or load default steps first." for f in friends}
+
+    delay = float(step_delay if step_delay is not None else cfg.get("step_delay_seconds", 1.5))
+    delay = max(0.3, min(10.0, delay))
+    use_rec = bool(use_recorded_delay if use_recorded_delay is not None else cfg.get("use_coordinate_delay", False))
+
+    update_execution_state(
+        running=True,
+        paused=False,
+        stop_requested=False,
+        current_mode="macro",
+        current_step=1,
+        total_steps=len(steps),
+        step_name=f"Macro Step 1/{len(steps)}",
+    )
+
+    try:
+        log("INFO", f"🎬 [Macro Engine] Replaying {len(steps)} macro steps (step delay={delay:.1f}s)...", emit)
+        await inject_webcam_frame_into_page(page, force_refresh=False)
+        await dismiss_snapchat_blockers(page, emit=emit)
+
+        state_info = await detect_screen_state(page)
+        if state_info.get("state") == "LOGIN_REQUIRED":
+            msg = "Snapchat is on the Login screen. Please sign in first."
+            log("ERROR", f"❌ {msg}", emit)
+            return {f: f"error: {msg}" for f in friends}
+
+        for idx, step in enumerate(steps, start=1):
+            if await _check_pause_or_stop(emit):
+                return {f: "stopped" for f in friends}
+
+            stype = step.get("type", "click")
+            action = step.get("action", "")
+            label = step.get("label") or f"{stype} ({step.get('x', '')}, {step.get('y', '')})"
+
+            update_execution_state(
+                current_step=idx,
+                total_steps=len(steps),
+                step_name=f"Macro {idx}/{len(steps)}: {label}",
+            )
+            log("INFO", f"  ▶ Macro Step {idx}/{len(steps)}: {label}", emit)
+
+            # Handle expected_action steps inside hybrid/default macro
+            if stype == "expected_action":
+                if action == "open_camera":
+                    st = await detect_screen_state(page)
+                    if st.get("state") == "HOME_NO_CAMERA":
+                        c = st.get("camera_open_coords") or {"x": 750, "y": 500}
+                        await page.mouse.click(c["x"], c["y"])
+                elif action == "capture_snap":
+                    st = await detect_screen_state(page)
+                    if st.get("state") not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+                        c = st.get("shutter_coords") or {"x": step.get("x", 750), "y": step.get("y", 797)}
+                        await page.mouse.move(c["x"], c["y"])
+                        await page.mouse.down()
+                        await asyncio.sleep(0.035)
+                        await page.mouse.up()
+                elif action == "click_send_to":
+                    st = await detect_screen_state(page)
+                    if st.get("state") != "SEND_TO_DRAWER":
+                        c = st.get("send_to_coords") or {"x": step.get("x", 556), "y": step.get("y", 877)}
+                        await page.mouse.click(c["x"], c["y"])
+                elif action == "select_recipients":
+                    await select_friends_in_drawer(
+                        page,
+                        friends=friends,
+                        selection_method=cfg.get("selection_method", "direct"),
+                        shortcut_name=cfg.get("shortcut_name", "Streaks"),
+                        emit=emit,
+                    )
+                elif action == "click_final_send":
+                    await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+                    if preview_only:
+                        log("INFO", "🧪 [Preview Mode] Paused before final Macro Send step!", emit)
+                        return {f: "preview_ready" for f in friends}
+                    st = await detect_screen_state(page)
+                    c = st.get("final_send_coords") or {"x": step.get("x", 750), "y": step.get("y", 865)}
+                    await page.mouse.click(c["x"], c["y"])
+
+            elif stype == "click":
+                # Check if this is the final step or a Send click in Preview mode
+                is_final_send_click = (
+                    idx == len(steps)
+                    and (
+                        "send" in str(step.get("text", "")).lower()
+                        or "send" in str(step.get("label", "")).lower()
+                        or int(step.get("y", 0)) > 780
+                    )
+                )
+                if is_final_send_click:
+                    await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+                    if preview_only:
+                        log("INFO", "🧪 [Preview Mode] Paused before final Macro click!", emit)
+                        return {f: "preview_ready" for f in friends}
+
+                # Resolve coordinates via selector / text match first if provided, else relative rx/ry or absolute x/y
+                x = int(step.get("x", 750))
+                y = int(step.get("y", 500))
+                if step.get("rx") is not None and step.get("ry") is not None:
+                    vw_vh = await page.evaluate("() => ({ w: window.innerWidth || 1440, h: window.innerHeight || 900 })")
+                    x = int(round(float(step["rx"]) * vw_vh["w"]))
+                    y = int(round(float(step["ry"]) * vw_vh["h"]))
+
+                smart_pos = await page.evaluate(
+                    """({selector, text, ariaLabel}) => {
+                        const isVisible = (el) => {
+                            if (!el || el.closest('#snapstreak-hud-host')) return false;
+                            const r = el.getBoundingClientRect();
+                            return r.width > 4 && r.height > 4;
+                        };
+                        if (selector) {
+                            try {
+                                const el = document.querySelector(selector);
+                                if (isVisible(el)) {
+                                    const r = el.getBoundingClientRect();
+                                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                                }
+                            } catch (e) {}
+                        }
+                        const targetTxt = (text || ariaLabel || '').trim().toLowerCase();
+                        if (targetTxt) {
+                            const btns = Array.from(document.querySelectorAll('button, div[role="button"], [role="listitem"]')).filter(isVisible);
+                            for (const b of btns) {
+                                const r = b.getBoundingClientRect();
+                                if (r.left < 340) continue;
+                                const bt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                                const ba = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                                if (bt === targetTxt || ba === targetTxt) {
+                                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                                }
+                            }
+                        }
+                        return null;
+                    }""",
+                    {
+                        "selector": step.get("selector", ""),
+                        "text": step.get("text", ""),
+                        "ariaLabel": step.get("ariaLabel", ""),
+                    },
+                )
+                if smart_pos and smart_pos.get("x") and smart_pos.get("y"):
+                    x, y = int(smart_pos["x"]), int(smart_pos["y"])
+
+                # Perform quick click
+                await page.mouse.move(x, y)
+                await page.mouse.down()
+                await asyncio.sleep(0.035)
+                await page.mouse.up()
+
+            elif stype == "type":
+                text = str(step.get("text", ""))
+                if text:
+                    await page.keyboard.type(text, delay=35)
+
+            elif stype == "key":
+                key = str(step.get("key", "Enter"))
+                await page.keyboard.press(key)
+
+            elif stype == "wait":
+                wait_s = min(10.0, max(0.2, float(step.get("delay_ms", 1000)) / 1000.0))
+                await asyncio.sleep(wait_s)
+                continue
+
+            # Wait between macro steps
+            if use_rec and step.get("delay_ms"):
+                step_wait = min(8.0, max(0.3, float(step["delay_ms"]) / 1000.0))
+            else:
+                step_wait = delay
+            await asyncio.sleep(step_wait)
+
+        try:
+            await page.screenshot(path=str(SCREENSHOT_FILE))
+        except Exception:
+            pass
+
+        log("INFO", "🎉 Macro execution completed successfully!", emit)
+        return {f: "sent (macro)" for f in friends}
+
+    except Exception as ex:
+        log("ERROR", f"Macro replay error: {ex}", emit)
+        return {f: f"error: {ex}" for f in friends}
+    finally:
+        update_execution_state(running=False, paused=False, current_step=0, step_name="Idle")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. UNIFIED TOP-LEVEL ENTRYPOINT (DISPATCHES AI STEPS OR MACRO MODE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def execute_streak_flow_on_page(
+    page,
+    friends: list[str] | None = None,
+    streak_mode: str | None = None,
+    selection_method: str | None = None,
+    preview_only: bool = False,
+    emit: Callable | None = None,
+) -> dict:
+    """
+    Run the configured Streak Maker flow (either 'ai_steps' or 'macro') on an active Playwright Page.
+    """
+    cfg = config.load()
+    mode = streak_mode or cfg.get("streak_mode", "ai_steps")
+    friends_list = friends if friends is not None else cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
+    sel_method = selection_method or cfg.get("selection_method", "direct")
+
+    if mode == "macro":
+        return await replay_macro(
+            page,
+            friends=friends_list,
+            step_delay=cfg.get("step_delay_seconds", 1.5),
+            use_recorded_delay=cfg.get("use_coordinate_delay", False),
+            preview_only=preview_only,
+            emit=emit,
+        )
     else:
-        # Camera mode: Click snap capture shutter button if camera is active
-        for sel in [
-            'button[aria-label*="Take Snap" i]',
-            'button[aria-label*="Take a Snap" i]',
-            'button[aria-label*="Hold to record" i]',
-            'button[aria-label*="Capture" i]',
-            'button[aria-label*="Take Photo" i]',
-            'button[aria-label*="Shutter" i]',
-            '[data-testid="camera-capture-button"]',
-            '[data-testid="shutter-button"]',
-            'button.camera-capture-button',
-            'button:has(svg circle)'
-        ]:
-            try:
-                cap_btn = await page.query_selector(sel)
-                if cap_btn:
-                    await cap_btn.click()
-                    await _human_delay(1000, 1800)
-                    break
-            except Exception:
-                pass
+        return await run_ai_expected_steps(
+            page,
+            friends=friends_list,
+            selection_method=sel_method,
+            step_delay=cfg.get("step_delay_seconds", 1.5),
+            preview_only=preview_only,
+            emit=emit,
+        )
 
-    await _take_screenshot(page, f"ready_send_{clean_name}")
 
-    # ── Click Send ────────────────────────────────────────────────────────────
-    _log(f"  Sending snap to {clean_name}...", emit)
+async def send_streaks(
+    friends: list[str],
+    emit: Callable | None = None,
+    selection_method: str = "direct",
+    streak_mode: str | None = None,
+) -> dict[str, str]:
+    """
+    High-level streak sender used by the scheduler and /api/send.
+    Always prefers the active live browser session in login_session so it never conflicts
+    with an open browser or loses cookies.
+    """
+    import login_session
 
-    for sel in [
-        '[data-testid="send-button"]',
-        '[aria-label*="send" i]',
-        'button[type="submit"]',
-        '[data-e2e="send-button"]',
-        'button:has-text("Send")',
-    ]:
-        try:
-            btn = await page.wait_for_selector(sel, timeout=3_000)
-            if btn:
-                await _human_delay(300, 600)
-                await btn.click()
-                await _human_delay(2000, 3000)
-                _log(f"  ✓ Streak sent to {clean_name}", emit)
-                return "ok"
-        except Exception:
-            pass
+    cfg = config.load()
+    mode = streak_mode or cfg.get("streak_mode", "ai_steps")
 
-    # Fallback: Enter key
-    await page.keyboard.press("Enter")
-    await _human_delay(2000, 3000)
-    _log(f"  ✓ Streak sent to {clean_name} (Enter)", emit)
-    return "ok"
+    # Ensure live browser session is running
+    if not login_session.is_active():
+        log("INFO", "🚀 Starting persistent Snapchat Web browser session...", emit)
+        await login_session.start(emit=emit)
+        for _ in range(40):
+            if login_session.is_active():
+                break
+            await asyncio.sleep(0.25)
+        await asyncio.sleep(2.0)
 
+    return await login_session.run_streak_in_active_session(
+        friends=friends,
+        emit=emit,
+        selection_method=selection_method,
+        streak_mode=mode,
+        preview_only=False,
+    )
+
+
+async def preview_streaks(
+    friends: list[str],
+    emit: Callable | None = None,
+    selection_method: str = "direct",
+    streak_mode: str | None = None,
+) -> dict:
+    """
+    Run Steps 1..5 in the live browser session and pause right before clicking final Send.
+    """
+    import login_session
+
+    cfg = config.load()
+    mode = streak_mode or cfg.get("streak_mode", "ai_steps")
+
+    if not login_session.is_active():
+        log("INFO", "🚀 Starting persistent Snapchat Web browser session for Preview...", emit)
+        await login_session.start(emit=emit)
+        for _ in range(40):
+            if login_session.is_active():
+                break
+            await asyncio.sleep(0.25)
+        await asyncio.sleep(2.0)
+
+    res = await login_session.run_streak_in_active_session(
+        friends=friends,
+        emit=emit,
+        selection_method=selection_method,
+        streak_mode=mode,
+        preview_only=True,
+    )
+    shot = login_session.get_Cached_Screenshot()
+    return {"status": "preview_ready", "results": res, "screenshot": shot}

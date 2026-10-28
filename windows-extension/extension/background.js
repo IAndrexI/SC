@@ -11,7 +11,7 @@ const DEFAULT_CONFIG = {
   friends: ['*//Eric\\*', 'Dylan'],
   sendingEngine: 'direct',
   selectionMethod: 'auto',
-  stepDelay: 3,
+  stepDelay: 1.5,
   humanMode: true,
   waitForUIChanges: true,
   scheduleEnabled: true,
@@ -87,12 +87,34 @@ async function enforceAlwaysCloseOtherTabs() {
   }
 }
 
-// Listen for explicit close request from automation flow
+// Listen for explicit close request and SJSU base64 webcam fetch from content script
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'CLOSE_OTHER_TABS') {
     const keepId = sender?.tab?.id || primarySnapchatTabId;
     if (keepId) closeAllOtherTabs(keepId);
     sendResponse({ ok: true });
+    return true;
+  }
+  if (msg && msg.type === 'FETCH_SJSU_BASE64') {
+    (async () => {
+      try {
+        const res = await fetch(`https://www.met.sjsu.edu/cam_directory/webcam1/latest.jpg?_t=${Date.now()}`, {
+          cache: 'no-store'
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const b64 = btoa(binary);
+        sendResponse({ ok: true, dataUrl: `data:image/jpeg;base64,${b64}` });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
     return true;
   }
 });

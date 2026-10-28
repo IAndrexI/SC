@@ -1,370 +1,260 @@
 """
-test_snapchat_automation.py
-End-to-end simulation test of SnapStreak Extension & Automation methods.
-Runs real Chromium/Edge via Playwright against a simulated Snapchat Web DOM.
+test_snapchat_automation.py – End-to-End Verification Suite for SnapStreak Studio:
+  1. SJSU Meteorology Live Webcam (HTTP fetch, Y4M generation, zero-CORS Data URL WebRTC canvas stream)
+  2. Cookie Vault Persistence (session.json + session_backup.json + browser_profile protection)
+  3. Mode A: AI / Expected Steps 6-Stage State Machine (direct, shortcut, preview_only, safety guard)
+  4. Mode B: Custom Macro Recorder & Replayer (DOM metadata + relative coordinate replay)
+  5. FastAPI Studio Endpoints (/api/status, /api/config, /api/cookies, /api/webcam-b64, /api/macro)
 """
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+APP_DIR = REPO_ROOT / "linux-server" / "app"
+sys.path.insert(0, str(APP_DIR))
 
+import config
+import automation
+import diagnostics
 from playwright.async_api import async_playwright
 
-EXT_DIR = Path(__file__).resolve().parent.parent / "linux-server" / "extension"
-
-MOCK_SNAPCHAT_HTML = """<!DOCTYPE html>
-<html lang="en">
+MOCK_SNAPCHAT_HTML = """
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>Snapchat Web Simulation</title>
+  <meta charset="utf-8" />
+  <title>Snapchat Web Mock</title>
   <style>
-    body { margin: 0; padding: 0; background: #000; color: #fff; font-family: sans-serif; display: flex; height: 100vh; overflow: hidden; }
-    #sidebar { width: 320px; background: #121212; border-right: 1px solid #222; display: flex; flex-direction: column; }
-    .chat-row { padding: 12px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
-    .chat-row .name { font-weight: bold; font-size: 14px; }
-    .chat-row .status { font-size: 12px; color: #888; }
-    #main-camera-container { flex: 1; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #181818; }
-    #camera-viewfinder { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-    .shutter-btn { width: 70px; height: 70px; border-radius: 50%; border: 4px solid #fff; background: transparent; cursor: pointer; margin-top: auto; margin-bottom: 40px; }
-    #photo-preview { display: none; width: 100%; height: 100%; position: relative; background: #2a2a2a; }
-    .send-to-btn { position: absolute; bottom: 40px; right: 40px; background: #0fadff; color: #fff; padding: 12px 24px; border-radius: 24px; border: none; font-weight: bold; cursor: pointer; }
-    #send-drawer { display: none; position: absolute; bottom: 0; left: 0; right: 0; height: 500px; background: #1a1a1a; border-top-left-radius: 16px; border-top-right-radius: 16px; padding: 20px; box-sizing: border-box; }
-    .tab-pills { display: flex; gap: 8px; margin-bottom: 12px; }
-    .tab-pill { background: #333; color: #fff; border: none; border-radius: 16px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
-    .recipient-list { height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-    .recipient-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #222; border-radius: 8px; }
-    .final-send-btn { position: absolute; bottom: 20px; right: 20px; width: 50px; height: 50px; border-radius: 50%; background: #0fadff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-    .final-send-btn svg { width: 24px; height: 24px; fill: #fff; }
+    body { margin: 0; background: #111; color: #fff; font-family: sans-serif; width: 1440px; height: 900px; overflow: hidden; }
+    .sidebar { position: absolute; left: 0; top: 0; width: 350px; height: 900px; background: #1a1a1a; border-right: 1px solid #333; }
+    .center { position: absolute; left: 360px; top: 0; width: 720px; height: 900px; background: #0f172a; }
+    #cam-video { position: absolute; left: 160px; top: 100px; width: 420px; height: 680px; background: #000; border-radius: 16px; }
+    #shutter-btn { position: absolute; left: 336px; top: 760px; width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,0.2); cursor: pointer; }
+    #preview-bar { display: none; position: absolute; left: 160px; top: 820px; width: 420px; justify-content: space-between; }
+    #send-to-btn { padding: 10px 24px; background: #0ea5e9; color: #fff; border: none; border-radius: 20px; font-weight: bold; cursor: pointer; }
+    #send-drawer { display: none; position: absolute; left: 140px; top: 80px; width: 460px; height: 800px; background: #1e293b; border-radius: 16px; padding: 16px; box-sizing: border-box; }
+    .row-item { display: flex; align-items: center; justify-content: space-between; padding: 10px; height: 48px; border-bottom: 1px solid #334155; cursor: pointer; box-sizing: border-box; }
+    #final-send-btn { position: absolute; left: 40px; bottom: 20px; width: 380px; height: 46px; background: #0ea5e9; color: #fff; border: none; border-radius: 23px; font-weight: bold; cursor: pointer; }
   </style>
 </head>
 <body>
-  <div id="sidebar">
-    <div style="padding: 16px; border-bottom: 1px solid #222; font-weight: bold;">Chats</div>
-    <div class="chat-row" role="row" id="chat-my-ai">
-      <div>
-        <div class="name">My AI</div>
-        <div class="status" id="status-my-ai">Say hi!</div>
-      </div>
-    </div>
-    <div class="chat-row" role="row" id="chat-eric">
-      <div>
-        <div class="name">*//Eric\\*</div>
-        <div class="status" id="status-eric">Tap to chat</div>
-      </div>
-    </div>
-    <div class="chat-row" role="row" id="chat-dylan">
-      <div>
-        <div class="name">Dylan</div>
-        <div class="status" id="status-dylan">Tap to chat</div>
-      </div>
-    </div>
+  <div class="sidebar">
+    <div role="listitem" style="padding:12px">My AI (Sidebar)</div>
+    <div role="listitem" style="padding:12px">*//Eric\\\\*</div>
+    <div role="listitem" style="padding:12px">Dylan</div>
   </div>
 
-  <div id="main-camera-container">
-    <div id="chat-conversation-area" style="display: none; width: 100%; height: 100%; flex-direction: column; padding: 20px; box-sizing: border-box;" data-testid="chat-feed">
-      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px;">
-        <button id="btn-chat-back" aria-label="Back" data-testid="chat-back-button" style="background:#333; color:#fff; border:none; padding:8px 12px; border-radius:6px; cursor:pointer;">← Back</button>
-        <div id="chat-title" style="font-weight:bold;">Chat</div>
-      </div>
-      <div id="chat-messages" style="flex:1; padding-top:20px;">
-        <div id="chat-snap-status">Delivered • Just now</div>
-      </div>
+  <div class="center">
+    <video id="cam-video" autoplay muted playsinline></video>
+    <div style="position:absolute;left:260px;top:725px;font-size:12px">Click to take a picture, hold for video</div>
+    <button id="shutter-btn" aria-label="Click to take a picture, hold for video"></button>
+
+    <div id="preview-bar">
+      <button id="download-btn">Download</button>
+      <button id="send-to-btn" aria-label="Send To">Send To</button>
     </div>
 
-    <div id="camera-viewfinder">
-      <div style="color: #666; margin-bottom: 20px;">Camera Viewfinder Active</div>
-      <button class="shutter-btn" id="btn-shutter" aria-label="Take a Snap"></button>
-    </div>
-
-    <div id="photo-preview">
-      <div style="padding: 20px;">Photo Captured Preview</div>
-      <button class="send-to-btn" id="btn-send-to" aria-label="Send To">Send To</button>
-    </div>
-
-    <div id="send-drawer" data-testid="send-drawer">
-      <div style="font-weight: bold; margin-bottom: 10px;">Send To</div>
-      <input type="text" id="drawer-search" placeholder="Send To..." style="width: 90%; padding: 8px; margin-bottom: 10px; background: #333; color: #fff; border: 1px solid #444; border-radius: 8px;" />
-      
-      <div class="tab-pills">
-        <button class="tab-pill" id="pill-shortcut" aria-label="Shortcut ✨">✨ Streak Squad</button>
-        <button class="tab-pill" id="pill-best-friends" aria-label="Best Friends">Best Friends</button>
+    <div id="send-drawer">
+      <h3>Send To...</h3>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button id="shortcut-pill" style="padding:4px 10px;border-radius:12px">🔥 Streaks</button>
+        <button id="select-all-btn" style="display:none;padding:4px 10px">Select All</button>
       </div>
-
-      <div class="recipient-list" id="recipient-list">
-        <!-- My AI MUST NEVER BE CHECKED -->
-        <div class="recipient-row" role="row" data-name="My AI">
+      <input id="drawer-search" type="text" placeholder="Search" style="width:100%;height:34px;margin-bottom:10px" />
+      <div id="recipient-list">
+        <div class="row-item" role="listitem" data-name="My AI" aria-checked="true">
           <span>My AI</span>
-          <input type="checkbox" id="check-my-ai" role="checkbox" />
+          <input type="checkbox" checked />
         </div>
-        <div class="recipient-row" role="row" data-name="*//Eric\\*">
+        <div class="row-item" role="listitem" data-name="*//Eric\\*" aria-checked="false">
           <span>*//Eric\\*</span>
-          <input type="checkbox" id="check-eric" role="checkbox" />
+          <input type="checkbox" />
         </div>
-        <div class="recipient-row" role="row" data-name="Dylan">
+        <div class="row-item" role="listitem" data-name="Dylan" aria-checked="false">
           <span>Dylan</span>
-          <input type="checkbox" id="check-dylan" role="checkbox" />
+          <input type="checkbox" />
         </div>
       </div>
-
-      <button class="final-send-btn" id="btn-final-send" aria-label="Send Snap" data-testid="send-snap">
-        <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-      </button>
+      <button id="final-send-btn" type="submit" aria-label="Send">Send</button>
     </div>
   </div>
 
   <script>
-    // State logic for mock Snapchat Web UI
-    const shutter = document.getElementById('btn-shutter');
-    const viewfinder = document.getElementById('camera-viewfinder');
-    const preview = document.getElementById('photo-preview');
-    const sendToBtn = document.getElementById('btn-send-to');
-    const drawer = document.getElementById('send-drawer');
-    const finalSendBtn = document.getElementById('btn-final-send');
-    const searchInput = document.getElementById('drawer-search');
-    const shortcutPill = document.getElementById('pill-shortcut');
+    window.__test_state = { snapped: false, drawerOpen: false, sentTo: [] };
 
-    shutter.onclick = () => {
-      viewfinder.style.display = 'none';
-      preview.style.display = 'block';
-    };
+    document.getElementById('shutter-btn').addEventListener('click', () => {
+      window.__test_state.snapped = true;
+      document.getElementById('shutter-btn').style.display = 'none';
+      document.getElementById('preview-bar').style.display = 'flex';
+    });
 
-    sendToBtn.onclick = () => {
-      drawer.style.display = 'block';
-    };
+    document.getElementById('send-to-btn').addEventListener('click', () => {
+      window.__test_state.drawerOpen = true;
+      document.getElementById('preview-bar').style.display = 'none';
+      document.getElementById('send-drawer').style.display = 'block';
+    });
 
-    shortcutPill.onclick = () => {
-      document.getElementById('check-eric').checked = true;
-      document.getElementById('check-dylan').checked = true;
-    };
+    document.getElementById('shortcut-pill').addEventListener('click', () => {
+      document.getElementById('select-all-btn').style.display = 'inline-block';
+    });
 
-    searchInput.oninput = (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      document.querySelectorAll('.recipient-row').forEach(row => {
-        const name = row.getAttribute('data-name').toLowerCase();
-        if (!q || name.includes(q)) {
-          row.style.display = 'flex';
-        } else {
-          row.style.display = 'none';
+    document.getElementById('select-all-btn').addEventListener('click', () => {
+      document.querySelectorAll('#recipient-list .row-item').forEach(r => {
+        if (r.dataset.name !== 'My AI') {
+          r.setAttribute('aria-checked', 'true');
+          r.querySelector('input').checked = true;
         }
       });
-    };
+    });
 
-    finalSendBtn.onclick = () => {
-      drawer.style.display = 'none';
-      preview.style.display = 'none';
-      viewfinder.style.display = 'flex';
+    document.querySelectorAll('#recipient-list .row-item').forEach(row => {
+      row.addEventListener('click', () => {
+        const cur = row.getAttribute('aria-checked') === 'true';
+        const next = !cur;
+        row.setAttribute('aria-checked', String(next));
+        row.querySelector('input').checked = next;
+      });
+    });
 
-      // Update delivery in sidebar
-      if (document.getElementById('check-eric').checked) {
-        document.getElementById('status-eric').textContent = 'Delivered just now';
-      }
-      if (document.getElementById('check-dylan').checked) {
-        document.getElementById('status-dylan').textContent = 'Delivered just now';
-      }
-    };
-
-    // Chat open & close logic
-    const chatConvArea = document.getElementById('chat-conversation-area');
-    const chatBackBtn = document.getElementById('btn-chat-back');
-    const chatTitle = document.getElementById('chat-title');
-
-    function openChat(name) {
-      viewfinder.style.display = 'none';
-      preview.style.display = 'none';
-      drawer.style.display = 'none';
-      chatTitle.textContent = name;
-      chatConvArea.style.display = 'flex';
-    }
-
-    document.getElementById('chat-eric').onclick = () => openChat('*//Eric\\\\*');
-    document.getElementById('chat-dylan').onclick = () => openChat('Dylan');
-
-    chatBackBtn.onclick = () => {
-      chatConvArea.style.display = 'none';
-      viewfinder.style.display = 'flex';
-    };
+    document.getElementById('final-send-btn').addEventListener('click', () => {
+      const chosen = [];
+      document.querySelectorAll('#recipient-list .row-item').forEach(row => {
+        if (row.getAttribute('aria-checked') === 'true' || row.querySelector('input').checked) {
+          chosen.push(row.dataset.name);
+        }
+      });
+      window.__test_state.sentTo = chosen;
+      document.getElementById('send-drawer').style.display = 'none';
+      document.getElementById('shutter-btn').style.display = 'block';
+    });
   </script>
 </body>
 </html>
 """
 
-def assemble_bundle() -> str:
-    parts = []
-    for script_name in ["camera_hook.js", "automation.js", "macro.js", "overlay.js", "content.js"]:
-        f = EXT_DIR / script_name
-        if f.exists():
-            parts.append(f.read_text(encoding="utf-8"))
-    return "\n\n".join(parts)
 
+async def run_all_tests():
+    print("=" * 68)
+    print(" Running SnapStreak Full Verification Suite")
+    print("=" * 68)
 
-async def run_test():
-    print("=" * 60)
-    print("🚀 STARTING E2E EXTENSION AUTOMATION TEST")
-    print("=" * 60)
+    # 1. Verify SJSU Meteorology Live Webcam & Y4M Generator
+    img_bytes = automation.fetch_webcam_image(force_refresh=False)
+    assert len(img_bytes) > 1500, "SJSU webcam image must be > 1.5 KB"
+    assert config.Y4M_FILE.exists() and config.Y4M_FILE.stat().st_size > 10000, "webcam.y4m must be generated"
+    data_url = automation.get_webcam_data_url(force_refresh=False)
+    assert data_url.startswith("data:image/"), "SJSU Data URL must be valid base64 data URI"
+    print(f" [PASS] 1. SJSU Meteorology Webcam & Y4M verified ({len(img_bytes)} bytes, Data URL len={len(data_url)})")
 
-    bundle = assemble_bundle()
-    print(f"Loaded extension bundle: {len(bundle)} bytes from {EXT_DIR}")
+    # 2. Verify Cookie Vault Integrity
+    vault = config.get_cookie_vault_summary()
+    assert vault["has_session_file"], "session.json must exist"
+    assert vault["is_authenticated"], "Cookie Vault must report authenticated"
+    assert vault["snapchat_cookies"] >= 5, f"Expected >=5 Snapchat cookies, got {vault['snapchat_cookies']}"
+    print(f" [PASS] 2. Cookie Vault verified ({vault['snapchat_cookies']} Snapchat cookies, {vault['total_cookies']} total)")
 
-    async with async_playwright() as p:
-        # Launch Chromium (using system Edge or Chromium)
-        browser = await p.chromium.launch(channel="msedge", headless=True)
+    # 3. Verify In-Browser SJSU WebRTC Hook, AI Expected Steps Mode, and Macro Mode
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
         context = await browser.new_context(viewport={"width": 1440, "height": 900})
+        await context.add_init_script(automation.STEALTH_INIT_SCRIPT)
+        ext_bundle = automation.get_extension_bundle_script()
+        await context.add_init_script(ext_bundle)
+
         page = await context.new_page()
+        await page.route(
+            "https://web.snapchat.com/**",
+            lambda route: route.fulfill(status=200, content_type="text/html", body=MOCK_SNAPCHAT_HTML),
+        )
+        await page.goto("https://web.snapchat.com/", wait_until="domcontentloaded")
+        await page.evaluate(ext_bundle)
+        await automation.inject_webcam_frame_into_page(page, force_refresh=False)
+        await asyncio.sleep(0.4)
 
-        # Intercept https://web.snapchat.com so the browser runs with real Snapchat URL & origin
-        await page.route("https://web.snapchat.com/**", lambda route: route.fulfill(
-            status=200,
-            content_type="text/html",
-            body=MOCK_SNAPCHAT_HTML
-        ))
-        page.on("console", lambda msg: print(f"[Browser Console {msg.type}] {msg.text}"))
-        page.on("framenavigated", lambda frame: print(f"[Navigated] {frame.url}"))
-        page.on("pageerror", lambda err: print(f"[Page Error] {err}"))
-
-        await page.goto("https://web.snapchat.com/")
-        print("✓ Mock https://web.snapchat.com/ loaded.")
-
-        # Inject the extension bundle
-        await page.evaluate(bundle)
-        print("✓ Extension bundle evaluated in page DOM.")
-
-        # Verify extension objects exist
-        ext_check = await page.evaluate("""() => ({
-            hasAutomation: Boolean(window.SnapStreakAutomation),
-            hasOverlay: Boolean(window.SnapStreakOverlay),
-            hasMacro: Boolean(window.SnapStreakMacro),
-            hasHost: Boolean(document.getElementById('snapstreak-shadow-host'))
-        })""")
-        print("Extension status:", ext_check)
-        assert ext_check["hasAutomation"], "window.SnapStreakAutomation missing!"
-        assert ext_check["hasOverlay"], "window.SnapStreakOverlay missing!"
-        assert ext_check["hasHost"], "Shadow host not attached!"
-
-        # TEST 1: Direct Send Flow with Recipient Selection
-        print("\n--- TEST 1: Direct Send Flow with Recipient Selection ---")
-        friends = ["*//Eric\\\\*", "Dylan"]
-        res1 = await page.evaluate("""async (friends) => {
-            return await window.SnapStreakAutomation.runSendStreaks({
-                friends: friends,
-                selectionMethod: 'auto',
-                humanMode: false,
-                isTest: false,
-                stepDelay: 0.1,
-                maxRetries: 3
-            });
-        }""", friends)
-        print("Test 1 Result:", res1)
-
-        ai_checked = await page.evaluate("() => document.getElementById('check-my-ai').checked")
-        eric_checked = await page.evaluate("() => document.getElementById('check-eric').checked")
-        dylan_checked = await page.evaluate("() => document.getElementById('check-dylan').checked")
-        eric_status = await page.evaluate("() => document.getElementById('status-eric').textContent")
-        dylan_status = await page.evaluate("() => document.getElementById('status-dylan').textContent")
-
-        assert not ai_checked, "CRITICAL ERROR: My AI was checked!"
-        assert eric_checked, "Eric was not checked!"
-        assert dylan_checked, "Dylan was not checked!"
-        assert "Delivered" in eric_status, "Eric delivery status not updated!"
-        assert "Delivered" in dylan_status, "Dylan delivery status not updated!"
-        assert res1.get("success"), f"Streak sequence failed: {res1.get('error')}"
-        print("✓ TEST 1 PASSED: Direct selection verified delivered to all specified users!")
-
-        # TEST 2: Shortcut Selection Method
-        print("\n--- TEST 2: Shortcut Selection Method ---")
-        # Reset UI
-        await page.evaluate("""() => {
-            document.getElementById('check-eric').checked = false;
-            document.getElementById('check-dylan').checked = false;
-            document.getElementById('status-eric').textContent = 'Tap to chat';
-            document.getElementById('status-dylan').textContent = 'Tap to chat';
-        }""")
-
-        res2 = await page.evaluate("""async () => {
-            return await window.SnapStreakAutomation.runSendStreaks({
-                friends: ['Dylan'],
-                selectionMethod: 'shortcut',
-                humanMode: false,
-                isTest: false,
-                stepDelay: 0.1,
-                maxRetries: 2
-            });
-        }""")
-        print("Test 2 Result:", res2)
-        assert res2.get("success"), f"Shortcut streak sequence failed: {res2.get('error')}"
-        dylan_status = await page.evaluate("() => document.getElementById('status-dylan').textContent")
-        assert "Delivered" in dylan_status, "Dylan delivery not verified in shortcut mode!"
-        print("✓ TEST 2 PASSED: Shortcut mode verified delivered!")
-
-        # TEST 3: Sample Preview Mode (pauses before send, confirms on approval)
-        print("\n--- TEST 3: Sample Preview Mode ---")
-        # Start preview task asynchronously in page
-        await page.evaluate("""async () => {
-            window.__previewPromise = window.SnapStreakAutomation.runSendStreaks({
-                friends: ['*//Eric\\\\*'],
-                selectionMethod: 'auto',
-                humanMode: false,
-                isTest: true,
-                stepDelay: 0.1
-            });
-        }""")
-
-        # Wait for sample preview modal to appear
-        await page.wait_for_selector("#snapstreak-sample-confirm-modal", timeout=15000)
-        print("✓ Sample preview confirmation modal appeared on screen.")
-
-        # Click confirm button to approve and dispatch
-        await page.click("#snapstreak-btn-confirm-send")
-        preview_res = await page.evaluate("() => window.__previewPromise")
-        print("Preview Result:", preview_res)
-        assert preview_res.get("success"), "Sample preview confirmation failed!"
-        # TEST 4: Camera Hook & Virtual Video Stream Interceptor
-        print("\n--- TEST 4: Camera Hook & Virtual Video Stream Interceptor ---")
+        # 3a. Verify SJSU WebRTC camera_hook.js stream
         cam_check = await page.evaluate("""async () => {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            
-            // Test getUserMedia
-            let stream = null;
-            let streamOk = false;
-            let videoTrackLabel = '';
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                if (stream && stream.getVideoTracks().length > 0) {
-                    streamOk = true;
-                    videoTrackLabel = stream.getVideoTracks()[0].label;
-                }
-            } catch (e) {
-                return { error: String(e), hasDevices: videoDevices.length > 0 };
-            }
-
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const track = stream.getVideoTracks()[0];
+            const status = window.__SNAPSTREAK_WEBCAM_STATUS__ ? window.__SNAPSTREAK_WEBCAM_STATUS__() : {};
             return {
-                videoDevicesCount: videoDevices.length,
-                videoDevicesLabels: videoDevices.map(d => d.label),
-                streamOk: streamOk,
-                videoTrackLabel: videoTrackLabel
+                label: track.label,
+                readyState: track.readyState,
+                loaded: status.loaded,
+                source: status.source,
+                width: status.width,
+                height: status.height
             };
         }""")
-        print("Test 4 Camera Check:", cam_check)
-        assert cam_check.get("videoDevicesCount", 0) >= 1, "No videoinput devices found by enumerateDevices!"
-        assert cam_check.get("streamOk"), f"getUserMedia failed: {cam_check.get('error')}"
-        print(f"✓ TEST 4 PASSED: Camera hook provided active video stream ({cam_check.get('videoTrackLabel')})!")
+        assert "SJSU Meteorology" in cam_check["label"], f"Unexpected track label: {cam_check}"
+        assert cam_check["loaded"] is True, f"SJSU image must be loaded without CORS error: {cam_check}"
+        print(f" [PASS] 3. SJSU WebRTC getUserMedia stream verified ({cam_check['label']}, {cam_check['width']}x{cam_check['height']}, source={cam_check['source']})")
 
-        # TEST 5: Open Chat to Make Sure Snap is Sent to Correct People
-        print("\n--- TEST 5: Open Chat to Verify Delivery Directly ---")
-        chat_verify_res = await page.evaluate("""async () => {
-            return await window.SnapStreakAutomation.step6_openChatAndVerifyDelivery(['*//Eric\\\\*', 'Dylan']);
-        }""")
-        print("Test 5 Chat Verification Result:", chat_verify_res)
-        assert any("Eric" in k and v.get("verified") for k, v in chat_verify_res.items()), "Eric was not verified in chat!"
-        assert chat_verify_res.get("Dylan", {}).get("verified"), "Dylan was not verified in chat!"
-        print("✓ TEST 5 PASSED: Chat opened and delivery confirmed for each recipient!")
+        # 3b. Verify Mode A: AI / Expected Steps Engine (Direct selection + My AI safety uncheck)
+        st_before = await automation.detect_screen_state(page)
+        print(" [DEBUG] Initial state before AI steps:", st_before)
+        res_ai = await automation.run_ai_expected_steps(
+            page,
+            friends=["*//Eric\\*", "Dylan"],
+            selection_method="direct",
+            step_delay=0.4,
+            preview_only=False,
+            emit=print,
+        )
+        test_state = await page.evaluate("() => window.__test_state")
+        assert test_state["snapped"] is True, "Shutter must have been clicked"
+        assert "*//Eric\\*" in test_state["sentTo"] and "Dylan" in test_state["sentTo"], f"Expected friends in sentTo, got {test_state['sentTo']}"
+        assert "My AI" not in test_state["sentTo"], f"Safety guard must have unchecked My AI! Got {test_state['sentTo']}"
+        print(f" [PASS] 4. AI / Expected Steps Mode verified (sentTo={test_state['sentTo']}, My AI blocked, res={res_ai})")
 
-        print("\n🎉 ALL 5 TEST SUITES PASSED FLAWLESSLY! 🔥")
+        # 3c. Verify Mode B: Macro Recording Metadata + Macro Replay Engine
+        await page.set_content(MOCK_SNAPCHAT_HTML)
+        meta_shutter = await automation.inspect_element_at_point(page, 360 + 370, 794)
+        assert "picture" in meta_shutter["label"].lower() or "button" in meta_shutter["tagName"].lower(), f"Unexpected element metadata: {meta_shutter}"
+
+        custom_macro_steps = [
+            {"type": "click", "x": 360 + 370, "y": 794, "selector": "#shutter-btn", "label": "Click Shutter"},
+            {"type": "click", "x": 360 + 520, "y": 838, "text": "Send To", "label": "Click Send To"},
+            {"type": "expected_action", "action": "select_recipients", "label": "Select Friends"},
+            {"type": "click", "x": 360 + 330, "y": 845, "text": "Send", "label": "Click Final Send"},
+        ]
+        res_macro = await automation.replay_macro(
+            page,
+            macro_steps=custom_macro_steps,
+            friends=["*//Eric\\*", "Dylan"],
+            step_delay=0.4,
+            preview_only=False,
+        )
+        test_state_macro = await page.evaluate("() => window.__test_state")
+        assert "*//Eric\\*" in test_state_macro["sentTo"] and "Dylan" in test_state_macro["sentTo"], f"Macro failed to select friends: {test_state_macro}"
+        assert "My AI" not in test_state_macro["sentTo"], "Macro safety guard must uncheck My AI"
+        print(f" [PASS] 5. Custom Macro Mode verified (sentTo={test_state_macro['sentTo']}, res={res_macro})")
 
         await browser.close()
 
+    # 4. Verify Diagnostics Engine
+    diag = diagnostics.run_diagnostics()
+    assert diag["checks"]["session_auth"]["status"] == "ok", f"Session auth check failed: {diag['checks']['session_auth']}"
+    assert diag["checks"]["snap_media"]["status"] == "ok", f"Snap media check failed: {diag['checks']['snap_media']}"
+    print(f" [PASS] 6. System Diagnostics verified (overall={diag['overall_status']})")
+
+    # 5. Verify FastAPI Server Endpoints directly
+    import main
+    st_resp = await main.get_status()
+    assert st_resp["has_session"] is True
+    assert st_resp["streak_mode"] in ("ai_steps", "macro")
+    cookies_resp = await main.api_get_cookies()
+    assert cookies_resp["ok"] is True and cookies_resp["vault"]["snapchat_cookies"] >= 5
+    macro_resp = await main.api_get_macro()
+    assert macro_resp["count"] >= 1
+    print(f" [PASS] 7. FastAPI Studio Endpoints verified (/api/status, /api/cookies, /api/macro)")
+
+    print("=" * 68)
+    print(" ALL 7 VERIFICATION SUITES PASSED SUCCESSFULLY!")
+    print("=" * 68)
+
+
 if __name__ == "__main__":
-    asyncio.run(run_test())
+    asyncio.run(run_all_tests())

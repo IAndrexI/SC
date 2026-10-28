@@ -7,8 +7,8 @@ __pycache__/
 /data/
 desktop_data/
 linux-server/desktop_data/
+windows-extension/desktop_data/
 snap.png
-
 
 # Logs
 *.log

@@ -22,6 +22,21 @@
 
   ensureCameraHook();
 
+  // Bridge SJSU webcam frame requests from camera_hook.js (MAIN world) to background service worker
+  window.addEventListener('SNAPSTREAK_REQUEST_SJSU_FRAME', () => {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({ type: 'FETCH_SJSU_BASE64' }, (resp) => {
+          if (resp && resp.ok && resp.dataUrl) {
+            window.dispatchEvent(new CustomEvent('SNAPSTREAK_WEBCAM_FRAME', {
+              detail: { dataUrl: resp.dataUrl, timestamp: Date.now() }
+            }));
+          }
+        });
+      }
+    } catch (e) {}
+  });
+
   function isVisible(el) {
     if (!el) return false;
     if (typeof el.checkVisibility === 'function') {
@@ -306,7 +321,8 @@
       const selectionMethod = customOpts.selectionMethod || cfg.selectionMethod || 'auto';
       const stepDelay = customOpts.stepDelay || cfg.stepDelay || 3;
       const humanMode = customOpts.humanMode ?? cfg.humanMode ?? true;
-      const isDirect = (cfg.sendingEngine !== 'macro');
+      const requestedMode = customOpts.streakMode || customOpts.sendingEngine || cfg.streakMode || cfg.sendingEngine || 'direct';
+      const isDirect = (requestedMode !== 'macro');
 
       let res = null;
       if (isDirect && window.SnapStreakAutomation) {

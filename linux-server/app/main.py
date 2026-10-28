@@ -1,1308 +1,891 @@
 """
-main.py – FastAPI application.
-
-Endpoints:
-  GET  /            → web UI (static HTML)
-  GET  /api/config  → current settings
-  POST /api/config  → update settings
-  POST /api/login   → trigger headless browser login flow
-  GET  /api/status  → login status, next run time, last results
-  POST /api/send    → trigger an immediate streak send
-  POST /api/upload-snap  → upload a custom snap image
-  GET  /api/logs    → last 100 log lines
-  WS   /ws/stream   → live log streaming during send
+main.py – FastAPI Web Studio Server + APScheduler + WebSocket Screencast & Control API.
 """
 
 import asyncio
+import base64
 import json
-import logging
 import os
+import subprocess
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Any
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("snapstreak")
+from typing import Set
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import io
-import zipfile
 
 import config
-import automation
+from automation import (
+    DATA_DIR,
+    LOG_FILE,
+    SCREENSHOT_FILE,
+    SESSION_FILE,
+    SNAP_IMAGE,
+    WEBCAM_FILE,
+    WEBCAM_URL,
+    MACRO_FILE,
+    fetch_webcam_image,
+    get_webcam_data_url,
+    inject_webcam_frame_into_page,
+    send_streaks,
+    preview_streaks,
+    get_execution_state,
+    request_stop,
+    toggle_pause,
+    log,
+)
 import login_session
-import bliss_client
-import socket
+import diagnostics
+
+_ws_clients: Set[WebSocket] = set()
+_last_run: str | None = None
+_last_results: dict = {}
+_running: bool = False
+_preview_data: dict = {"screenshot": "", "timestamp": None, "results": {}}
+_loop: asyncio.AbstractEventLoop | None = None
+
+scheduler = AsyncIOScheduler()
 
 
-# ---------------------------------------------------------------------------
-# Version & Paths
-# ---------------------------------------------------------------------------
-APP_VERSION = "5.1.0"
-DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "desktop_data"
-DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)))
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-try:
-    STATIC_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
-
-import subprocess
-import sys
-
-def _find_repo_dir() -> Path:
-    candidates = [
-        Path("/opt/sc"),
-        Path(__file__).resolve().parent.parent.parent,
-        Path(__file__).resolve().parent.parent,
-        Path("."),
-    ]
-    for c in candidates:
-        if (c / ".git").exists():
-            return c.resolve()
-    return Path("/opt/sc")
-
-def get_git_info() -> dict:
-    repo = _find_repo_dir()
-    try:
-        res = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3)
-        commit = res.stdout.strip() or "unknown"
-        return {"commit": commit, "repo": str(repo)}
-    except Exception:
-        return {"commit": "unknown", "repo": str(repo)}
-
-# ---------------------------------------------------------------------------
-# In-memory state
-# ---------------------------------------------------------------------------
-_init_logged_in = False
-try:
-    _init_logged_in = automation.SESSION_FILE.exists()
-except Exception:
-    pass
-
-_state: dict[str, Any] = {
-    "logged_in": _init_logged_in,
-    "last_run_time": None,
-    "last_run_results": {},
-    "running": False,
-}
-
-_ws_clients: list[WebSocket] = []
-_scheduler = AsyncIOScheduler(timezone=os.environ.get("SC_TZ", "America/Los_Angeles"))
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _emit(msg: str):
-    """Broadcast a log line to all connected WebSocket clients."""
-    for ws in list(_ws_clients):
-        asyncio.create_task(ws.send_text(msg))
-
-
-async def _do_send():
-    if _state["running"]:
+def _broadcast(line: str):
+    if _loop is None:
         return
-    _state["running"] = True
-    cfg = config.load()
-    mode = cfg.get("mode", "web")
-    raw_friends = cfg.get("friends") or ["*//Eric\\*", "Dylan"]
-    friends = []
-    for f in raw_friends:
-        # Normalize double-escaped backslashes e.g. \\\\ -> \\
-        norm = f.replace("\\\\\\\\", "\\\\").replace("\\\\*", "\\*")
-        friends.append(norm)
-    selection_method = cfg.get("selection_method", "auto")
+    for ws in list(_ws_clients):
+        asyncio.run_coroutine_threadsafe(_safe_send(ws, line), _loop)
+
+
+async def _safe_send(ws: WebSocket, text: str):
     try:
-        # Always fetch fresh webcam frame before sending
-        automation.fetch_webcam_image(force_refresh=True)
+        await ws.send_text(text)
+    except Exception:
+        _ws_clients.discard(ws)
 
-        if mode == "bliss":
-            _emit("Using Bliss OS Android Automation to send streaks...")
-            results = await bliss_client.send_streaks(friends, emit=_emit)
-        elif login_session.is_active():
-            _emit("Using currently active live browser session to send streaks...")
-            results = await login_session.run_streak_in_active_session(friends, emit=_emit)
-        else:
-            _emit(f"Using desktop browser emulation (Selection: {selection_method.upper()}) to send streaks...")
-            results = await automation.send_streaks(
-                friends=friends,
-                selection_method=selection_method,
-                emit=_emit,
-            )
 
-        _state["last_run_results"] = results
-        import time
-        _state["last_run_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        _state["logged_in"] = automation.SESSION_FILE.exists()
+async def _scheduled_job(force: bool = False):
+    global _last_run, _last_results, _running
+    if _running:
+        log("WARN", "Send already in progress — skipping duplicate trigger.", _broadcast)
+        return
+
+    cfg = config.load()
+    if not force and not cfg.get("enabled", True):
+        log("INFO", "Scheduled run skipped (schedule disabled in config).", _broadcast)
+        return
+
+    friends = cfg.get("friends", [])
+    streak_mode = cfg.get("streak_mode", "ai_steps")
+    selection_method = cfg.get("selection_method", "direct")
+
+    if not friends and streak_mode != "macro":
+        log("WARN", "No friends configured — add streak recipients first.", _broadcast)
+        return
+
+    _running = True
+    _last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        log("INFO", f"🚀 Starting Auto Streak Maker (Mode: {streak_mode.upper()}, Method: {selection_method})...", _broadcast)
+        _last_results = await send_streaks(
+            friends=friends,
+            emit=_broadcast,
+            selection_method=selection_method,
+            streak_mode=streak_mode,
+        )
+    except Exception as ex:
+        log("ERROR", f"Automation error: {ex}", _broadcast)
+        _last_results = {"error": str(ex)}
     finally:
-        _state["running"] = False
-
+        _running = False
 
 
 def _reschedule(schedule_times: list[str] | str):
-    """Update APScheduler jobs with HH:MM times without wiping other jobs."""
-    # Remove existing daily streak jobs
-    for job in list(_scheduler.get_jobs()):
-        if job.id == "daily_streak" or job.id.startswith("daily_streak_"):
-            try:
-                _scheduler.remove_job(job.id)
-            except Exception:
-                pass
+    for job in list(scheduler.get_jobs()):
+        if job.id.startswith("daily_streaks"):
+            scheduler.remove_job(job.id)
 
-    times = config.clean_schedule_times(schedule_times)
+    if isinstance(schedule_times, str):
+        times_list = [schedule_times]
+    elif isinstance(schedule_times, list) and schedule_times:
+        times_list = schedule_times
+    else:
+        times_list = ["09:00"]
 
-    for idx, st in enumerate(times):
+    seen = set()
+    scheduled = []
+    for idx, t_str in enumerate(times_list):
         try:
-            parts = st.strip().split(":")
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-            job_id = f"daily_streak_{idx}" if len(times) > 1 else "daily_streak"
-            _scheduler.add_job(
-                _do_send,
-                trigger=CronTrigger(hour=hour, minute=minute),
-                id=job_id,
+            clean_t = str(t_str).strip()
+            if clean_t in seen or ":" not in clean_t:
+                continue
+            seen.add(clean_t)
+            hour, minute = map(int, clean_t.split(":"))
+            scheduler.add_job(
+                _scheduled_job,
+                CronTrigger(hour=hour, minute=minute),
+                id=f"daily_streaks_{idx}_{hour:02d}{minute:02d}",
                 replace_existing=True,
             )
-            log.info(f"Scheduled {job_id} at {hour:02d}:{minute:02d}")
-        except Exception as e:
-            log.error(f"Failed to schedule daily streak with {st}: {e}")
+            scheduled.append(f"{hour:02d}:{minute:02d}")
+        except Exception as ex:
+            log("ERROR", f"Invalid schedule_time '{t_str}': {ex}")
+
+    if scheduled:
+        log("INFO", f"⏰ Scheduled daily streaks at {', '.join(scheduled)}")
 
 
-# ---------------------------------------------------------------------------
-# Lifespan
-# ---------------------------------------------------------------------------
+async def _webcam_auto_refresh_job():
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, fetch_webcam_image, True)
+        if login_session.is_active():
+            page = login_session._state.get("page")
+            if page:
+                await inject_webcam_frame_into_page(page, force_refresh=False)
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        cfg = config.load()
-        if cfg.get("enabled", True):
-            _reschedule(cfg.get("schedule_times") or cfg.get("schedule_time", "09:00"))
-    except Exception as e:
-        log.error(f"Failed to load initial schedule: {e}")
+    global _loop
+    _loop = asyncio.get_running_loop()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    cfg = config.load()
+    config.load_macro_data()
 
-    # 15-minute webcam frame refresh
-    def _refresh_cam():
-        try:
-            automation.fetch_webcam_image(force_refresh=True)
-        except Exception:
-            pass
-
-    try:
-        _scheduler.add_job(
-            _refresh_cam,
-            trigger=CronTrigger(minute="*/15"),
-            id="webcam_refresh_job",
-            replace_existing=True,
-        )
-        # 30-minute Git auto-sync updater: pulls latest code automatically
-        def _poll_git_update():
-            try:
-                repo = _find_repo_dir()
-                if not repo or not (repo / ".git").exists():
-                    return
-                subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=20)
-                local_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
-                remote_c = subprocess.run(["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
-                if local_c and remote_c and local_c != remote_c:
-                    log.info(f"🔄 Auto-update: new commit detected on origin/main ({remote_c[:7]}). Pulling...")
-                    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "FETCH_HEAD"], capture_output=True, text=True, timeout=15)
-                    try:
-                        res = subprocess.run(["systemctl", "restart", "sc"], timeout=5)
-                        if res.returncode == 0:
-                            return
-                    except Exception:
-                        pass
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
-            except Exception as ex:
-                log.warning(f"Git auto-sync notice: {ex}")
-
-        _scheduler.add_job(
-            _poll_git_update,
-            trigger=CronTrigger(minute="*/30"),
-            id="git_autosync_job",
-            replace_existing=True,
-        )
-    except Exception:
-        pass
-
-    try:
-        _scheduler.start()
-    except Exception as e:
-        log.error(f"Scheduler failed to start: {e}")
-
-    # Autostart emulated background browser with SnapStreak extension
-    try:
-        cfg = config.load()
-        if cfg.get("browser_autostart", True) and cfg.get("mode", "web") == "web":
-            async def _delayed_browser_autostart():
-                await asyncio.sleep(2.5)
-                if not login_session.is_active() and not login_session.is_starting():
-                    log.info("Launching background desktop browser session with SnapStreak extension...")
-                    try:
-                        await login_session.start(emit=_emit)
-                        _emit("LOGIN_SESSION_READY")
-                    except Exception as err:
-                        log.warning(f"Background browser autostart notice: {err}")
-            asyncio.create_task(_delayed_browser_autostart())
-    except Exception as e:
-        log.warning(f"Failed to schedule browser autostart: {e}")
-
+    _loop.run_in_executor(None, fetch_webcam_image, False)
+    _reschedule(cfg.get("schedule_times") or [cfg.get("schedule_time", "09:00")])
+    scheduler.add_job(
+        _webcam_auto_refresh_job,
+        "interval",
+        minutes=5,
+        id="webcam_refresh",
+        replace_existing=True,
+    )
+    scheduler.start()
+    log("INFO", "✨ SnapStreak Studio started — SJSU Webcam & Cookie Vault active.")
     yield
-
-    try:
-        _scheduler.shutdown()
-    except Exception:
-        pass
+    scheduler.shutdown(wait=False)
+    await login_session.cancel()
 
 
-app = FastAPI(title="SnapStreak", lifespan=lifespan)
+app = FastAPI(title="SnapStreak Studio", lifespan=lifespan)
 
-# Serve static files (the web UI)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-@app.get("/api/webcam-feed")
-async def get_webcam_feed():
-    """Return the latest meteorology webcam frame."""
-    from fastapi.responses import Response
-    data = automation.fetch_webcam_image(force_refresh=True)
-    return Response(
-        content=data,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
-    )
-
-
-
-
-# ---------------------------------------------------------------------------
-# Routes – UI
-# ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-async def root():
-    candidates = [
-        STATIC_DIR / "index.html",
-        Path(__file__).resolve().parent / "static" / "index.html",
-        Path("/opt/sc/linux-server/app/static/index.html"),
-        Path("/opt/sc/app/static/index.html"),
-        Path("/opt/snapstreak/linux-server/app/static/index.html"),
-    ]
-    for p in candidates:
-        if p.exists():
-            return HTMLResponse(p.read_text(encoding="utf-8"))
-    return HTMLResponse("<h2>SnapStreak is running</h2><p>Static UI loading...</p>", status_code=200)
+async def index():
+    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Routes – API
-# ---------------------------------------------------------------------------
-class ConfigUpdate(BaseModel):
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG & STATUS API
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ConfigPayload(BaseModel):
     friends: list[str] | None = None
     schedule_time: str | None = None
     schedule_times: list[str] | None = None
     enabled: bool | None = None
     mode: str | None = None
-    selection_method: str | None = None
     browser_engine: str | None = None
-    step_delay: int | None = None
-    bliss_host: str | None = None
-    bliss_port: int | None = None
+    streak_mode: str | None = None
+    selection_method: str | None = None
+    shortcut_name: str | None = None
+    step_delay_seconds: float | None = None
+    use_coordinate_delay: bool | None = None
+    auto_save_cookies: bool | None = None
+    strict_safety_guard: bool | None = None
+    snap_image_custom: bool | None = None
+    snapchat_username: str | None = None
+    snapchat_password: str | None = None
 
 
 @app.get("/api/config")
 async def get_config():
-    try:
-        return config.load()
-    except Exception:
-        return config._DEFAULTS
-
-
-@app.post("/api/config")
-async def update_config(body: ConfigUpdate):
     cfg = config.load()
-    if body.friends is not None:
-        # Strip whitespace and @ symbols
-        cfg["friends"] = [u.strip().lstrip("@") for u in body.friends if u.strip()]
-    if body.schedule_times is not None:
-        cfg["schedule_times"] = config.clean_schedule_times(body.schedule_times)
-        if cfg["schedule_times"]:
-            cfg["schedule_time"] = cfg["schedule_times"][0]
-        if cfg["enabled"]:
-            _reschedule(cfg["schedule_times"])
-    elif body.schedule_time is not None:
-        cfg["schedule_times"] = config.clean_schedule_times([body.schedule_time])
-        cfg["schedule_time"] = cfg["schedule_times"][0]
-        if cfg["enabled"]:
-            _reschedule(cfg["schedule_times"])
-    if body.enabled is not None:
-        cfg["enabled"] = body.enabled
-        if cfg["enabled"]:
-            _reschedule(cfg.get("schedule_times") or cfg.get("schedule_time", "09:00"))
-        else:
-            for job in list(_scheduler.get_jobs()):
-                if job.id.startswith("daily_streak"):
-                    _scheduler.remove_job(job.id)
-    if body.mode is not None:
-        cfg["mode"] = body.mode
-    if body.browser_engine is not None:
-        cfg["browser_engine"] = body.browser_engine
-    if body.selection_method is not None:
-        cfg["selection_method"] = body.selection_method
-    if body.step_delay is not None:
-        cfg["step_delay"] = int(body.step_delay)
-    if body.bliss_host is not None:
-        cfg["bliss_host"] = body.bliss_host.strip()
-    if body.bliss_port is not None:
-        cfg["bliss_port"] = int(body.bliss_port)
-    config.save(cfg)
-    return cfg
-
-
-@app.get("/api/status")
-async def get_status(request: Request):
-    try:
-        cfg = config.load()
-        next_run = None
-        next_runs = []
-        for job in _scheduler.get_jobs():
-            if job.id == "daily_streak" or job.id.startswith("daily_streak_"):
-                if job.next_run_time:
-                    next_runs.append(str(job.next_run_time))
-        if next_runs:
-            next_runs.sort()
-            next_run = next_runs[0]
-
-        host_ip = request.url.hostname or "localhost"
-        novnc_url = f"http://{host_ip}:{login_session.NOVNC_PORT}/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify"
-
-        is_logged_in = False
-        try:
-            if cfg.get("mode") == "bliss":
-                is_logged_in = bliss_client.is_connected()
-            else:
-                is_logged_in = automation.SESSION_FILE.exists()
-        except Exception:
-            pass
-
-        return {
-            "version":         APP_VERSION,
-            "logged_in":       is_logged_in,
-            "login_active":    login_session.is_active(),
-            "login_starting":  login_session.is_starting(),
-            "vnc_healthy":     login_session.is_vnc_healthy(),
-            "novnc_url":       novnc_url,
-            "running":         _state.get("running", False),
-            "last_run_time":   _state.get("last_run_time"),
-            "last_run_results": _state.get("last_run_results", {}),
-            "next_run":        next_run,
-            "next_runs":       next_runs,
-            "schedule_times":  cfg.get("schedule_times") or [cfg.get("schedule_time", "09:00")],
-            "enabled":         cfg.get("enabled", True),
-            "friend_count":    len(cfg.get("friends", [])),
-            "mode":            cfg.get("mode", "web"),
-            "bliss_connected": bliss_client.is_connected() if hasattr(bliss_client, "is_connected") else False,
-            "bliss_target":    bliss_client.get_target_device() if hasattr(bliss_client, "get_target_device") else "127.0.0.1:5555",
-            "selection_method": cfg.get("selection_method", "auto"),
-            "awaiting_confirmation": _state.get("awaiting_confirmation", False),
-            "paused":          _state.get("paused", False),
-        }
-    except Exception as ex:
-        host_ip = request.url.hostname or "localhost"
-        return {
-            "error": str(ex),
-            "logged_in": False,
-            "login_active": False,
-            "novnc_url": f"http://{host_ip}:6080/vnc.html?autoconnect=true&reconnect=true&reconnect_delay=1500&resize=scale&path=websockify",
-            "running": False,
-            "last_run_time": None,
-            "last_run_results": {},
-            "next_run": None,
-            "enabled": False,
-            "friend_count": 0,
-            "mode": "web",
-            "bliss_connected": False,
-            "bliss_target": "127.0.0.1:5555",
-            "selection_method": "auto",
-        }
-
-
-@app.get("/api/system/info")
-async def system_info():
-    """Return application version, current git commit, and repository status."""
-    info = get_git_info()
+    macro_info = login_session.get_macro_info()
+    vault = config.get_cookie_vault_summary()
     return {
-        "version": APP_VERSION,
-        "commit": info.get("commit", "unknown"),
-        "repo": info.get("repo", "unknown"),
+        **cfg,
+        "has_session": vault["is_authenticated"],
+        "cookie_vault": vault,
+        "has_snap": SNAP_IMAGE.exists() or WEBCAM_FILE.exists(),
+        "has_webcam": WEBCAM_FILE.exists(),
+        "webcam_url": WEBCAM_URL,
+        "has_macro": macro_info["count"] > 0,
+        "macro_info": macro_info,
     }
 
 
-@app.post("/api/system/update")
-async def system_update():
-    """Fetch latest commits from GitHub origin/main and restart the service."""
-    repo = _find_repo_dir()
-    try:
-        fetch_res = subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], capture_output=True, text=True, timeout=25)
-        reset_res = subprocess.run(["git", "-C", str(repo), "reset", "--hard", "FETCH_HEAD"], capture_output=True, text=True, timeout=25)
-        _emit(f"🔄 Git updated: {reset_res.stdout.strip()}")
+@app.post("/api/config")
+async def update_config(payload: ConfigPayload):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    cfg = config.save(updates)
+    if "schedule_times" in updates or "schedule_time" in updates:
+        _reschedule(cfg.get("schedule_times") or [cfg.get("schedule_time", "09:00")])
 
-        async def _restart_service():
-            await asyncio.sleep(1.0)
+    # Sync updated config into active browser session if running
+    if login_session.is_active():
+        page = login_session._state.get("page")
+        if page:
             try:
-                res = subprocess.run(["systemctl", "restart", "sc"], timeout=5)
-                if res.returncode == 0:
-                    return
+                await page.evaluate(
+                    """(newCfg) => {
+                        window.__SNAPSTREAK_SERVER_CONFIG__ = Object.assign(window.__SNAPSTREAK_SERVER_CONFIG__ || {}, newCfg);
+                    }""",
+                    {
+                        "friends": cfg.get("friends", []),
+                        "selectionMethod": cfg.get("selection_method", "direct"),
+                        "streakMode": cfg.get("streak_mode", "ai_steps"),
+                        "sendingEngine": "macro" if cfg.get("streak_mode") == "macro" else "direct",
+                        "shortcutName": cfg.get("shortcut_name", "Streaks"),
+                        "stepDelay": float(cfg.get("step_delay_seconds", 1.5)),
+                    },
+                )
             except Exception:
                 pass
-            os.execv(sys.executable, [sys.executable] + sys.argv)
 
-        asyncio.create_task(_restart_service())
-        return {
-            "ok": True,
-            "message": "Updated to latest commit from GitHub! Service is restarting...",
-            "output": reset_res.stdout.strip() or reset_res.stderr.strip(),
-        }
-    except Exception as ex:
-        raise HTTPException(status_code=500, detail=str(ex))
+    log(
+        "INFO",
+        f"⚙️ Config saved — Mode={cfg.get('streak_mode')}, Method={cfg.get('selection_method')}, Friends={cfg.get('friends')}",
+        _broadcast,
+    )
+    return {"ok": True, "config": cfg}
 
 
-@app.get("/api/system/diagnostics")
-async def system_diagnostics():
-    """Perform live server, network, session, and browser health diagnostic checks."""
-    try:
-        import diagnostics
-        return diagnostics.run_system_diagnostics(login_session_module=login_session)
-    except Exception as ex:
-        raise HTTPException(status_code=500, detail=str(ex))
+@app.get("/api/status")
+async def get_status():
+    cfg = config.load()
+    vault = config.get_cookie_vault_summary()
+    exec_state = get_execution_state()
+    macro_info = login_session.get_macro_info()
+
+    next_runs = []
+    for job in scheduler.get_jobs():
+        if job.id.startswith("daily_streaks") and job.next_run_time:
+            next_runs.append(job.next_run_time)
+    next_runs.sort()
+    next_run = next_runs[0].strftime("%Y-%m-%d %H:%M:%S %Z") if next_runs else None
+
+    return {
+        "running": _running or exec_state.get("running", False),
+        "execution": exec_state,
+        "last_run": _last_run,
+        "last_results": _last_results,
+        "next_run": next_run,
+        "schedule_times": cfg.get("schedule_times", [cfg.get("schedule_time", "09:00")]),
+        "has_session": vault["is_authenticated"],
+        "cookie_vault": vault,
+        "has_snap": SNAP_IMAGE.exists() or WEBCAM_FILE.exists(),
+        "has_webcam": WEBCAM_FILE.exists(),
+        "webcam_url": WEBCAM_URL,
+        "snap_image_custom": cfg.get("snap_image_custom", False),
+        "login_active": login_session.is_active(),
+        "login_starting": login_session.is_starting(),
+        "login_url": login_session.get_Current_Url(),
+        "screen_state": login_session.get_Screen_State(),
+        "browser_engine": cfg.get("browser_engine", "chromium"),
+        "streak_mode": cfg.get("streak_mode", "ai_steps"),
+        "selection_method": cfg.get("selection_method", "direct"),
+        "step_delay_seconds": cfg.get("step_delay_seconds", 1.5),
+        "friends": cfg.get("friends", []),
+        "has_screenshot": SCREENSHOT_FILE.exists(),
+        "has_macro": macro_info["count"] > 0,
+        "macro_info": macro_info,
+    }
 
 
-class ResolveInput(BaseModel):
-    fix_type: str = "all"
+# ─────────────────────────────────────────────────────────────────────────────
+# COOKIE VAULT ENDPOINTS (PRESERVE / SAVE / IMPORT / EXPORT / RESTORE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/cookies")
+async def api_get_cookies():
+    vault = config.get_cookie_vault_summary()
+    cookie_list = []
+    if SESSION_FILE.exists():
+        try:
+            state = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+            raw_cookies = state.get("cookies", []) if isinstance(state, dict) else []
+            for c in raw_cookies:
+                if isinstance(c, dict):
+                    cookie_list.append({
+                        "domain": c.get("domain", ""),
+                        "name": c.get("name", ""),
+                        "path": c.get("path", "/"),
+                        "secure": c.get("secure", False),
+                        "httpOnly": c.get("httpOnly", False),
+                        "expires": c.get("expires"),
+                        "value_preview": (str(c.get("value", ""))[:10] + "…") if len(str(c.get("value", ""))) > 10 else str(c.get("value", "")),
+                    })
+        except Exception:
+            pass
+    return {"ok": True, "vault": vault, "cookies": cookie_list}
 
 
-@app.post("/api/system/resolve-issues")
-async def system_resolve_issues(body: ResolveInput | None = None):
-    """Run automated or targeted self-healing resolution for any detected server issues."""
-    try:
-        import diagnostics
-        fix_type = body.fix_type if body else "all"
-        return await diagnostics.resolve_issues(fix_type=fix_type, emit=_emit)
-    except Exception as ex:
-        raise HTTPException(status_code=500, detail=str(ex))
+@app.post("/api/cookies/save")
+async def api_save_cookies():
+    res = await login_session.save(emit=_broadcast)
+    return {**res, "vault": config.get_cookie_vault_summary()}
 
 
+class CookieImportPayload(BaseModel):
+    cookies: str | list | dict
 
-class LoginStartInput(BaseModel):
+
+@app.post("/api/cookies/import")
+async def api_import_cookies(payload: CookieImportPayload):
+    res = await login_session.import_cookies(payload.cookies, emit=_broadcast)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("message", "Cookie import failed"))
+    return {**res, "vault": config.get_cookie_vault_summary()}
+
+
+@app.post("/api/cookies/restore-backup")
+async def api_restore_cookie_backup():
+    res = await login_session.restore_cookie_backup(emit=_broadcast)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("message", "Restore backup failed"))
+    return {**res, "vault": config.get_cookie_vault_summary()}
+
+
+@app.get("/api/cookies/export")
+async def api_export_cookies():
+    config.ensure_data_dirs()
+    if not SESSION_FILE.exists():
+        raise HTTPException(404, "No session.json file saved yet")
+    return FileResponse(
+        str(SESSION_FILE),
+        media_type="application/json",
+        filename="snapchat_session_cookies.json",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SJSU METEOROLOGY WEBCAM ENDPOINTS (CORS-SAFE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/webcam-feed")
+async def get_webcam_feed(refresh: bool = False):
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, fetch_webcam_image, refresh)
+    if data:
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+    raise HTTPException(502, "Unable to fetch SJSU webcam image")
+
+
+@app.get("/api/webcam-b64")
+async def get_webcam_b64(refresh: bool = False):
+    loop = asyncio.get_running_loop()
+    data_url = await loop.run_in_executor(None, get_webcam_data_url, refresh)
+    if not data_url:
+        raise HTTPException(502, "Unable to load SJSU webcam Data URL")
+    return JSONResponse(
+        content={"ok": True, "data_url": data_url, "timestamp": int(time.time())},
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/webcam-refresh")
+async def refresh_webcam():
+    cfg = config.load()
+    cfg["snap_image_custom"] = False
+    config.save(cfg)
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, fetch_webcam_image, True)
+    if login_session.is_active():
+        page = login_session._state.get("page")
+        if page:
+            await inject_webcam_frame_into_page(page, force_refresh=False)
+    if data:
+        log("INFO", f"📷 Refreshed live SJSU Meteorology webcam frame ({len(data):,} bytes).", _broadcast)
+        return {"ok": True, "size": len(data)}
+    raise HTTPException(502, "Failed to refresh SJSU webcam frame")
+
+
+@app.post("/api/snap-image")
+async def upload_snap_image(file: UploadFile = File(...)):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File must be an image (PNG/JPEG/WEBP)")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    data = await file.read()
+    SNAP_IMAGE.write_bytes(data)
+    cfg = config.load()
+    cfg["snap_image_custom"] = True
+    config.save(cfg)
+    if login_session.is_active():
+        page = login_session._state.get("page")
+        if page:
+            await inject_webcam_frame_into_page(page, force_refresh=False)
+    log("INFO", f"🖼️ Custom snap image uploaded ({len(data):,} bytes)", _broadcast)
+    return {"ok": True, "size": len(data)}
+
+
+@app.get("/api/snap-image")
+async def get_snap_image():
+    cfg = config.load()
+    if cfg.get("snap_image_custom") and SNAP_IMAGE.exists():
+        return FileResponse(str(SNAP_IMAGE), headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+    return await get_webcam_feed(refresh=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STREAK EXECUTION ENDPOINTS (AI / EXPECTED STEPS & MACRO MODE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TriggerSendPayload(BaseModel):
+    streak_mode: str | None = None
+    selection_method: str | None = None
+    friends: list[str] | None = None
+
+
+@app.post("/api/send")
+async def trigger_send(payload: TriggerSendPayload | None = None):
+    if _running or get_execution_state().get("running"):
+        raise HTTPException(409, "A streak run is already in progress")
+
+    if payload:
+        updates = {}
+        if payload.streak_mode in ("ai_steps", "macro"):
+            updates["streak_mode"] = payload.streak_mode
+        if payload.selection_method in ("direct", "shortcut", "auto"):
+            updates["selection_method"] = payload.selection_method
+        if payload.friends is not None:
+            updates["friends"] = payload.friends
+        if updates:
+            config.save(updates)
+
+    asyncio.create_task(_scheduled_job(force=True))
+    cfg = config.load()
+    return {
+        "ok": True,
+        "streak_mode": cfg.get("streak_mode", "ai_steps"),
+        "selection_method": cfg.get("selection_method", "direct"),
+        "message": f"Started Auto Streak Maker ({cfg.get('streak_mode', 'ai_steps')})",
+    }
+
+
+@app.post("/api/send-preview")
+async def trigger_send_preview(payload: TriggerSendPayload | None = None):
+    global _running, _preview_data
+    if _running or get_execution_state().get("running"):
+        raise HTTPException(409, "A streak run is already in progress")
+
+    if payload:
+        updates = {}
+        if payload.streak_mode in ("ai_steps", "macro"):
+            updates["streak_mode"] = payload.streak_mode
+        if payload.selection_method in ("direct", "shortcut", "auto"):
+            updates["selection_method"] = payload.selection_method
+        if updates:
+            config.save(updates)
+
+    cfg = config.load()
+    friends = cfg.get("friends", [])
+    streak_mode = cfg.get("streak_mode", "ai_steps")
+    selection_method = cfg.get("selection_method", "direct")
+
+    async def _run_preview():
+        global _running, _preview_data
+        _running = True
+        try:
+            res = await preview_streaks(
+                friends=friends,
+                emit=_broadcast,
+                selection_method=selection_method,
+                streak_mode=streak_mode,
+            )
+            _preview_data = {
+                "screenshot": res.get("screenshot", ""),
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "results": res.get("results", {}),
+            }
+        except Exception as ex:
+            log("ERROR", f"Preview error: {ex}", _broadcast)
+        finally:
+            _running = False
+
+    asyncio.create_task(_run_preview())
+    return {"ok": True, "message": "Sample preview started — will pause right before clicking final Send"}
+
+
+@app.get("/api/send-preview")
+async def get_send_preview():
+    return {
+        "running": _running,
+        "timestamp": _preview_data.get("timestamp"),
+        "screenshot": _preview_data.get("screenshot", ""),
+        "results": _preview_data.get("results", {}),
+    }
+
+
+@app.post("/api/automation/stop")
+async def api_stop_automation():
+    global _running
+    request_stop()
+    _running = False
+    return {"ok": True, "message": "Stop signal sent to automation engine."}
+
+
+@app.post("/api/automation/pause")
+async def api_pause_automation():
+    paused = toggle_pause()
+    return {"ok": True, "paused": paused, "message": "Automation paused." if paused else "Automation resumed."}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MACRO STUDIO ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/macro")
+async def api_get_macro():
+    return login_session.get_macro_info()
+
+
+@app.post("/api/macro/record/start")
+async def api_macro_record_start():
+    if not login_session.is_active():
+        await login_session.start(emit=_broadcast)
+    login_session.start_macro_recording()
+    return {"ok": True, "recording": True, "message": "Macro recording active! Click steps on the live Snapchat screen."}
+
+
+class MacroStopPayload(BaseModel):
+    name: str | None = "Custom Recorded Macro"
+
+
+@app.post("/api/macro/record/stop")
+async def api_macro_record_stop(payload: MacroStopPayload | None = None):
+    name = (payload.name if payload and payload.name else "Custom Recorded Macro").strip()
+    events = login_session.stop_macro_recording(macro_name=name)
+    return {"ok": True, "recording": False, "count": len(events), "steps": events, "macro_info": login_session.get_macro_info()}
+
+
+class MacroSavePayload(BaseModel):
+    name: str | None = None
+    steps: list[dict]
+    activate: bool = True
+
+
+@app.post("/api/macro/save")
+async def api_macro_save(payload: MacroSavePayload):
+    macro_data = config.load_macro_data()
+    name = (payload.name or macro_data.get("active_macro") or "Custom Macro").strip()
+    if "macros" not in macro_data or not isinstance(macro_data["macros"], dict):
+        macro_data["macros"] = {}
+    macro_data["macros"][name] = {
+        "name": name,
+        "steps": payload.steps,
+        "is_default": False,
+        "updated_at": int(time.time()),
+    }
+    if payload.activate:
+        macro_data["active_macro"] = name
+        macro_data["steps"] = payload.steps
+    config.save_macro_data(macro_data)
+    return {"ok": True, "macro_info": login_session.get_macro_info()}
+
+
+class MacroSelectPayload(BaseModel):
+    name: str
+
+
+@app.post("/api/macro/select")
+async def api_macro_select(payload: MacroSelectPayload):
+    macro_data = config.load_macro_data()
+    macros = macro_data.get("macros", {})
+    if payload.name not in macros:
+        raise HTTPException(404, f"Macro '{payload.name}' not found")
+    macro_data["active_macro"] = payload.name
+    macro_data["steps"] = macros[payload.name].get("steps", [])
+    config.save_macro_data(macro_data)
+    return {"ok": True, "macro_info": login_session.get_macro_info()}
+
+
+@app.post("/api/macro/reset-default")
+async def api_macro_reset_default():
+    macro_data = config.load_macro_data()
+    default_steps = list(config.DEFAULT_EXPECTED_MACRO_STEPS)
+    macro_data["active_macro"] = "Default Streak Flow"
+    macro_data["steps"] = default_steps
+    macro_data["macros"]["Default Streak Flow"] = {
+        "name": "Default Streak Flow",
+        "steps": default_steps,
+        "is_default": True,
+        "updated_at": int(time.time()),
+    }
+    config.save_macro_data(macro_data)
+    return {"ok": True, "macro_info": login_session.get_macro_info()}
+
+
+class MacroDeleteStepPayload(BaseModel):
+    index: int
+
+
+@app.post("/api/macro/step/delete")
+async def api_macro_delete_step(payload: MacroDeleteStepPayload):
+    macro_data = config.load_macro_data()
+    steps = list(macro_data.get("steps", []))
+    if 0 <= payload.index < len(steps):
+        steps.pop(payload.index)
+        macro_data["steps"] = steps
+        active_name = macro_data.get("active_macro", "Custom Macro")
+        if active_name in macro_data.get("macros", {}):
+            macro_data["macros"][active_name]["steps"] = steps
+        config.save_macro_data(macro_data)
+    return {"ok": True, "macro_info": login_session.get_macro_info()}
+
+
+@app.post("/api/macro/replay")
+async def api_macro_replay():
+    if _running or get_execution_state().get("running"):
+        raise HTTPException(409, "Automation is already running")
+    config.save({"streak_mode": "macro"})
+    asyncio.create_task(_scheduled_job(force=True))
+    return {"ok": True, "message": "Replaying macro in live browser session"}
+
+
+@app.delete("/api/macro")
+async def api_macro_clear():
+    return await api_macro_reset_default()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE SNAPCHAT BROWSER SESSION ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StartLoginPayload(BaseModel):
     engine: str | None = None
 
 
 @app.post("/api/login/start")
-async def login_start(body: LoginStartInput | None = None):
-    """Start a visible browser session via VNC so you can log in manually."""
-    if _state["running"]:
-        raise HTTPException(status_code=409, detail="A send job is running.")
-    if login_session.is_active():
-        raise HTTPException(status_code=409, detail="Login session already active.")
-    if login_session.is_starting():
-        raise HTTPException(status_code=409, detail="Browser is already launching — please wait.")
-    engine = body.engine if body else None
-    asyncio.create_task(_do_login_start(engine=engine))
-    return {"message": "Starting login session..."}
-
-
-async def _do_login_start(engine: str | None = None):
-    try:
-        await login_session.start(emit=_emit, engine=engine)
-        _emit("LOGIN_SESSION_READY")
-    except Exception as ex:
-        _emit(f"✗ Failed to start browser session: {ex}")
-
-
-@app.post("/api/login/save")
-async def login_save():
-    """Save the current VNC browser session as the active login."""
-    if not login_session.is_active():
-        raise HTTPException(status_code=400, detail="No active login session.")
-    msg = await login_session.save(emit=_emit)
-    _emit("LOGIN_DONE")
-    return {"message": msg}
-
-
-@app.post("/api/login/cancel")
-async def login_cancel():
-    """Cancel the active login session without saving."""
-    await login_session.cancel(emit=_emit)
-    return {"message": "Login session cancelled."}
-
-
-@app.post("/api/login/vnc-reset")
-async def login_vnc_reset():
-    """Force an active reset and re-binding of x11vnc and websockify proxy."""
-    if not login_session.is_active():
-        return {"ok": False, "message": "No active browser session."}
-    return await login_session.reset_vnc_stack(emit=_emit)
-
-
-class GoogleLoginInput(BaseModel):
-    email: str | None = None
-
-
-@app.post("/api/login/google")
-async def login_google(body: GoogleLoginInput | None = None):
-    """Click Continue with Google in the active browser session and optionally fill email."""
-    if not login_session.is_active():
-        # Proactively start browser if not yet launched
-        _emit("Launching browser for Google Sign-In...")
-        try:
-            await login_session.start(emit=_emit)
-            await asyncio.sleep(2.0)
-        except Exception as ex:
-            raise HTTPException(status_code=500, detail=str(ex))
-
-    email = body.email if body else None
-    return await login_session.click_google_login(email=email, emit=_emit)
-
-
-
-@app.post("/api/login/clear-browser-data")
-async def clear_browser_data():
-    """Use CDP to clear the live browser's cache, cookies, and site storage."""
-    cdp = login_session._state.get("cdp")
-    page = login_session._state.get("page")
-    context = login_session._state.get("context")
-
-    if not cdp and not page:
-        raise HTTPException(status_code=400, detail="No active browser session. Start a login session first.")
-
-    try:
-        # Clear network cache (images, scripts, stylesheets, etc.)
-        await cdp.send("Network.clearBrowserCache")
-
-        # Clear all site data for snapchat origins
-        for origin in ["https://web.snapchat.com", "https://accounts.snapchat.com", "https://snapchat.com"]:
-            try:
-                await cdp.send("Storage.clearDataForOrigin", {
-                    "origin": origin,
-                    "storageTypes": "all"
-                })
-            except Exception:
-                pass
-
-        # Also clear cookies via context if available
-        if context:
-            await context.clear_cookies()
-
-        _emit("🧹 Browser cache, cookies, and site data cleared successfully.")
-        return {"ok": True, "message": "Browser cache and data cleared."}
-    except Exception as ex:
-        raise HTTPException(status_code=500, detail=str(ex))
-
-
-class SessionImportInput(BaseModel):
-    data: str
-
-
-@app.post("/api/session/import")
-async def session_import(body: SessionImportInput):
-    """Import cookies/storage state directly from standard JSON or cookie string."""
-    raw = body.data.strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty session data.")
-
-    storage_state = {"cookies": [], "origins": []}
-
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict) and "cookies" in parsed:
-            # Playwright storage state format
-            storage_state = parsed
-        elif isinstance(parsed, list):
-            # Standard Cookie-Editor / EditThisCookie array format
-            cookies = []
-            for c in parsed:
-                raw_ss = c.get("sameSite")
-                is_secure = bool(c.get("secure", True))
-                if raw_ss is None or str(raw_ss).lower() in ("null", "none", "no_restriction", "unspecified"):
-                    same_site = "None" if is_secure else "Lax"
-                elif str(raw_ss).lower() in ("lax", "strict"):
-                    same_site = str(raw_ss).capitalize()
-                else:
-                    same_site = "Lax"
-
-                exp = c.get("expirationDate", c.get("expires"))
-                expires = int(exp) if exp and isinstance(exp, (int, float)) and exp > 0 else -1
-
-                cookie = {
-                    "name": str(c.get("name", "")).strip(),
-                    "value": str(c.get("value", "")),
-                    "domain": str(c.get("domain", ".snapchat.com")),
-                    "path": str(c.get("path", "/")),
-                    "expires": expires,
-                    "httpOnly": bool(c.get("httpOnly", False)),
-                    "secure": is_secure,
-                    "sameSite": same_site
-                }
-                if cookie["name"]:
-                    cookies.append(cookie)
-            storage_state["cookies"] = cookies
-            storage_state["origins"] = [{
-                "origin": "https://web.snapchat.com",
-                "localStorage": []
-            }]
-    except json.JSONDecodeError:
-        # Cookie string format: key=val; key2=val2
-        cookies = []
-        for pair in raw.split(";"):
-            if "=" in pair:
-                k, v = pair.strip().split("=", 1)
-                cookies.append({
-                    "name": k.strip(),
-                    "value": v.strip(),
-                    "domain": ".snapchat.com",
-                    "path": "/",
-                    "expires": int(time.time() + 86400 * 180),
-                    "httpOnly": False,
-                    "secure": True,
-                    "sameSite": "Lax"
-                })
-        if not cookies:
-            raise HTTPException(status_code=400, detail="Could not parse cookie string.")
-        storage_state["cookies"] = cookies
-        storage_state["origins"] = [{
-            "origin": "https://web.snapchat.com",
-            "localStorage": []
-        }]
-
-    # Save to session.json
-    try:
-        automation.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        automation.SESSION_FILE.write_text(json.dumps(storage_state, indent=2), encoding="utf-8")
-        _state["logged_in"] = True
-    except Exception as ex:
-        _emit(f"⚠ Warning: Could not write session.json: {ex}")
-        _state["logged_in"] = True
-
-    # If live browser session is active, inject cookies immediately and navigate
-    if login_session.is_active():
-        try:
-            ctx = login_session._state.get("context")
-            pg = login_session._state.get("page")
-            if ctx and storage_state.get("cookies"):
-                await ctx.add_cookies(storage_state["cookies"])
-                _emit("✓ Cookies injected into active browser session!")
-                if pg:
-                    await pg.goto("https://web.snapchat.com/", timeout=15000)
-                    _emit("✓ Navigated to web.snapchat.com with imported cookies.")
-        except Exception as ex:
-            _emit(f"⚠ Live injection notice: {ex}")
-
-    _emit(f"✓ Successfully imported {len(storage_state.get('cookies', []))} session cookies! Server is now authenticated.")
-    return {"ok": True, "cookies_count": len(storage_state.get("cookies", []))}
-
-
-
-
-@app.post("/api/session/clear")
-async def session_clear():
-    """Delete all stored cookies, session data, and user-data-dir cache."""
-    import shutil
-    cleared = []
-
-    # Remove session.json
-    if automation.SESSION_FILE.exists():
-        automation.SESSION_FILE.unlink()
-        cleared.append("session.json")
-
-    # Remove Playwright user-data-dir (profile cache, IndexedDB, cookies)
-    if automation.USER_DATA_DIR.exists():
-        shutil.rmtree(automation.USER_DATA_DIR, ignore_errors=True)
-        cleared.append("browser profile cache")
-
-    _state["logged_in"] = False
-    _emit("🗑️ Cleared: " + (", ".join(cleared) if cleared else "nothing to clear") + ". All cookies and cache wiped.")
-    return {"ok": True, "cleared": cleared}
+async def start_login(payload: StartLoginPayload | None = None):
+    engine = payload.engine if payload else None
+    return await login_session.start(emit=_broadcast, engine=engine)
 
 
 @app.get("/api/login/screenshot")
 async def login_screenshot():
-    """Return the latest browser screenshot as a base64 JPEG."""
+    if not login_session.is_active():
+        if login_session.is_starting():
+            return {"image": "", "url": "Starting Snapchat Web...", "starting": True, "screen_state": "STARTING"}
+        raise HTTPException(404, "No active browser session")
     return {
-        "image": login_session.last_screenshot_b64(),
-        "url":   login_session.current_url(),
-        "active": login_session.is_active(),
+        "image": login_session.get_Cached_Screenshot(),
+        "url": login_session.get_Current_Url(),
+        "screen_state": login_session.get_Screen_State(),
     }
 
 
-class ClickInput(BaseModel):
+class ClickPayload(BaseModel):
     x: int
     y: int
 
-class ScrollInput(BaseModel):
-    x: int = 720
-    y: int = 450
-    delta_x: int = 0
-    delta_y: int = 120
 
-class TypeInput(BaseModel):
+@app.post("/api/login/click")
+async def login_click(payload: ClickPayload):
+    try:
+        await login_session.click(payload.x, payload.y)
+        return {"ok": True, "macro_info": login_session.get_macro_info() if login_session._state.get("macro_recording") else None}
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
+
+class TypePayload(BaseModel):
     text: str
 
-class KeyInput(BaseModel):
+
+@app.post("/api/login/type")
+async def login_type(payload: TypePayload):
+    try:
+        await login_session.send_text(payload.text)
+        return {"ok": True}
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
+
+class KeyPayload(BaseModel):
     key: str
 
-class NavInput(BaseModel):
+
+@app.post("/api/login/key")
+async def login_key(payload: KeyPayload):
+    try:
+        await login_session.press_key(payload.key)
+        return {"ok": True}
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
+
+class ScrollPayload(BaseModel):
+    delta_x: int = 0
+    delta_y: int = 300
+
+
+@app.post("/api/login/scroll")
+async def login_scroll(payload: ScrollPayload):
+    try:
+        await login_session.scroll(payload.delta_x, payload.delta_y)
+        return {"ok": True}
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
+
+class NavigatePayload(BaseModel):
     url: str
 
 
-class FillInput(BaseModel):
-    field: str
-    value: str
-
-@app.post("/api/login/fill")
-async def login_fill(body: FillInput):
-    res = await login_session.fill_field(body.field, body.value)
-    return res
-
-@app.post("/api/login/submit")
-async def login_submit():
-    res = await login_session.click_submit()
-    return res
-
-@app.post("/api/login/click")
-async def login_click(body: ClickInput):
-    await login_session.click(body.x, body.y)
-    return {"ok": True}
-
-@app.post("/api/login/scroll")
-async def login_scroll(body: ScrollInput):
-    await login_session.scroll(body.x, body.y, body.delta_x, body.delta_y)
-    return {"ok": True}
-
-@app.post("/api/login/repair-snapchat")
-async def login_repair_snapchat():
-    return await login_session.repair_snapchat_session(emit=_emit)
-
-@app.post("/api/login/type")
-async def login_type(body: TypeInput):
-    await login_session.type_text(body.text)
-    return {"ok": True}
-
-@app.post("/api/login/key")
-async def login_key(body: KeyInput):
-    await login_session.key_press(body.key)
-    return {"ok": True}
-
 @app.post("/api/login/navigate")
-async def login_navigate(body: NavInput):
-    return await login_session.navigate(body.url)
+async def login_navigate(payload: NavigatePayload):
+    try:
+        return await login_session.navigate(payload.url)
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
 
 @app.post("/api/login/back")
 async def login_back():
-    return await login_session.go_back()
+    try:
+        return await login_session.go_back()
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
 
 @app.post("/api/login/forward")
 async def login_forward():
-    return await login_session.go_forward()
+    try:
+        return await login_session.go_forward()
+    except Exception as ex:
+        raise HTTPException(400, str(ex))
+
 
 @app.post("/api/login/reload")
 async def login_reload():
-    return await login_session.reload_page()
-
-@app.post("/api/login/upload-snap-here")
-async def login_upload_snap_here():
-    res = await login_session.upload_snap_to_chat()
-    return res
-
-@app.post("/api/macro/record/start")
-async def macro_record_start():
-    res = login_session.start_macro_recording()
-    _emit("🔴 Macro recording started! Perform your actions on the live screen now...")
-    return res
-
-@app.post("/api/macro/record/stop")
-async def macro_record_stop():
-    res = login_session.stop_macro_recording()
-    _emit(f"⏹️ Macro recording saved ({res['count']} steps recorded)!")
-    return res
-
-@app.get("/api/macro/info")
-async def macro_info():
-    return login_session.get_macro_info()
-
-class MacroSaveRequest(BaseModel):
-    name: str = "Streak Macro"
-    events: list = []
-
-@app.post("/api/macro/save")
-async def macro_save(req: MacroSaveRequest):
-    res = login_session.save_macro(req.events)
-    _emit(f"💾 Macro '{req.name}' saved to server ({res['count']} steps recorded)!")
-    return res
-
-
-# ---------------------------------------------------------------------------
-# Bliss OS Android ADB Routes
-# ---------------------------------------------------------------------------
-class BlissConnectInput(BaseModel):
-    host: str | None = None
-    port: int | None = None
-
-@app.post("/api/bliss/connect")
-async def bliss_connect(body: BlissConnectInput | None = None):
-    host = body.host if body else None
-    port = body.port if body else None
-    ok = await bliss_client.connect(host=host, port=port, emit=_emit)
-    if ok:
-        asyncio.create_task(bliss_client.start_screen_stream(_emit))
-    return {
-        "ok": ok,
-        "connected": bliss_client.is_connected(),
-        "target": bliss_client.get_target_device(),
-    }
-
-@app.post("/api/bliss/disconnect")
-async def bliss_disconnect():
-    bliss_client.stop_screen_stream()
-    return {"ok": True}
-
-@app.post("/api/bliss/tap")
-async def bliss_tap(body: ClickInput):
-    await bliss_client.tap(body.x, body.y)
-    return {"ok": True}
-
-@app.post("/api/bliss/type")
-async def bliss_type(body: TypeInput):
-    await bliss_client.type_text(body.text)
-    return {"ok": True}
-
-@app.post("/api/bliss/key")
-async def bliss_key(body: KeyInput):
-    await bliss_client.key_event(body.key)
-    return {"ok": True}
-
-@app.post("/api/bliss/launch")
-async def bliss_launch():
-    ok = await bliss_client.launch_snapchat(_emit)
-    return {"ok": ok}
-
-@app.post("/api/bliss/install-apk")
-async def bliss_install_apk(file: UploadFile):
-    """Upload and install an APK file directly onto Bliss OS."""
-    if not file.filename.endswith(".apk"):
-        raise HTTPException(status_code=400, detail="Only .apk files can be installed.")
-    content = await file.read()
-    temp_apk = DATA_DIR / file.filename
-    temp_apk.write_bytes(content)
     try:
-        ok = await bliss_client.install_apk(str(temp_apk), emit=_emit)
-        return {"ok": ok, "filename": file.filename}
-    finally:
-        try:
-            temp_apk.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-class ShellInput(BaseModel):
-    command: str
-
-@app.post("/api/bliss/shell")
-async def bliss_shell(body: ShellInput):
-    """Execute raw Linux/Termux commands inside Bliss OS."""
-    ret, stdout, stderr = await bliss_client.exec_shell(body.command)
-    return {
-        "exit_code": ret,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
-
-@app.post("/api/bliss/push-cam")
-async def bliss_push_cam():
-    ok = await bliss_client.push_webcam_to_gallery(_emit)
-    return {"ok": ok}
-
-@app.post("/api/bliss/macro/record/start")
-async def bliss_macro_record_start():
-    res = bliss_client.start_macro_recording()
-    _emit("🔴 Bliss OS macro recording started! Tap on the live screen to record...")
-    return res
-
-@app.post("/api/bliss/macro/record/stop")
-async def bliss_macro_record_stop():
-    res = bliss_client.stop_macro_recording()
-    _emit(f"⏹️ Bliss OS macro recording saved ({res['count']} steps recorded)!")
-    return res
-
-@app.get("/api/bliss/macro/info")
-async def bliss_macro_info():
-    return bliss_client.get_macro_info()
-
-# Backwards compatibility with generic android endpoints
-@app.post("/api/android/connect")
-async def android_connect():
-    return await bliss_connect(None)
-
-@app.post("/api/android/tap")
-async def android_tap(body: ClickInput):
-    return await bliss_tap(body)
-
-@app.post("/api/android/type")
-async def android_type(body: TypeInput):
-    return await bliss_type(body)
-
-@app.post("/api/android/key")
-async def android_key(body: KeyInput):
-    return await bliss_key(body)
-
-@app.post("/api/android/launch")
-async def android_launch():
-    return await bliss_launch()
-
-
-# ---------------------------------------------------------------------------
-# Extension bridge callbacks
-# ---------------------------------------------------------------------------
-class ExtensionLogInput(BaseModel):
-    message: str
-    type: str | None = "info"
-
-
-@app.post("/api/extension/log")
-async def extension_log(body: ExtensionLogInput):
-    """Receive live log entries directly from the in-browser SnapStreak Extension."""
-    level_icon = "✓" if body.type == "success" else ("✗" if body.type == "err" else "ℹ")
-    formatted = f"🧩 [Extension] {level_icon} {body.message}"
-    _emit(formatted)
-    try:
-        automation.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(automation.LOG_FILE, "a", encoding="utf-8") as f:
-            import time
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{ts}] {formatted}\n")
-    except Exception:
-        pass
-    return {"ok": True}
-
-
-class ExtensionStatusInput(BaseModel):
-    status: str
-    recipientsCount: int | None = 0
-    error: str | None = None
-    timestamp: str | None = None
-
-
-@app.post("/api/extension/status")
-async def extension_status(body: ExtensionStatusInput):
-    """Receive execution status callbacks from the in-browser SnapStreak Extension."""
-    import time
-    _state["last_run_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    if body.status == "success":
-        cfg = config.load()
-        friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
-        _state["last_run_results"] = {f: "ok" for f in friends}
-        _emit(f"🎉 Extension reported streaks sent successfully! ({body.recipientsCount} verified)")
-    else:
-        _state["last_run_results"] = {"error": body.error or "failed"}
-        _emit(f"⚠ Extension reported streak error: {body.error}")
-    return {"ok": True}
-
-
-@app.get("/api/extension/info")
-async def get_extension_info():
-    """Return manifest and status info for the SnapStreak browser extension."""
-    ext_dir = Path(__file__).resolve().parent.parent / "extension"
-    manifest_path = ext_dir / "manifest.json"
-    manifest_data = {}
-    if manifest_path.exists():
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest_data = json.load(f)
-        except Exception:
-            pass
-
-    return {
-        "installed": ext_dir.exists(),
-        "version": manifest_data.get("version", "4.1.0"),
-        "name": manifest_data.get("name", "SnapStreak Auto"),
-        "description": manifest_data.get("description", "Snapchat Streak Automation Extension"),
-        "active_session": login_session.is_active(),
-        "files": [f.name for f in ext_dir.glob("*.*")] if ext_dir.exists() else []
-    }
-
-
-@app.get("/api/extension/download")
-async def download_extension_zip():
-    """Package the SnapStreak browser extension directory as a downloadable ZIP."""
-    ext_dir = Path(__file__).resolve().parent.parent / "extension"
-    if not ext_dir.exists():
-        raise HTTPException(status_code=404, detail="Extension directory not found")
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(ext_dir):
-            for file in files:
-                file_path = Path(root) / file
-                archive_name = file_path.relative_to(ext_dir)
-                zf.write(file_path, arcname=str(archive_name))
-    zip_buffer.seek(0)
-
-    return StreamingResponse(
-        zip_buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="snapstreak-extension.zip"'}
-    )
-
-
-@app.post("/api/browser/toggle-extension")
-async def toggle_browser_extension():
-    """Toggle or re-inject the SnapStreak Extension HUD in the active browser session."""
-    p = login_session.get_page()
-    if not p:
-        raise HTTPException(status_code=400, detail="No active browser session")
-    try:
-        ok = await login_session.ensure_extension_active(p, force_toggle=True)
-        return {"ok": ok, "message": "Extension toggled in active browser"}
+        return await login_session.reload_page()
     except Exception as ex:
-        return {"ok": False, "error": str(ex)}
+        raise HTTPException(400, str(ex))
 
 
+class QuickFillPayload(BaseModel):
+    username: str
+    password: str = ""
+    save_to_config: bool = True
 
 
-@app.post("/api/task/awaiting-confirmation")
-async def task_awaiting_confirmation(request: Request):
-    """Callback when extension pauses at final send step awaiting user confirmation."""
-    data = await request.json() if request.headers.get("content-type") == "application/json" else {}
-    _state["awaiting_confirmation"] = True
-    _emit("🛑 [Awaiting Confirmation] Snap prepared! Final send paused waiting for your manual confirmation. Click 'Send Final Snap Now' in UI.")
+@app.post("/api/login/quick-fill")
+async def api_login_quick_fill(payload: QuickFillPayload):
+    if payload.save_to_config:
+        config.save({"snapchat_username": payload.username, "snapchat_password": payload.password})
+    res = await login_session.quick_fill_login(payload.username, payload.password, emit=_broadcast)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("message", "Quick fill failed"))
+    return res
+
+
+@app.post("/api/login/repair-snapchat")
+async def api_repair_snapchat():
+    return await login_session.repair_snapchat_session(emit=_broadcast)
+
+
+@app.post("/api/login/save")
+async def save_login():
+    res = await login_session.save(emit=_broadcast)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("message", "Save failed"))
+    return res
+
+
+@app.post("/api/login/cancel")
+async def cancel_login():
+    await login_session.cancel()
     return {"ok": True}
 
 
-@app.post("/api/send-preview")
-async def trigger_send_preview():
-    """Trigger a streak dry-run preview: executes all steps up to Send button and pauses."""
-    if _state["running"]:
-        raise HTTPException(status_code=409, detail="A task is already running.")
+# ─────────────────────────────────────────────────────────────────────────────
+# DIAGNOSTICS, LOGS & WEBSOCKET
+# ─────────────────────────────────────────────────────────────────────────────
 
-    async def _do_preview():
-        _state["running"] = True
-        _state["awaiting_confirmation"] = False
-        _state["paused"] = False
-        try:
-            cfg = config.load()
-            friends = cfg.get("friends") or ["*//Eric\\\\*", "Dylan"]
-            automation.fetch_webcam_image(force_refresh=True)
-
-            if login_session.is_active():
-                _emit("🧪 Running Streak Sample Preview in active browser session (pausing before final Send)...")
-                await login_session.run_streak_in_active_session(friends=friends, is_preview=True, emit=_emit)
-            else:
-                _emit("⚠ Starting emulated browser for preview...")
-                await login_session.start(emit=_emit)
-                await asyncio.sleep(2)
-                await login_session.run_streak_in_active_session(friends=friends, is_preview=True, emit=_emit)
-        finally:
-            _state["running"] = False
-
-    asyncio.create_task(_do_preview())
-    return {"message": "Sample preview started. Automation will pause before final Send step."}
+@app.get("/api/system/diagnostics")
+async def get_system_diagnostics():
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, diagnostics.run_diagnostics)
 
 
-@app.post("/api/task/pause")
-async def task_pause():
-    """Pause currently executing streak automation."""
-    _state["paused"] = True
-    res = await login_session.pause_task(emit=_emit)
-    return res
+class ResolveIssuesPayload(BaseModel):
+    fix_type: str = "all"
 
 
-@app.post("/api/task/resume")
-async def task_resume():
-    """Resume currently paused streak automation."""
-    _state["paused"] = False
-    res = await login_session.resume_task(emit=_emit)
-    return res
-
-
-@app.post("/api/task/stop")
-async def task_stop():
-    """Stop/cancel running streak automation."""
-    _state["running"] = False
-    _state["paused"] = False
-    _state["awaiting_confirmation"] = False
-    res = await login_session.stop_task(emit=_emit)
-    return res
-
-
-@app.post("/api/task/confirm-send")
-async def task_confirm_send():
-    """Approve and fire final Send button from preview/confirmation state."""
-    _state["awaiting_confirmation"] = False
-    res = await login_session.confirm_send_task(emit=_emit)
-    return res
-
-
-@app.post("/api/send")
-async def trigger_send():
-    """Immediately trigger a streak send."""
-    if _state["running"]:
-        raise HTTPException(status_code=409, detail="Already running.")
-    _state["awaiting_confirmation"] = False
-    _state["paused"] = False
-    asyncio.create_task(_do_send())
-    return {"message": "Streak send started. Connect to /ws/stream for live updates."}
-
-
-@app.post("/api/upload-snap")
-async def upload_snap(file: UploadFile):
-    """Upload a custom image to use as the streak snap."""
-    allowed = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
-    if file.content_type not in allowed:
-        raise HTTPException(status_code=400, detail="Only PNG/JPEG/WEBP images allowed.")
-    content = await file.read()
-    automation.SNAP_IMAGE.write_bytes(content)
-    cfg = config.load()
-    cfg["snap_image_custom"] = True
-    config.save(cfg)
-    return {"message": "Snap image updated."}
+@app.post("/api/system/resolve-issues")
+async def resolve_system_issues(payload: ResolveIssuesPayload | None = None):
+    fix_type = payload.fix_type if payload else "all"
+    return await diagnostics.auto_resolve_issues(fix_type=fix_type, emit=_broadcast)
 
 
 @app.get("/api/screenshot")
-async def get_screenshot():
-    """Return the last screenshot taken by the headless browser."""
-    from fastapi.responses import FileResponse as FR, Response
-    if not automation.SCREENSHOT_FILE.exists():
-        raise HTTPException(status_code=404, detail="No screenshot yet. Trigger a send first.")
-    return FR(
-        str(automation.SCREENSHOT_FILE),
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
-    )
-
-
-
-class CookieImport(BaseModel):
-    cookies: list[dict]
-
-
-@app.post("/api/import-cookies")
-async def import_cookies(body: CookieImport):
-    """
-    Accept cookies exported from a browser extension (e.g. Cookie-Editor)
-    and convert them into a Playwright storage_state session file.
-    """
-    if not body.cookies:
-        raise HTTPException(status_code=400, detail="No cookies provided.")
-
-    # Convert browser extension cookie format → Playwright storage_state format
-    playwright_cookies = []
-    for c in body.cookies:
-        name  = c.get("name", "")
-        value = c.get("value", "")
-        if not name or not value:
-            continue
-
-        raw_domain = c.get("domain", ".snapchat.com")
-        # Skip completely unrelated cookies
-        if not any(x in raw_domain for x in ["snapchat", "snap.com"]):
-            continue
-
-        ss_raw = c.get("sameSite", c.get("samesite", "no_restriction"))
-        is_secure = bool(c.get("secure", True))
-        if ss_raw is None or str(ss_raw).lower() in ("null", "none", "no_restriction", "unspecified"):
-            same_site = "None" if is_secure else "Lax"
-        elif str(ss_raw).lower() in ("lax", "strict"):
-            same_site = str(ss_raw).capitalize()
-        else:
-            same_site = "Lax"
-
-        exp = c.get("expirationDate", c.get("expires"))
-        expires = int(exp) if isinstance(exp, (int, float)) and exp > 0 else None
-
-        # Build cookie with ORIGINAL domain preserved exactly
-        def make_cookie(domain: str) -> dict:
-            ck: dict = {
-                "name":     name,
-                "value":    value,
-                "domain":   domain,
-                "path":     c.get("path", "/"),
-                "secure":   is_secure,
-                "httpOnly": bool(c.get("httpOnly", c.get("httponly", False))),
-                "sameSite": same_site,
-            }
-            if expires:
-                ck["expires"] = expires
-            return ck
-
-        # Add with original domain
-        playwright_cookies.append(make_cookie(raw_domain))
-
-        # Also add with .snapchat.com wildcard domain for maximum coverage
-        if raw_domain != ".snapchat.com":
-            playwright_cookies.append(make_cookie(".snapchat.com"))
-
-        # Also add for web.snapchat.com specifically
-        if "web.snapchat.com" not in raw_domain:
-            playwright_cookies.append(make_cookie("web.snapchat.com"))
-
-    session_state = {
-        "cookies": playwright_cookies,
-        "origins": [],
-    }
-
-    automation.SESSION_FILE.write_text(json.dumps(session_state, indent=2), encoding="utf-8")
-    _emit("✓ Cookies imported successfully. Session saved.")
-
-    # Live inject into active browser if running
-    if login_session.is_active():
-        try:
-            ctx = login_session._state.get("context")
-            pg = login_session._state.get("page")
-            if ctx and playwright_cookies:
-                await ctx.add_cookies(playwright_cookies)
-                _emit("✓ Injected cookies into live browser session.")
-                if pg:
-                    await pg.goto("https://web.snapchat.com/", timeout=25000)
-                    _emit("✓ Navigated to web.snapchat.com with imported cookies.")
-        except Exception as ex:
-            _emit(f"⚠ Live injection notice: {ex}")
-
-    return {"message": f"Imported {len(playwright_cookies)} cookies. You're logged in!"}
+async def get_last_screenshot():
+    if not SCREENSHOT_FILE.exists():
+        raise HTTPException(404, "No screenshot available yet")
+    return FileResponse(str(SCREENSHOT_FILE), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/logs")
-async def get_logs(limit: int = 1000):
-    if not automation.LOG_FILE.exists():
-        return {"lines": []}
-    lines = automation.LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    if limit > 0 and len(lines) > limit:
-        return {"lines": lines[-limit:]}
-    return {"lines": lines}
+async def get_logs(limit: int = 300):
+    if not LOG_FILE.exists():
+        return {"lines": [], "total": 0}
+    all_lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    total = len(all_lines)
+    lines = all_lines if limit <= 0 else all_lines[-limit:]
+    return {"lines": lines, "total": total}
 
 
 @app.post("/api/logs/clear")
 async def clear_logs():
-    if automation.LOG_FILE.exists():
-        automation.LOG_FILE.write_text("", encoding="utf-8")
-    _emit("🧹 Logs cleared.")
+    if LOG_FILE.exists():
+        LOG_FILE.write_text("", encoding="utf-8")
     return {"ok": True}
 
 
-# ---------------------------------------------------------------------------
-# WebSocket – live log streaming
-# ---------------------------------------------------------------------------
-
-@app.websocket("/ws/stream")
-async def ws_stream(websocket: WebSocket):
-    await websocket.accept()
-    _ws_clients.append(websocket)
+@app.websocket("/ws/logs")
+async def ws_logs(ws: WebSocket):
+    await ws.accept()
+    _ws_clients.add(ws)
     try:
+        shot = login_session.get_Cached_Screenshot()
+        if shot:
+            await ws.send_text(json.dumps({
+                "type": "screencast",
+                "image": shot,
+                "url": login_session.get_Current_Url(),
+                "screen_state": login_session.get_Screen_State(),
+            }))
         while True:
-            await websocket.receive_text()  # keep alive
+            await ws.receive_text()
     except WebSocketDisconnect:
-        _ws_clients.remove(websocket)
-
+        pass
+    finally:
+        _ws_clients.discard(ws)
