@@ -741,10 +741,61 @@ window.SnapStreakAutomation = (function() {
     return null;
   }
 
+  // ── Starter Step & Camera Prompt Helpers ──────────────────────────────
+  /**
+   * Detects the "Click the Camera to send Snaps" starter prompt card.
+   */
+  function isClickCameraPromptVisible() {
+    const allEls = document.querySelectorAll('h1, h2, h3, div, span, p');
+    for (const el of allEls) {
+      if (!isVisible(el) || !isInsideMainCameraArea(el) || isMyAI(el)) continue;
+      const t = (el.textContent || '').trim().toLowerCase();
+      if (t.includes('click the camera') || (t.includes('send snaps') && t.includes('camera'))) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Locates the circular camera icon button or clickable container on the starter prompt card.
+   */
+  function findStarterCameraButton() {
+    const promptTextEl = isClickCameraPromptVisible();
+    if (!promptTextEl) return null;
+
+    // 1. Look for a circular button, role=button, or SVG inside the card container
+    let parent = promptTextEl.parentElement;
+    for (let depth = 0; depth < 4 && parent && parent !== document.body; depth++) {
+      const btns = parent.querySelectorAll('button, div[role="button"], a');
+      for (const b of btns) {
+        if (isVisible(b) && b !== promptTextEl) return b;
+      }
+      const svgs = parent.querySelectorAll('svg');
+      for (const svg of svgs) {
+        if (isVisible(svg)) return svg.closest('button, div[role="button"]') || svg;
+      }
+      parent = parent.parentElement;
+    }
+
+    // 2. Check directly above the prompt text element (the white camera circle in the card)
+    const tr = promptTextEl.getBoundingClientRect();
+    const cx = tr.left + tr.width / 2;
+    for (const offset of [70, 95, 120, 50]) {
+      const elAbove = document.elementFromPoint(cx, tr.top - offset);
+      if (elAbove && isVisible(elAbove) && !isMyAI(elAbove)) {
+        return elAbove.closest('button, div[role="button"], [role="button"]') || elAbove;
+      }
+    }
+
+    return promptTextEl;
+  }
+
   // ── Screen State Detection & Step-by-Step Matcher ───────────────────────────
   const SCREEN_STATES = {
     UNKNOWN: 'UNKNOWN',
     HOME: 'HOME',
+    CLICK_CAMERA_PROMPT: 'CLICK_CAMERA_PROMPT',
     CAMERA_READY: 'CAMERA_READY',
     PHOTO_CAPTURED: 'PHOTO_CAPTURED',
     SEND_TO_DRAWER: 'SEND_TO_DRAWER',
@@ -781,6 +832,11 @@ window.SnapStreakAutomation = (function() {
     const sendToBtn = findSendToButton();
     if (sendToBtn && isVisible(sendToBtn) && isInsideMainCameraArea(sendToBtn)) {
       return SCREEN_STATES.PHOTO_CAPTURED;
+    }
+
+    // 2b. Check if starter "Click the Camera to send Snaps" prompt card is active
+    if (isClickCameraPromptVisible()) {
+      return SCREEN_STATES.CLICK_CAMERA_PROMPT;
     }
 
     // 3. Check if Camera Viewfinder is active (Webcam stream or shutter visible)
@@ -834,7 +890,7 @@ window.SnapStreakAutomation = (function() {
     checkCancelled();
     const stepNames = [
       'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
-      'Step 2: Press Camera Option to Open Viewfinder',
+      'Step 2: Starter Step: Click Camera to Open Viewfinder ("Click the Camera to send Snaps")',
       'Step 3: Quick-Press White Shutter Circle',
       'Step 4: Open Send-To Drawer & Select Recipients',
       'Step 5: Click Final Send Button & Verify Delivery'
@@ -1073,6 +1129,9 @@ window.SnapStreakAutomation = (function() {
 
     // Helper: verify if camera viewfinder is already active on screen
     const isAlreadyOpen = () => {
+      // If "Click the Camera to send Snaps" prompt is visible, camera is strictly NOT open!
+      if (isClickCameraPromptVisible()) return false;
+
       // If we are currently inside a 1-on-1 chat text box, camera viewfinder is not active
       const inChat = document.querySelector('[data-testid="chat-input"], [data-testid="message-input"], textarea[placeholder*="chat" i]');
       if (inChat && isVisible(inChat) && isInsideMainCameraArea(inChat)) return false;
@@ -1094,6 +1153,15 @@ window.SnapStreakAutomation = (function() {
     if (isAlreadyOpen()) {
       log('  ✓ Already on camera viewfinder! Proceeding directly to capture without extra clicks.', 'success');
       return true;
+    }
+
+    // 0. Explicit Starter Step: Check for "Click the Camera to send Snaps" starter card
+    const starterBtn = findStarterCameraButton();
+    if (starterBtn) {
+      log('  📸 [STARTER STEP] Detected "Click the Camera to send Snaps" starter card. Clicking camera to open viewfinder...', 'info');
+      await humanDwellAndClick(starterBtn, true);
+      log('  ✓ Clicked starter camera circle button! Waiting for camera viewfinder to initialize...', 'success');
+      await sleep(1500);
     }
 
     // 1. If we have Macro Guidance for camera open, try the learned target!
@@ -1200,6 +1268,12 @@ window.SnapStreakAutomation = (function() {
   // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
   // ── Helper: Locate Center White Shutter Button (Rejecting Filter Lenses) ─
   function findShutterButton() {
+    // If the starter "Click the Camera to send Snaps" card is visible, camera is NOT open yet!
+    // The button on the card is the camera opener, NOT the photo shutter button.
+    if (isClickCameraPromptVisible()) {
+      return null;
+    }
+
     const cameraBox = getMainCameraBox();
     const scope = cameraBox || document;
 
@@ -2217,7 +2291,7 @@ window.SnapStreakAutomation = (function() {
             const step1Ok = await executeStepWithScreenVerification(
               0,
               async () => { await step0_clickSnapchatHome(); },
-              [SCREEN_STATES.HOME, SCREEN_STATES.CAMERA_READY],
+              [SCREEN_STATES.HOME, SCREEN_STATES.CLICK_CAMERA_PROMPT, SCREEN_STATES.CAMERA_READY],
               async () => {
                 const chatBack = document.querySelector('button[aria-label*="Back" i], [data-testid="chat-back-button"]');
                 if (chatBack && isVisible(chatBack)) chatBack.click();
@@ -2229,13 +2303,18 @@ window.SnapStreakAutomation = (function() {
             if (!step1Ok) log('  Notice: Proceeding to camera check...', 'warn');
             await sleep(humanMode ? 800 : 400);
 
-            // Step 2: Open Camera Viewfinder
+            // Step 2: Open Camera Viewfinder (Starter Step: Click Camera)
             const step2Ok = await executeStepWithScreenVerification(
               1,
               async () => { await step1_openCamera(macroGuidance); },
               [SCREEN_STATES.CAMERA_READY],
               async () => {
-                await step0_clickSnapchatHome();
+                const starterBtn = findStarterCameraButton();
+                if (starterBtn) {
+                  starterBtn.click();
+                } else {
+                  await step0_clickSnapchatHome();
+                }
                 await sleep(1000);
               },
               2,

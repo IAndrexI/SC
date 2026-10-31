@@ -673,6 +673,34 @@ async def detect_screen_state(page) -> dict:
                     };
                 }
 
+                // 4b. Starter Step: Check for "Click the Camera to send Snaps" prompt card
+                const clickCameraTextEl = Array.from(document.querySelectorAll('h1, h2, h3, div, span, p')).find(el => {
+                    if (!isVisible(el)) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.left < 300) return false;
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    return t.includes('click the camera') || (t.includes('send snaps') && t.includes('camera'));
+                });
+
+                if (clickCameraTextEl) {
+                    const tr = clickCameraTextEl.getBoundingClientRect();
+                    const cx = Math.round(tr.left + tr.width / 2);
+                    let circleBtn = null;
+                    const parentCard = clickCameraTextEl.closest('div[class*="card" i], div[class*="container" i], div') || clickCameraTextEl.parentElement;
+                    if (parentCard) {
+                        const btns = parentCard.querySelectorAll('button, div[role="button"], svg');
+                        for (const b of btns) {
+                            if (isVisible(b)) { circleBtn = b; break; }
+                        }
+                    }
+                    const camCoords = circleBtn ? centerOf(circleBtn) : { x: cx, y: Math.max(120, Math.round(tr.top - 90)), w: 80, h: 80 };
+                    return {
+                        state: 'CLICK_CAMERA_PROMPT',
+                        camera_open_coords: camCoords,
+                        prompt_text: (clickCameraTextEl.innerText || clickCameraTextEl.textContent || '').trim(),
+                    };
+                }
+
                 // 5. Check for Camera Viewfinder Ready (video element or shutter button in center panel)
                 const videos = Array.from(document.querySelectorAll('video')).filter(v => {
                     if (!isVisible(v)) return false;
@@ -1188,22 +1216,28 @@ async def run_ai_expected_steps(
 
         await asyncio.sleep(delay * 0.5)
 
-        # ── STEP 2: ENSURE CAMERA VIEWFINDER READY ──
-        update_execution_state(current_step=2, step_name="Step 2/6: Opening Camera Viewfinder")
+        # ── STEP 2: STARTER STEP: CLICK CAMERA TO OPEN VIEWFINDER ──
+        update_execution_state(current_step=2, step_name="Step 2/6: Starter Step: Clicking Camera to Open Viewfinder")
         state_info = await detect_screen_state(page)
         state = state_info.get("state", "UNKNOWN")
 
         if state in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
             log("INFO", f"🧠 [AI Expected Steps 2/6] Already at {state} — advancing directly!", emit)
         else:
-            log("INFO", "🧠 [AI Expected Steps 2/6] Verifying Camera Viewfinder & SJSU stream...", emit)
-            if state != "CAMERA_READY":
+            log("INFO", "🧠 [AI Expected Steps 2/6] Starter Step: Verifying Camera Viewfinder & opening camera...", emit)
+            if state in ("CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA", "CHAT_OPEN") or state != "CAMERA_READY":
                 cam_coords = state_info.get("camera_open_coords") or {"x": 750, "y": 500}
+                log("INFO", f"  📸 [Starter Step] Clicking Camera button at ({cam_coords['x']}, {cam_coords['y']}) to open viewfinder ('Click the Camera to send Snaps')...", emit)
                 await page.mouse.click(cam_coords["x"], cam_coords["y"])
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.2)
                 await inject_webcam_frame_into_page(page, force_refresh=False)
-                state_info = await detect_screen_state(page)
-                state = state_info.get("state", "UNKNOWN")
+                # Wait for camera viewfinder to become ready
+                for _ in range(8):
+                    state_info = await detect_screen_state(page)
+                    state = state_info.get("state", "UNKNOWN")
+                    if state == "CAMERA_READY":
+                        break
+                    await asyncio.sleep(0.5)
             log("INFO", f"  ✓ Camera Viewfinder ready (state={state}).", emit)
 
         if await _check_pause_or_stop(emit):
@@ -1422,9 +1456,12 @@ async def replay_macro(
             if stype == "expected_action":
                 if action == "open_camera":
                     st = await detect_screen_state(page)
-                    if st.get("state") == "HOME_NO_CAMERA":
+                    if st.get("state") in ("CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA") or st.get("state") != "CAMERA_READY":
                         c = st.get("camera_open_coords") or {"x": 750, "y": 500}
+                        log("INFO", f"  📸 [Starter Step] Macro opening camera at ({c['x']}, {c['y']})...", emit)
                         await page.mouse.click(c["x"], c["y"])
+                        await asyncio.sleep(1.2)
+                        await inject_webcam_frame_into_page(page, force_refresh=False)
                 elif action == "capture_snap":
                     st = await detect_screen_state(page)
                     if st.get("state") not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):

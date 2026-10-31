@@ -48,9 +48,16 @@ MOCK_SNAPCHAT_HTML = """
   </div>
 
   <div class="center">
-    <video id="cam-video" autoplay muted playsinline></video>
-    <div style="position:absolute;left:260px;top:725px;font-size:12px">Click to take a picture, hold for video</div>
-    <button id="shutter-btn" aria-label="Click to take a picture, hold for video"></button>
+    <div id="starter-card" style="position:absolute;left:160px;top:150px;width:420px;height:550px;background:#1e293b;border-radius:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;cursor:pointer;">
+      <button id="starter-cam-btn" aria-label="Camera" style="width:100px;height:100px;border-radius:50%;background:#38bdf8;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="#fff"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path fill-rule="evenodd" d="M4 7a2 2 0 012-2h2.586l1.707-1.707A1 1 0 0111 3h2a1 1 0 01.707.293L15.414 5H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7z" clip-rule="evenodd"/></svg>
+      </button>
+      <div id="starter-text" style="font-size:18px;font-weight:600;color:#fff;text-align:center;">Click the Camera to<br/>send Snaps</div>
+    </div>
+
+    <video id="cam-video" autoplay muted playsinline style="display:none"></video>
+    <div id="shutter-label" style="display:none;position:absolute;left:260px;top:725px;font-size:12px">Click to take a picture, hold for video</div>
+    <button id="shutter-btn" aria-label="Click to take a picture, hold for video" style="display:none"></button>
 
     <div id="preview-bar">
       <button id="download-btn">Download</button>
@@ -83,7 +90,21 @@ MOCK_SNAPCHAT_HTML = """
   </div>
 
   <script>
-    window.__test_state = { snapped: false, drawerOpen: false, sentTo: [] };
+    window.__test_state = { starterClicked: false, snapped: false, drawerOpen: false, sentTo: [] };
+
+    function activateCamera() {
+      window.__test_state.starterClicked = true;
+      const starter = document.getElementById('starter-card');
+      if (starter) starter.style.display = 'none';
+      document.getElementById('cam-video').style.display = 'block';
+      document.getElementById('shutter-label').style.display = 'block';
+      document.getElementById('shutter-btn').style.display = 'block';
+    }
+
+    const starterBtn = document.getElementById('starter-cam-btn');
+    if (starterBtn) starterBtn.addEventListener('click', activateCamera);
+    const starterCard = document.getElementById('starter-card');
+    if (starterCard) starterCard.addEventListener('click', activateCamera);
 
     document.getElementById('shutter-btn').addEventListener('click', () => {
       window.__test_state.snapped = true;
@@ -192,9 +213,10 @@ async def run_all_tests():
         assert cam_check["loaded"] is True, f"SJSU image must be loaded without CORS error: {cam_check}"
         print(f" [PASS] 3. SJSU WebRTC getUserMedia stream verified ({cam_check['label']}, {cam_check['width']}x{cam_check['height']}, source={cam_check['source']})")
 
-        # 3b. Verify Mode A: AI / Expected Steps Engine (Direct selection + My AI safety uncheck)
+        # 3b. Verify Mode A: AI / Expected Steps Engine with Starter Step
         st_before = await automation.detect_screen_state(page)
         print(" [DEBUG] Initial state before AI steps:", st_before)
+        assert st_before["state"] == "CLICK_CAMERA_PROMPT", f"Expected CLICK_CAMERA_PROMPT, got {st_before['state']}"
         res_ai = await automation.run_ai_expected_steps(
             page,
             friends=["*//Eric\\*", "Dylan"],
@@ -204,17 +226,19 @@ async def run_all_tests():
             emit=print,
         )
         test_state = await page.evaluate("() => window.__test_state")
+        assert test_state["starterClicked"] is True, "Starter Step: Camera circle button must have been clicked!"
         assert test_state["snapped"] is True, "Shutter must have been clicked"
         assert "*//Eric\\*" in test_state["sentTo"] and "Dylan" in test_state["sentTo"], f"Expected friends in sentTo, got {test_state['sentTo']}"
         assert "My AI" not in test_state["sentTo"], f"Safety guard must have unchecked My AI! Got {test_state['sentTo']}"
-        print(f" [PASS] 4. AI / Expected Steps Mode verified (sentTo={test_state['sentTo']}, My AI blocked, res={res_ai})")
+        print(f" [PASS] 4. AI / Expected Steps Mode with Starter Step verified (starterClicked={test_state['starterClicked']}, sentTo={test_state['sentTo']}, My AI blocked, res={res_ai})")
 
-        # 3c. Verify Mode B: Macro Recording Metadata + Macro Replay Engine
+        # 3c. Verify Mode B: Macro Recording Metadata + Macro Replay Engine with Starter Step
         await page.set_content(MOCK_SNAPCHAT_HTML)
-        meta_shutter = await automation.inspect_element_at_point(page, 360 + 370, 794)
-        assert "picture" in meta_shutter["label"].lower() or "button" in meta_shutter["tagName"].lower(), f"Unexpected element metadata: {meta_shutter}"
+        meta_starter = await automation.inspect_element_at_point(page, 360 + 210, 420)
+        assert "click" in meta_starter["label"].lower() or "camera" in meta_starter["label"].lower() or "button" in meta_starter["tagName"].lower(), f"Unexpected element metadata: {meta_starter}"
 
         custom_macro_steps = [
+            {"type": "expected_action", "action": "open_camera", "label": "Starter Camera Click"},
             {"type": "click", "x": 360 + 370, "y": 794, "selector": "#shutter-btn", "label": "Click Shutter"},
             {"type": "click", "x": 360 + 520, "y": 838, "text": "Send To", "label": "Click Send To"},
             {"type": "expected_action", "action": "select_recipients", "label": "Select Friends"},
