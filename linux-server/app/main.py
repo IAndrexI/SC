@@ -4,6 +4,7 @@ main.py – FastAPI Web Studio Server + APScheduler + WebSocket Screencast & Con
 
 import asyncio
 import base64
+import importlib
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
+import automation
 from automation import (
     DATA_DIR,
     LOG_FILE,
@@ -222,8 +224,12 @@ async def get_config():
     cfg = config.load()
     macro_info = login_session.get_macro_info()
     vault = config.get_cookie_vault_summary()
+    v_info = config.get_version_info(check_remote=False)
     return {
         **cfg,
+        "version": v_info["version"],
+        "display_version": v_info["display_version"],
+        "version_info": v_info,
         "has_session": vault["is_authenticated"],
         "cookie_vault": vault,
         "has_snap": SNAP_IMAGE.exists() or WEBCAM_FILE.exists(),
@@ -276,6 +282,7 @@ async def get_status():
     vault = config.get_cookie_vault_summary()
     exec_state = get_execution_state()
     macro_info = login_session.get_macro_info()
+    v_info = config.get_version_info(check_remote=False)
 
     next_runs = []
     for job in scheduler.get_jobs():
@@ -285,6 +292,9 @@ async def get_status():
     next_run = next_runs[0].strftime("%Y-%m-%d %H:%M:%S %Z") if next_runs else None
 
     return {
+        "version": v_info["version"],
+        "display_version": v_info["display_version"],
+        "version_info": v_info,
         "running": _running or exec_state.get("running", False),
         "execution": exec_state,
         "last_run": _last_run,
@@ -827,8 +837,58 @@ async def cancel_login():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DIAGNOSTICS, LOGS & WEBSOCKET
+# VERSION, 1-CLICK GIT UPDATER, DIAGNOSTICS, LOGS & WEBSOCKET
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/system/version")
+async def get_system_version(check_remote: bool = False):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, config.get_version_info, check_remote)
+
+
+@app.post("/api/system/update")
+async def trigger_system_git_update():
+    """
+    1-Click Git Updater:
+    Fetches & pulls latest code from GitHub (origin/main), pushes any local ahead commits,
+    preserves all cookies/config, hot-reloads Python modules, and re-injects the updated
+    extension bundle into any active Snapchat Web browser tab.
+    """
+    log("INFO", "⬆️ [1-Click Git Updater] Fetching & applying latest Git code to website...", _broadcast)
+    loop = asyncio.get_running_loop()
+    res = await loop.run_in_executor(None, config.run_git_update)
+
+    # Hot-reload backend modules so new logic takes effect immediately without dropping session
+    try:
+        importlib.reload(config)
+        importlib.reload(diagnostics)
+        importlib.reload(automation)
+    except Exception as ex:
+        log("WARN", f"Module hot-reload notice: {ex}", _broadcast)
+
+    # Live re-inject updated extension bundle into active Snapchat Web browser page if open
+    if login_session.is_active():
+        page = login_session._state.get("page")
+        if page:
+            try:
+                await page.evaluate(
+                    """() => {
+                        window.__SNAPSTREAK_EXTENSION_INJECTED__ = false;
+                        const oldHost = document.getElementById('snapstreak-shadow-host');
+                        if (oldHost) oldHost.remove();
+                    }"""
+                )
+                ext_bundle = automation.get_extension_bundle_script()
+                if ext_bundle:
+                    await page.evaluate(ext_bundle)
+                await automation.inject_webcam_frame_into_page(page, force_refresh=False)
+                log("INFO", "  ✓ Live Snapchat Web page hot-updated with latest extension bundle!", _broadcast)
+            except Exception as ex:
+                log("WARN", f"  Notice updating live page bundle: {ex}", _broadcast)
+
+    log("INFO", f"✅ [1-Click Git Updater] {res.get('message')}", _broadcast)
+    return res
+
 
 @app.get("/api/system/diagnostics")
 async def get_system_diagnostics():

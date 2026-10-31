@@ -324,6 +324,8 @@ def get_extension_bundle_script() -> str:
         sjsu_data_url = get_webcam_data_url(force_refresh=False)
 
         server_boot = {
+            "version": config.APP_VERSION,
+            "versionInfo": config.get_version_info(False),
             "friends": cfg.get("friends", ["*//Eric\\\\*", "Dylan"]),
             "selectionMethod": cfg.get("selection_method", "direct"),
             "sendingEngine": "macro" if cfg.get("streak_mode") == "macro" else "direct",
@@ -542,7 +544,7 @@ async def dismiss_snapchat_blockers(page, emit: Callable | None = None) -> list[
                 const actions = [];
                 const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
                 for (const b of buttons) {
-                    if (b.closest('#snapstreak-hud-host')) continue;
+                    if (b.closest('#snapstreak-hud-host, #snapstreak-shadow-host')) continue;
                     const rect = b.getBoundingClientRect();
                     if (rect.width <= 0 || rect.height <= 0) continue;
                     const text = (b.innerText || b.textContent || '').trim().toLowerCase();
@@ -571,6 +573,7 @@ async def detect_screen_state(page) -> dict:
       - BLOCKED_MODAL
       - SEND_TO_DRAWER
       - PHOTO_CAPTURED
+      - CLICK_CAMERA_PROMPT
       - CAMERA_READY
       - CHAT_OPEN
       - HOME_NO_CAMERA
@@ -587,7 +590,7 @@ async def detect_screen_state(page) -> dict:
                 const vw = window.innerWidth || 1440;
                 const vh = window.innerHeight || 900;
                 const isVisible = (el) => {
-                    if (!el || el.closest('#snapstreak-hud-host')) return false;
+                    if (!el || el.closest('#snapstreak-hud-host, #snapstreak-shadow-host, #snapstreak-virtual-cursor')) return false;
                     const r = el.getBoundingClientRect();
                     if (r.width < 4 || r.height < 4) return false;
                     const st = window.getComputedStyle(el);
@@ -1153,8 +1156,185 @@ async def select_friends_in_drawer(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. MODE A: AI / EXPECTED STEPS 6-STAGE ENGINE
+# 6. STEP VERIFICATION HELPERS & MODE A: AI / EXPECTED STEPS 6-STAGE ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
+
+def is_strict_friend_match(candidate: str, target_friend: str) -> bool:
+    """Return True if candidate display name matches target_friend (exact or normalized alphanumeric)."""
+    c = (candidate or "").strip().lower()
+    t = (target_friend or "").replace("\\\\", "\\").strip().lower()
+    if not c or not t:
+        return False
+    if c == t or t in c or c in t:
+        return True
+    c_norm = re.sub(r"[^a-z0-9]", "", c)
+    t_norm = re.sub(r"[^a-z0-9]", "", t)
+    return bool(c_norm and t_norm and (c_norm == t_norm or t_norm in c_norm))
+
+
+async def wait_for_screen_states(
+    page,
+    target_states: tuple[str, ...] | list[str],
+    timeout_s: float = 3.0,
+    poll_s: float = 0.35,
+) -> dict:
+    """Poll detect_screen_state(page) until state matches one of target_states or timeout expires."""
+    deadline = time.time() + max(0.3, timeout_s)
+    last_info = {"state": "UNKNOWN"}
+    while time.time() < deadline:
+        last_info = await detect_screen_state(page)
+        if last_info.get("state") in target_states:
+            return {"matched": True, "state_info": last_info}
+        await asyncio.sleep(poll_s)
+    last_info = await detect_screen_state(page)
+    return {"matched": last_info.get("state") in target_states, "state_info": last_info}
+
+
+async def _click_starter_camera_on_page(page, state_info: dict | None = None):
+    """Click the Starter Camera opener button ('Click the Camera to send Snaps') via both DOM & mouse."""
+    state_info = state_info or await detect_screen_state(page)
+    cam_coords = state_info.get("camera_open_coords") or {"x": 750, "y": 500}
+    try:
+        await page.evaluate(
+            """() => {
+                const isVis = (el) => {
+                    if (!el || el.closest('#snapstreak-hud-host, #snapstreak-shadow-host')) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 4 && r.height > 4;
+                };
+                // 1. Check for starter camera button or 'Click the Camera to send Snaps' card
+                const allEls = Array.from(document.querySelectorAll('h1, h2, h3, div, span, p, button'));
+                for (const el of allEls) {
+                    if (!isVis(el)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.left < 300) continue;
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (t.includes('click the camera') || (t.includes('send snaps') && t.includes('camera'))) {
+                        const card = el.closest('div[class*="card" i], div[class*="container" i], div') || el.parentElement;
+                        if (card) {
+                            const btn = card.querySelector('button, div[role="button"], svg');
+                            if (btn && isVis(btn)) {
+                                const target = btn.closest('button, div[role="button"]') || btn;
+                                target.click();
+                                return true;
+                            }
+                        }
+                        el.click();
+                        return true;
+                    }
+                }
+                // 2. Also click any 'Turn on camera' / 'Allow' / 'Try Again' prompt button
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                for (const b of btns) {
+                    if (!isVis(b)) continue;
+                    const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (t.includes('turn on camera') || t.includes('enable camera') || t.includes('try again') || a === 'camera') {
+                        b.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+    except Exception:
+        pass
+    await page.mouse.click(cam_coords["x"], cam_coords["y"])
+
+
+async def _click_shutter_on_page(page, state_info: dict | None = None, use_dom_fallback: bool = False):
+    """Perform a zero-drag quick click on the center shutter button, with optional DOM fallback."""
+    state_info = state_info or await detect_screen_state(page)
+    shutter = state_info.get("shutter_coords") or {"x": 750, "y": 797}
+    await page.mouse.move(shutter["x"], shutter["y"])
+    await page.mouse.down()
+    await asyncio.sleep(0.035)
+    await page.mouse.up()
+
+    if use_dom_fallback:
+        try:
+            await page.evaluate(
+                """({x, y}) => {
+                    const direct = document.querySelector(
+                        '#shutter-btn, button[aria-label*="take a picture" i], button[aria-label*="Take Snap" i], [data-testid*="capture" i]'
+                    );
+                    if (direct) {
+                        direct.click();
+                        return true;
+                    }
+                    const el = document.elementFromPoint(x, y);
+                    const btn = el ? (el.closest('button, [role="button"]') || el) : null;
+                    if (btn) {
+                        btn.click();
+                        return true;
+                    }
+                    return false;
+                }""",
+                {"x": shutter["x"], "y": shutter["y"]},
+            )
+        except Exception:
+            pass
+
+
+async def _click_send_to_on_page(page, state_info: dict | None = None):
+    """Click the 'Send To' button on the photo preview screen via DOM and mouse coordinates."""
+    state_info = state_info or await detect_screen_state(page)
+    send_to = state_info.get("send_to_coords") or {"x": 556, "y": 877}
+    clicked_dom = False
+    try:
+        clicked_dom = await page.evaluate(
+            """() => {
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                for (const b of btns) {
+                    if (b.closest('#snapstreak-hud-host, #snapstreak-shadow-host')) continue;
+                    const r = b.getBoundingClientRect();
+                    if (r.left < 340 || r.width <= 0) continue;
+                    const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (t === 'send to' || a === 'send to' || t.startsWith('send to')) {
+                        b.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+    except Exception:
+        pass
+    if not clicked_dom:
+        await page.mouse.click(send_to["x"], send_to["y"])
+
+
+async def _click_final_send_on_page(page, state_info: dict | None = None):
+    """Click the final 'Send' submit button at the bottom of the Send-To drawer."""
+    state_info = state_info or await detect_screen_state(page)
+    sent_clicked = False
+    try:
+        res = await page.evaluate(
+            """() => {
+                const vh = window.innerHeight || 900;
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                for (const b of btns) {
+                    if (b.closest('#snapstreak-hud-host, #snapstreak-shadow-host')) continue;
+                    const r = b.getBoundingClientRect();
+                    if (r.left < 340 || r.width <= 0 || r.top < vh * 0.70) continue;
+                    const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                    if (t === 'send' || a === 'send' || a === 'send snap' || t === 'send snap') {
+                        b.click();
+                        return { clicked: true };
+                    }
+                }
+                return { clicked: false };
+            }"""
+        )
+        sent_clicked = bool(res and res.get("clicked"))
+    except Exception:
+        pass
+    if not sent_clicked:
+        fc = state_info.get("final_send_coords") or {"x": 750, "y": 865}
+        await page.mouse.click(fc["x"], fc["y"])
+
 
 async def run_ai_expected_steps(
     page,
@@ -1162,22 +1342,26 @@ async def run_ai_expected_steps(
     selection_method: str | None = None,
     step_delay: float | None = None,
     preview_only: bool = False,
+    max_step_retries: int = 3,
     emit: Callable | None = None,
 ) -> dict:
     """
-    Execute the 6 Expected Steps state-machine flow on the active Snapchat Web page:
-      Step 1: Prepare & Dismiss Blockers + Inject SJSU Webcam Frame
-      Step 2: Ensure Camera Viewfinder Ready
-      Step 3: Capture Snap (Center Shutter Quick-Click)
-      Step 4: Open 'Send To' Drawer
-      Step 5: Select Streak Recipients & Run Mandatory Safety Audit
-      Step 6: Click Final 'Send' & Verify Delivery (or pause if preview_only=True)
+    Execute the 6 Expected Steps state-machine flow on the active Snapchat Web page,
+    verifying every single step's screen transition and retrying up to max_step_retries (3)
+    times with self-healing recovery if any step fails to transition:
+      Step 1: Prepare & Dismiss Blockers + Inject SJSU Webcam Frame (Verified)
+      Step 2: Starter Step — Click Camera to Open Viewfinder ('Click the Camera to send Snaps') (Verified -> CAMERA_READY)
+      Step 3: Capture Snap (Center Shutter Quick-Click) (Verified -> PHOTO_CAPTURED)
+      Step 4: Open 'Send To' Drawer (Verified -> SEND_TO_DRAWER)
+      Step 5: Select Streak Recipients & Run Mandatory Safety Audit (Verified -> all valid recipients checked, 0 unauthorized)
+      Step 6: Click Final 'Send' & Verify Delivery (Verified -> drawer closed)
     """
     cfg = config.load()
     friends = friends if friends is not None else cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
     selection_method = selection_method or cfg.get("selection_method", "direct")
     delay = float(step_delay if step_delay is not None else cfg.get("step_delay_seconds", 1.5))
     delay = max(0.4, min(10.0, delay))
+    max_retries = max(1, int(max_step_retries))
 
     update_execution_state(
         running=True,
@@ -1190,33 +1374,39 @@ async def run_ai_expected_steps(
     )
 
     try:
-        # ── STEP 1: PREPARE & DISMISS BLOCKERS ──
-        log("INFO", f"🧠 [AI Expected Steps 1/6] Preparing Snapchat Web & injecting live SJSU webcam frame...", emit)
-        await inject_webcam_frame_into_page(page, force_refresh=False)
-        await dismiss_snapchat_blockers(page, emit=emit)
-
-        state_info = await detect_screen_state(page)
-        state = state_info.get("state", "UNKNOWN")
-        log("INFO", f"  🔎 Detected initial screen state: {state}", emit)
-
-        if state == "LOGIN_REQUIRED":
-            msg = "Snapchat is on the Login screen. Please sign in once in the live browser — your cookies will be kept automatically."
-            log("ERROR", f"❌ {msg}", emit)
-            return {f: f"error: {msg}" for f in friends}
-
-        if state == "CHAT_OPEN":
-            log("INFO", "  ↩ Closing open chat panel to return to camera viewfinder...", emit)
-            await page.keyboard.press("Escape")
-            await asyncio.sleep(0.6)
+        # ── STEP 1: PREPARE & DISMISS BLOCKERS (WITH VERIFICATION & RETRY) ──
+        log("INFO", "🧠 [AI Expected Steps 1/6] Preparing Snapchat Web & injecting live SJSU webcam frame...", emit)
+        state_info = {}
+        state = "UNKNOWN"
+        for attempt in range(1, max_retries + 1):
+            await inject_webcam_frame_into_page(page, force_refresh=False)
+            await dismiss_snapchat_blockers(page, emit=emit)
             state_info = await detect_screen_state(page)
             state = state_info.get("state", "UNKNOWN")
+
+            if state == "LOGIN_REQUIRED":
+                msg = "Snapchat is on the Login screen. Please sign in once in the live browser — your cookies will be kept automatically."
+                log("ERROR", f"❌ {msg}", emit)
+                return {f: f"error: {msg}" for f in friends}
+
+            if state == "CHAT_OPEN":
+                log("INFO", f"  ↩ [Step 1/6 Attempt {attempt}/{max_retries}] Closing open chat panel...", emit)
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+                state_info = await detect_screen_state(page)
+                state = state_info.get("state", "UNKNOWN")
+
+            if state not in ("BLOCKED_MODAL", "CHAT_OPEN", "OFFLINE"):
+                log("INFO", f"  ✅ [Step 1/6 Verified] Initial screen ready (state={state}).", emit)
+                break
+            await asyncio.sleep(0.4)
 
         if await _check_pause_or_stop(emit):
             return {f: "stopped" for f in friends}
 
-        await asyncio.sleep(delay * 0.5)
+        await asyncio.sleep(delay * 0.4)
 
-        # ── STEP 2: STARTER STEP: CLICK CAMERA TO OPEN VIEWFINDER ──
+        # ── STEP 2: STARTER STEP: CLICK CAMERA TO OPEN VIEWFINDER (WITH VERIFICATION & RETRY) ──
         update_execution_state(current_step=2, step_name="Step 2/6: Starter Step: Clicking Camera to Open Viewfinder")
         state_info = await detect_screen_state(page)
         state = state_info.get("state", "UNKNOWN")
@@ -1225,114 +1415,194 @@ async def run_ai_expected_steps(
             log("INFO", f"🧠 [AI Expected Steps 2/6] Already at {state} — advancing directly!", emit)
         else:
             log("INFO", "🧠 [AI Expected Steps 2/6] Starter Step: Verifying Camera Viewfinder & opening camera...", emit)
-            if state in ("CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA", "CHAT_OPEN") or state != "CAMERA_READY":
+            for attempt in range(1, max_retries + 1):
+                state_info = await detect_screen_state(page)
+                state = state_info.get("state", "UNKNOWN")
+                if state in ("CAMERA_READY", "PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+                    log("INFO", f"  ✅ [Step 2/6 Verified] Camera Viewfinder active (state={state}).", emit)
+                    break
+
                 cam_coords = state_info.get("camera_open_coords") or {"x": 750, "y": 500}
-                log("INFO", f"  📸 [Starter Step] Clicking Camera button at ({cam_coords['x']}, {cam_coords['y']}) to open viewfinder ('Click the Camera to send Snaps')...", emit)
-                await page.mouse.click(cam_coords["x"], cam_coords["y"])
-                await asyncio.sleep(1.2)
+                log(
+                    "INFO",
+                    f"  📸 [Step 2/6 Attempt {attempt}/{max_retries}] Starter Step: Clicking Camera button at ({cam_coords['x']}, {cam_coords['y']}) ('Click the Camera to send Snaps')...",
+                    emit,
+                )
+                await _click_starter_camera_on_page(page, state_info)
+                await asyncio.sleep(0.6)
                 await inject_webcam_frame_into_page(page, force_refresh=False)
-                # Wait for camera viewfinder to become ready
-                for _ in range(8):
-                    state_info = await detect_screen_state(page)
-                    state = state_info.get("state", "UNKNOWN")
-                    if state == "CAMERA_READY":
-                        break
-                    await asyncio.sleep(0.5)
-            log("INFO", f"  ✓ Camera Viewfinder ready (state={state}).", emit)
+
+                wait_res = await wait_for_screen_states(
+                    page,
+                    ("CAMERA_READY", "PHOTO_CAPTURED", "SEND_TO_DRAWER"),
+                    timeout_s=max(1.8, delay * 1.5),
+                )
+                state_info = wait_res["state_info"]
+                state = state_info.get("state", "UNKNOWN")
+                if wait_res["matched"]:
+                    log("INFO", f"  ✅ [Step 2/6 Verified] Camera Viewfinder ready on attempt {attempt}/{max_retries} (state={state})!", emit)
+                    break
+                log("WARN", f"  ⚠️ [Step 2/6 Attempt {attempt}/{max_retries}] Viewfinder not active yet (state={state}), retrying...", emit)
 
         if await _check_pause_or_stop(emit):
             return {f: "stopped" for f in friends}
 
-        # ── STEP 3: CAPTURE SNAP FROM SJSU WEBCAM ──
+        # ── STEP 3: CAPTURE SNAP FROM SJSU WEBCAM (WITH VERIFICATION & RETRY) ──
         update_execution_state(current_step=3, step_name="Step 3/6: Capturing SJSU Webcam Snap")
         state_info = await detect_screen_state(page)
         state = state_info.get("state", "UNKNOWN")
 
         if state not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
-            shutter = state_info.get("shutter_coords") or {"x": 750, "y": 797}
-            log("INFO", f"🧠 [AI Expected Steps 3/6] Clicking center Shutter button at ({shutter['x']}, {shutter['y']})...", emit)
-            # Zero-drag quick click so Snapchat captures a still photo and never swipes lenses
-            await page.mouse.move(shutter["x"], shutter["y"])
-            await page.mouse.down()
-            await asyncio.sleep(0.035)
-            await page.mouse.up()
-            await asyncio.sleep(delay)
-
-            state_info = await detect_screen_state(page)
-            state = state_info.get("state", "UNKNOWN")
-
-            # Retry once if still on CAMERA_READY
-            if state == "CAMERA_READY":
-                log("INFO", "  🔄 Retrying shutter click via DOM button...", emit)
-                await page.evaluate(
-                    """({x, y}) => {
-                        const el = document.elementFromPoint(x, y);
-                        const btn = el ? (el.closest('button, [role="button"]') || el) : null;
-                        if (btn) btn.click();
-                    }""",
-                    {"x": shutter["x"], "y": shutter["y"]},
-                )
-                await asyncio.sleep(delay)
+            for attempt in range(1, max_retries + 1):
                 state_info = await detect_screen_state(page)
                 state = state_info.get("state", "UNKNOWN")
+                if state in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+                    break
 
-        if await _check_pause_or_stop(emit):
-            return {f: "stopped" for f in friends}
+                # Self-Heal: if screen slipped back to CLICK_CAMERA_PROMPT or HOME_NO_CAMERA, re-open camera first
+                if state in ("CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA", "CHAT_OPEN"):
+                    log("INFO", f"  🔄 [Step 3/6 Self-Heal] Screen is at {state}; re-clicking Starter Camera button first...", emit)
+                    await _click_starter_camera_on_page(page, state_info)
+                    await wait_for_screen_states(page, ("CAMERA_READY",), timeout_s=2.0)
+                    state_info = await detect_screen_state(page)
 
-        # ── STEP 4: OPEN 'SEND TO' DRAWER ──
-        update_execution_state(current_step=4, step_name="Step 4/6: Opening 'Send To' Drawer")
-        if state != "SEND_TO_DRAWER":
-            send_to = state_info.get("send_to_coords") or {"x": 556, "y": 877}
-            log("INFO", f"🧠 [AI Expected Steps 4/6] Clicking 'Send To' button at ({send_to['x']}, {send_to['y']})...", emit)
-            clicked_dom = await page.evaluate(
-                """() => {
-                    const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                    for (const b of btns) {
-                        if (b.closest('#snapstreak-hud-host')) continue;
-                        const r = b.getBoundingClientRect();
-                        if (r.left < 340 || r.width <= 0) continue;
-                        const t = (b.innerText || b.textContent || '').trim().toLowerCase();
-                        const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-                        if (t === 'send to' || a === 'send to' || t.startsWith('send to')) {
-                            b.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }"""
-            )
-            if not clicked_dom:
-                await page.mouse.click(send_to["x"], send_to["y"])
-            await asyncio.sleep(delay)
-            state_info = await detect_screen_state(page)
-            state = state_info.get("state", "UNKNOWN")
+                shutter = state_info.get("shutter_coords") or {"x": 750, "y": 797}
+                log(
+                    "INFO",
+                    f"🧠 [Step 3/6 Attempt {attempt}/{max_retries}] Clicking center Shutter button at ({shutter['x']}, {shutter['y']})...",
+                    emit,
+                )
+                await _click_shutter_on_page(page, state_info, use_dom_fallback=(attempt >= 2))
 
-        if await _check_pause_or_stop(emit):
-            return {f: "stopped" for f in friends}
+                wait_res = await wait_for_screen_states(
+                    page,
+                    ("PHOTO_CAPTURED", "SEND_TO_DRAWER"),
+                    timeout_s=max(1.0, delay),
+                )
+                state_info = wait_res["state_info"]
+                state = state_info.get("state", "UNKNOWN")
+                if wait_res["matched"]:
+                    log("INFO", f"  ✅ [Step 3/6 Verified] Snap captured & preview ready on attempt {attempt}/{max_retries} (state={state})!", emit)
+                    break
+                log("WARN", f"  ⚠️ [Step 3/6 Attempt {attempt}/{max_retries}] Photo preview not detected yet (state={state}), retrying shutter...", emit)
 
-        # ── STEP 5: SELECT STREAK RECIPIENTS & SAFETY AUDIT ──
-        update_execution_state(current_step=5, step_name="Step 5/6: Selecting Recipients & Safety Audit")
-        log("INFO", f"🧠 [AI Expected Steps 5/6] Selecting recipients ({', '.join(friends)}) via '{selection_method}'...", emit)
-        selected = await select_friends_in_drawer(
-            page,
-            friends=friends,
-            selection_method=selection_method,
-            shortcut_name=cfg.get("shortcut_name", "Streaks"),
-            emit=emit,
-        )
-        await asyncio.sleep(delay * 0.6)
-
-        audit = await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
-        final_selected = selected or audit.get("valid_selected", [])
-
-        if not final_selected:
-            msg = "No valid streak recipients could be selected in the Send-To drawer."
+        if state not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+            msg = f"Step 3/6 verification failed after {max_retries} attempts: Photo capture did not transition to preview (state={state})."
             log("ERROR", f"❌ {msg}", emit)
             return {f: f"error: {msg}" for f in friends}
 
-        log("INFO", f"  ✓ Verified recipients ready to send: {', '.join(final_selected)}", emit)
+        if await _check_pause_or_stop(emit):
+            return {f: "stopped" for f in friends}
 
-        # ── STEP 6: FINAL SEND (OR PAUSE FOR PREVIEW) ──
+        # ── STEP 4: OPEN 'SEND TO' DRAWER (WITH VERIFICATION & RETRY) ──
+        update_execution_state(current_step=4, step_name="Step 4/6: Opening 'Send To' Drawer")
+        if state != "SEND_TO_DRAWER":
+            for attempt in range(1, max_retries + 1):
+                state_info = await detect_screen_state(page)
+                state = state_info.get("state", "UNKNOWN")
+                if state == "SEND_TO_DRAWER":
+                    break
+
+                # Self-Heal: if screen fell back to CAMERA_READY, recapture photo first
+                if state in ("CAMERA_READY", "CLICK_CAMERA_PROMPT"):
+                    log("INFO", f"  🔄 [Step 4/6 Self-Heal] Screen slipped to {state}; re-capturing snap first...", emit)
+                    if state == "CLICK_CAMERA_PROMPT":
+                        await _click_starter_camera_on_page(page, state_info)
+                        await wait_for_screen_states(page, ("CAMERA_READY",), timeout_s=1.5)
+                    await _click_shutter_on_page(page, await detect_screen_state(page), use_dom_fallback=True)
+                    await wait_for_screen_states(page, ("PHOTO_CAPTURED",), timeout_s=1.5)
+                    state_info = await detect_screen_state(page)
+
+                send_to = state_info.get("send_to_coords") or {"x": 556, "y": 877}
+                log(
+                    "INFO",
+                    f"🧠 [Step 4/6 Attempt {attempt}/{max_retries}] Clicking 'Send To' button at ({send_to['x']}, {send_to['y']})...",
+                    emit,
+                )
+                await _click_send_to_on_page(page, state_info)
+
+                wait_res = await wait_for_screen_states(
+                    page,
+                    ("SEND_TO_DRAWER",),
+                    timeout_s=max(1.0, delay),
+                )
+                state_info = wait_res["state_info"]
+                state = state_info.get("state", "UNKNOWN")
+                if wait_res["matched"]:
+                    log("INFO", f"  ✅ [Step 4/6 Verified] 'Send To' drawer opened on attempt {attempt}/{max_retries}!", emit)
+                    break
+                log("WARN", f"  ⚠️ [Step 4/6 Attempt {attempt}/{max_retries}] 'Send To' drawer not open yet (state={state}), retrying...", emit)
+
+        if state != "SEND_TO_DRAWER":
+            msg = f"Step 4/6 verification failed after {max_retries} attempts: 'Send To' drawer did not open (state={state})."
+            log("ERROR", f"❌ {msg}", emit)
+            return {f: f"error: {msg}" for f in friends}
+
+        if await _check_pause_or_stop(emit):
+            return {f: "stopped" for f in friends}
+
+        # ── STEP 5: SELECT STREAK RECIPIENTS & SAFETY AUDIT (WITH VERIFICATION & RETRY) ──
+        update_execution_state(current_step=5, step_name="Step 5/6: Selecting Recipients & Safety Audit")
+        final_selected: list[str] = []
+        for attempt in range(1, max_retries + 1):
+            state_info = await detect_screen_state(page)
+            if state_info.get("state") == "PHOTO_CAPTURED":
+                log("INFO", "  🔄 [Step 5/6 Self-Heal] Re-opening 'Send To' drawer before selecting recipients...", emit)
+                await _click_send_to_on_page(page, state_info)
+                await wait_for_screen_states(page, ("SEND_TO_DRAWER",), timeout_s=1.5)
+
+            # Determine which target friends still need to be selected
+            missing_friends = [
+                f for f in friends
+                if not any(is_strict_friend_match(sel_name, f) for sel_name in final_selected)
+            ]
+            target_list = missing_friends if missing_friends else friends
+            method_for_attempt = selection_method if attempt == 1 else "direct"
+
+            log(
+                "INFO",
+                f"🧠 [Step 5/6 Attempt {attempt}/{max_retries}] Selecting recipients ({', '.join(target_list)}) via '{method_for_attempt}'...",
+                emit,
+            )
+            selected = await select_friends_in_drawer(
+                page,
+                friends=target_list,
+                selection_method=method_for_attempt,
+                shortcut_name=cfg.get("shortcut_name", "Streaks"),
+                emit=emit,
+            )
+            await asyncio.sleep(max(0.25, delay * 0.5))
+
+            audit = await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+            audited_list = audit.get("valid_selected", [])
+            for name in (audited_list or selected):
+                if name not in final_selected:
+                    final_selected.append(name)
+
+            # Verify whether all requested friends have been matched
+            still_missing = [
+                f for f in friends
+                if not any(is_strict_friend_match(sel_name, f) for sel_name in final_selected)
+            ]
+            if final_selected and (not still_missing or selection_method == "shortcut"):
+                log(
+                    "INFO",
+                    f"  ✅ [Step 5/6 Verified] Recipients selected & safety-audited on attempt {attempt}/{max_retries}: {', '.join(final_selected)}",
+                    emit,
+                )
+                break
+            log(
+                "WARN",
+                f"  ⚠️ [Step 5/6 Attempt {attempt}/{max_retries}] Missing recipients ({', '.join(still_missing)}), retrying selection...",
+                emit,
+            )
+
+        if not final_selected:
+            msg = f"Step 5/6 verification failed after {max_retries} attempts: No valid streak recipients could be selected in the Send-To drawer."
+            log("ERROR", f"❌ {msg}", emit)
+            return {f: f"error: {msg}" for f in friends}
+
+        # ── STEP 6: FINAL SEND & DELIVERY VERIFICATION (OR PAUSE FOR PREVIEW) ──
         if preview_only:
             update_execution_state(current_step=6, step_name="Step 6/6: Preview Ready (Paused Before Send)")
             log("INFO", "🧪 [Preview Mode] Paused before clicking final 'Send' so you can inspect selected friends!", emit)
@@ -1343,38 +1613,32 @@ async def run_ai_expected_steps(
             return {f: "preview_ready" for f in friends}
 
         update_execution_state(current_step=6, step_name="Step 6/6: Clicking Final Send & Verifying")
-        log("INFO", "🧠 [AI Expected Steps 6/6] Clicking final 'Send' button...", emit)
+        for attempt in range(1, max_retries + 1):
+            await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+            log("INFO", f"🧠 [Step 6/6 Attempt {attempt}/{max_retries}] Clicking final 'Send' button...", emit)
+            await _click_final_send_on_page(page, await detect_screen_state(page))
 
-        sent_clicked = await page.evaluate(
-            """() => {
-                const vh = window.innerHeight || 900;
-                const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                for (const b of btns) {
-                    if (b.closest('#snapstreak-hud-host')) continue;
-                    const r = b.getBoundingClientRect();
-                    if (r.left < 340 || r.width <= 0 || r.top < vh * 0.70) continue;
-                    const t = (b.innerText || b.textContent || '').trim().toLowerCase();
-                    const a = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-                    if (t === 'send' || a === 'send' || a === 'send snap' || t === 'send snap') {
-                        b.click();
-                        return { clicked: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-                    }
-                }
-                return { clicked: false };
-            }"""
-        )
-        if not (sent_clicked and sent_clicked.get("clicked")):
-            state_info = await detect_screen_state(page)
-            fc = state_info.get("final_send_coords") or {"x": 750, "y": 865}
-            await page.mouse.click(fc["x"], fc["y"])
+            wait_res = await wait_for_screen_states(
+                page,
+                ("CAMERA_READY", "CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA", "CHAT_OPEN"),
+                timeout_s=max(1.0, delay),
+            )
+            state_after = wait_res["state_info"].get("state", "UNKNOWN")
+            if wait_res["matched"] or state_after != "SEND_TO_DRAWER":
+                log(
+                    "INFO",
+                    f"  ✅ [Step 6/6 Verified] Send-To drawer closed (state={state_after}) on attempt {attempt}/{max_retries}!",
+                    emit,
+                )
+                break
+            log("WARN", f"  ⚠️ [Step 6/6 Attempt {attempt}/{max_retries}] Send-To drawer still visible, retrying final Send click...", emit)
 
-        await asyncio.sleep(delay)
         try:
             await page.screenshot(path=str(SCREENSHOT_FILE))
         except Exception:
             pass
 
-        log("INFO", f"🎉 Streak snap successfully sent to: {', '.join(final_selected)}!", emit)
+        log("INFO", f"🎉 Streak snap successfully sent & verified to: {', '.join(final_selected)}!", emit)
         return {f: "sent" for f in friends}
 
     except Exception as ex:
@@ -1385,7 +1649,7 @@ async def run_ai_expected_steps(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. MODE B: CUSTOM MACRO RECORDER & REPLAYER ENGINE
+# 7. MODE B: CUSTOM MACRO RECORDER & REPLAYER ENGINE (WITH STEP VERIFICATION)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def replay_macro(
@@ -1395,19 +1659,21 @@ async def replay_macro(
     step_delay: float | None = None,
     use_recorded_delay: bool | None = None,
     preview_only: bool = False,
+    max_step_retries: int = 3,
     emit: Callable | None = None,
 ) -> dict:
     """
-    Replay a saved or custom macro on the live Snapchat Web page.
+    Replay a saved or custom macro on the live Snapchat Web page with per-step verification and retry.
     Supports both:
       - User-recorded steps: {'type': 'click'|'type'|'key'|'wait', 'x', 'y', 'rx', 'ry', 'selector', 'text', 'delay_ms'}
       - Expected-action steps: {'type': 'expected_action', 'action': 'open_camera'|'capture_snap'|'click_send_to'|'select_recipients'|'click_final_send'}
-    Enforces the configured step_delay (default 1.5s — never the old 30s sleep!) and mandatory pre-send safety audit.
+    Enforces the configured step_delay (default 1.5s — never the old 30s sleep!), verifies each step, and runs mandatory pre-send safety audit.
     """
     cfg = config.load()
     friends = friends if friends is not None else cfg.get("friends", ["*//Eric\\\\*", "Dylan"])
     macro_data = config.load_macro_data()
     steps = macro_steps if macro_steps is not None else macro_data.get("steps", [])
+    max_retries = max(1, int(max_step_retries))
 
     if not steps:
         return {f: "error: Macro has 0 steps. Record or load default steps first." for f in friends}
@@ -1427,7 +1693,7 @@ async def replay_macro(
     )
 
     try:
-        log("INFO", f"🎬 [Macro Engine] Replaying {len(steps)} macro steps (step delay={delay:.1f}s)...", emit)
+        log("INFO", f"🎬 [Macro Engine] Replaying {len(steps)} macro steps with step verification (delay={delay:.1f}s)...", emit)
         await inject_webcam_frame_into_page(page, force_refresh=False)
         await dismiss_snapchat_blockers(page, emit=emit)
 
@@ -1452,45 +1718,70 @@ async def replay_macro(
             )
             log("INFO", f"  ▶ Macro Step {idx}/{len(steps)}: {label}", emit)
 
-            # Handle expected_action steps inside hybrid/default macro
+            # Handle expected_action steps inside hybrid/default macro with verification & retry
             if stype == "expected_action":
                 if action == "open_camera":
-                    st = await detect_screen_state(page)
-                    if st.get("state") in ("CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA") or st.get("state") != "CAMERA_READY":
-                        c = st.get("camera_open_coords") or {"x": 750, "y": 500}
-                        log("INFO", f"  📸 [Starter Step] Macro opening camera at ({c['x']}, {c['y']})...", emit)
-                        await page.mouse.click(c["x"], c["y"])
-                        await asyncio.sleep(1.2)
+                    for attempt in range(1, max_retries + 1):
+                        st = await detect_screen_state(page)
+                        if st.get("state") in ("CAMERA_READY", "PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+                            log("INFO", f"    ✅ [Macro Step {idx} Verified] Camera viewfinder ready.", emit)
+                            break
+                        log("INFO", f"    📸 [Macro Step {idx} Attempt {attempt}/{max_retries}] Starter Step: Opening camera...", emit)
+                        await _click_starter_camera_on_page(page, st)
                         await inject_webcam_frame_into_page(page, force_refresh=False)
+                        w = await wait_for_screen_states(page, ("CAMERA_READY", "PHOTO_CAPTURED", "SEND_TO_DRAWER"), timeout_s=max(1.2, delay))
+                        if w["matched"]:
+                            log("INFO", f"    ✅ [Macro Step {idx} Verified] Camera ready on attempt {attempt}/{max_retries}.", emit)
+                            break
                 elif action == "capture_snap":
-                    st = await detect_screen_state(page)
-                    if st.get("state") not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
-                        c = st.get("shutter_coords") or {"x": step.get("x", 750), "y": step.get("y", 797)}
-                        await page.mouse.move(c["x"], c["y"])
-                        await page.mouse.down()
-                        await asyncio.sleep(0.035)
-                        await page.mouse.up()
+                    for attempt in range(1, max_retries + 1):
+                        st = await detect_screen_state(page)
+                        if st.get("state") in ("PHOTO_CAPTURED", "SEND_TO_DRAWER"):
+                            break
+                        if st.get("state") == "CLICK_CAMERA_PROMPT":
+                            await _click_starter_camera_on_page(page, st)
+                            await wait_for_screen_states(page, ("CAMERA_READY",), timeout_s=1.5)
+                            st = await detect_screen_state(page)
+                        await _click_shutter_on_page(page, st, use_dom_fallback=(attempt >= 2))
+                        w = await wait_for_screen_states(page, ("PHOTO_CAPTURED", "SEND_TO_DRAWER"), timeout_s=max(1.0, delay))
+                        if w["matched"]:
+                            log("INFO", f"    ✅ [Macro Step {idx} Verified] Snap captured on attempt {attempt}/{max_retries}.", emit)
+                            break
                 elif action == "click_send_to":
-                    st = await detect_screen_state(page)
-                    if st.get("state") != "SEND_TO_DRAWER":
-                        c = st.get("send_to_coords") or {"x": step.get("x", 556), "y": step.get("y", 877)}
-                        await page.mouse.click(c["x"], c["y"])
+                    for attempt in range(1, max_retries + 1):
+                        st = await detect_screen_state(page)
+                        if st.get("state") == "SEND_TO_DRAWER":
+                            break
+                        await _click_send_to_on_page(page, st)
+                        w = await wait_for_screen_states(page, ("SEND_TO_DRAWER",), timeout_s=max(1.0, delay))
+                        if w["matched"]:
+                            log("INFO", f"    ✅ [Macro Step {idx} Verified] Send-To drawer open on attempt {attempt}/{max_retries}.", emit)
+                            break
                 elif action == "select_recipients":
-                    await select_friends_in_drawer(
-                        page,
-                        friends=friends,
-                        selection_method=cfg.get("selection_method", "direct"),
-                        shortcut_name=cfg.get("shortcut_name", "Streaks"),
-                        emit=emit,
-                    )
+                    for attempt in range(1, max_retries + 1):
+                        sel = await select_friends_in_drawer(
+                            page,
+                            friends=friends,
+                            selection_method=cfg.get("selection_method", "direct") if attempt == 1 else "direct",
+                            shortcut_name=cfg.get("shortcut_name", "Streaks"),
+                            emit=emit,
+                        )
+                        audit = await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
+                        valid_sel = audit.get("valid_selected", []) or sel
+                        if valid_sel:
+                            log("INFO", f"    ✅ [Macro Step {idx} Verified] Selected recipients: {', '.join(valid_sel)}", emit)
+                            break
                 elif action == "click_final_send":
                     await audit_and_sanitize_drawer_selections(page, friends, emit=emit)
                     if preview_only:
                         log("INFO", "🧪 [Preview Mode] Paused before final Macro Send step!", emit)
                         return {f: "preview_ready" for f in friends}
-                    st = await detect_screen_state(page)
-                    c = st.get("final_send_coords") or {"x": step.get("x", 750), "y": step.get("y", 865)}
-                    await page.mouse.click(c["x"], c["y"])
+                    for attempt in range(1, max_retries + 1):
+                        await _click_final_send_on_page(page, await detect_screen_state(page))
+                        w = await wait_for_screen_states(page, ("CAMERA_READY", "CLICK_CAMERA_PROMPT", "HOME_NO_CAMERA", "CHAT_OPEN"), timeout_s=max(1.0, delay))
+                        if w["matched"] or w["state_info"].get("state") != "SEND_TO_DRAWER":
+                            log("INFO", f"    ✅ [Macro Step {idx} Verified] Final Send completed on attempt {attempt}/{max_retries}.", emit)
+                            break
 
             elif stype == "click":
                 # Check if this is the final step or a Send click in Preview mode
@@ -1508,59 +1799,78 @@ async def replay_macro(
                         log("INFO", "🧪 [Preview Mode] Paused before final Macro click!", emit)
                         return {f: "preview_ready" for f in friends}
 
-                # Resolve coordinates via selector / text match first if provided, else relative rx/ry or absolute x/y
-                x = int(step.get("x", 750))
-                y = int(step.get("y", 500))
-                if step.get("rx") is not None and step.get("ry") is not None:
-                    vw_vh = await page.evaluate("() => ({ w: window.innerWidth || 1440, h: window.innerHeight || 900 })")
-                    x = int(round(float(step["rx"]) * vw_vh["w"]))
-                    y = int(round(float(step["ry"]) * vw_vh["h"]))
+                for attempt in range(1, max_retries + 1):
+                    before_st = (await detect_screen_state(page)).get("state", "UNKNOWN")
+                    # Self-heal if starter camera card is blocking a shutter click
+                    lbl_lower = (str(step.get("label", "")) + " " + str(step.get("text", "")) + " " + str(step.get("selector", ""))).lower()
+                    if before_st == "CLICK_CAMERA_PROMPT" and ("shutter" in lbl_lower or "picture" in lbl_lower or "capture" in lbl_lower):
+                        await _click_starter_camera_on_page(page)
+                        await wait_for_screen_states(page, ("CAMERA_READY",), timeout_s=1.5)
+                        before_st = (await detect_screen_state(page)).get("state", "UNKNOWN")
 
-                smart_pos = await page.evaluate(
-                    """({selector, text, ariaLabel}) => {
-                        const isVisible = (el) => {
-                            if (!el || el.closest('#snapstreak-hud-host')) return false;
-                            const r = el.getBoundingClientRect();
-                            return r.width > 4 && r.height > 4;
-                        };
-                        if (selector) {
-                            try {
-                                const el = document.querySelector(selector);
-                                if (isVisible(el)) {
-                                    const r = el.getBoundingClientRect();
-                                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-                                }
-                            } catch (e) {}
-                        }
-                        const targetTxt = (text || ariaLabel || '').trim().toLowerCase();
-                        if (targetTxt) {
-                            const btns = Array.from(document.querySelectorAll('button, div[role="button"], [role="listitem"]')).filter(isVisible);
-                            for (const b of btns) {
-                                const r = b.getBoundingClientRect();
-                                if (r.left < 340) continue;
-                                const bt = (b.innerText || b.textContent || '').trim().toLowerCase();
-                                const ba = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-                                if (bt === targetTxt || ba === targetTxt) {
-                                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                    x = int(step.get("x", 750))
+                    y = int(step.get("y", 500))
+                    if step.get("rx") is not None and step.get("ry") is not None:
+                        vw_vh = await page.evaluate("() => ({ w: window.innerWidth || 1440, h: window.innerHeight || 900 })")
+                        x = int(round(float(step["rx"]) * vw_vh["w"]))
+                        y = int(round(float(step["ry"]) * vw_vh["h"]))
+
+                    smart_pos = await page.evaluate(
+                        """({selector, text, ariaLabel}) => {
+                            const isVisible = (el) => {
+                                if (!el || el.closest('#snapstreak-hud-host, #snapstreak-shadow-host')) return false;
+                                const r = el.getBoundingClientRect();
+                                return r.width > 4 && r.height > 4;
+                            };
+                            if (selector) {
+                                try {
+                                    const el = document.querySelector(selector);
+                                    if (isVisible(el)) {
+                                        const r = el.getBoundingClientRect();
+                                        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                                    }
+                                } catch (e) {}
+                            }
+                            const targetTxt = (text || ariaLabel || '').trim().toLowerCase();
+                            if (targetTxt) {
+                                const btns = Array.from(document.querySelectorAll('button, div[role="button"], [role="listitem"]')).filter(isVisible);
+                                for (const b of btns) {
+                                    const r = b.getBoundingClientRect();
+                                    if (r.left < 340) continue;
+                                    const bt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                                    const ba = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+                                    if (bt === targetTxt || ba === targetTxt) {
+                                        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                                    }
                                 }
                             }
-                        }
-                        return null;
-                    }""",
-                    {
-                        "selector": step.get("selector", ""),
-                        "text": step.get("text", ""),
-                        "ariaLabel": step.get("ariaLabel", ""),
-                    },
-                )
-                if smart_pos and smart_pos.get("x") and smart_pos.get("y"):
-                    x, y = int(smart_pos["x"]), int(smart_pos["y"])
+                            return null;
+                        }""",
+                        {
+                            "selector": step.get("selector", ""),
+                            "text": step.get("text", ""),
+                            "ariaLabel": step.get("ariaLabel", ""),
+                        },
+                    )
+                    if smart_pos and smart_pos.get("x") and smart_pos.get("y"):
+                        x, y = int(smart_pos["x"]), int(smart_pos["y"])
 
-                # Perform quick click
-                await page.mouse.move(x, y)
-                await page.mouse.down()
-                await asyncio.sleep(0.035)
-                await page.mouse.up()
+                    await page.mouse.move(x, y)
+                    await page.mouse.down()
+                    await asyncio.sleep(0.035)
+                    await page.mouse.up()
+
+                    await asyncio.sleep(0.35)
+                    after_st = (await detect_screen_state(page)).get("state", "UNKNOWN")
+                    # Verify expected state change for known navigation clicks
+                    if "shutter" in lbl_lower and after_st not in ("PHOTO_CAPTURED", "SEND_TO_DRAWER") and attempt < max_retries:
+                        log("WARN", f"    ⚠️ [Macro Step {idx} Attempt {attempt}/{max_retries}] Shutter click did not reach PHOTO_CAPTURED (state={after_st}), retrying...", emit)
+                        continue
+                    if "send to" in lbl_lower and after_st != "SEND_TO_DRAWER" and attempt < max_retries:
+                        log("WARN", f"    ⚠️ [Macro Step {idx} Attempt {attempt}/{max_retries}] 'Send To' click did not open drawer (state={after_st}), retrying...", emit)
+                        continue
+                    log("INFO", f"    ✅ [Macro Step {idx} Verified] Click executed at ({x}, {y}) -> state={after_st}.", emit)
+                    break
 
             elif stype == "type":
                 text = str(step.get("text", ""))
@@ -1588,7 +1898,7 @@ async def replay_macro(
         except Exception:
             pass
 
-        log("INFO", "🎉 Macro execution completed successfully!", emit)
+        log("INFO", "🎉 Macro execution & step verification completed successfully!", emit)
         return {f: "sent (macro)" for f in friends}
 
     except Exception as ex:

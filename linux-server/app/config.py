@@ -5,8 +5,12 @@ config.py – Persistent settings, macro storage, and cookie vault paths for Sna
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
+
+APP_VERSION = "5.2.0"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 _DEFAULT_DATA_DIR = (
     Path("/data")
@@ -355,4 +359,214 @@ def get_cookie_vault_summary() -> dict:
         "is_authenticated": bool(found_auth) or has_profile_db,
         "origins_count": len(origins),
         "last_saved": int(SESSION_FILE.stat().st_mtime) if SESSION_FILE.exists() else None,
+    }
+
+
+def get_version_info(check_remote: bool = False) -> dict:
+    """Return current semantic version, git commit short SHA, branch, commit message, and remote update status."""
+    commit_hash = "unknown"
+    branch = "main"
+    commit_msg = ""
+    commit_date = ""
+    remote_commit = ""
+    behind_count = 0
+    ahead_count = 0
+    update_available = False
+
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            commit_hash = r.stdout.strip()
+
+        r_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if r_branch.returncode == 0 and r_branch.stdout.strip():
+            branch = r_branch.stdout.strip()
+
+        r_msg = subprocess.run(
+            ["git", "log", "-1", "--pretty=%s||%ci"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if r_msg.returncode == 0 and "||" in r_msg.stdout:
+            parts = r_msg.stdout.strip().split("||", 1)
+            commit_msg = parts[0].strip()
+            commit_date = parts[1].strip()
+
+        if check_remote:
+            subprocess.run(
+                ["git", "fetch", "origin", branch],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            r_rem = subprocess.run(
+                ["git", "rev-parse", "--short", f"origin/{branch}"],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            if r_rem.returncode == 0 and r_rem.stdout.strip():
+                remote_commit = r_rem.stdout.strip()
+
+            r_counts = subprocess.run(
+                ["git", "rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            if r_counts.returncode == 0 and r_counts.stdout.strip():
+                c_parts = r_counts.stdout.strip().split()
+                if len(c_parts) == 2:
+                    ahead_count = int(c_parts[0])
+                    behind_count = int(c_parts[1])
+                    update_available = behind_count > 0
+    except Exception:
+        pass
+
+    return {
+        "version": APP_VERSION,
+        "display_version": f"v{APP_VERSION} ({commit_hash})",
+        "commit": commit_hash,
+        "branch": branch,
+        "commit_message": commit_msg,
+        "commit_date": commit_date,
+        "remote_commit": remote_commit or commit_hash,
+        "behind_count": behind_count,
+        "ahead_count": ahead_count,
+        "update_available": update_available,
+    }
+
+
+def run_git_update() -> dict:
+    """
+    1-Click Git Updater:
+    1. Preserves all user session cookies, backups, config, and macros in memory.
+    2. Fetches latest commits from GitHub (origin/main) and pulls/fast-forwards local repo.
+    3. If local commits are ahead of origin/main, pushes them to origin/main as well.
+    4. Restores any user data files if touched and returns the updated version & commit report.
+    """
+    ensure_data_dirs()
+    preserved_files = {}
+    for pf in (SESSION_FILE, SESSION_BACKUP_FILE, CONFIG_FILE, MACRO_FILE):
+        if pf.exists():
+            try:
+                preserved_files[pf] = pf.read_bytes()
+            except Exception:
+                pass
+
+    before = get_version_info(check_remote=False)
+    old_commit = before.get("commit", "unknown")
+    branch = before.get("branch", "main") or "main"
+    logs = []
+
+    try:
+        # 1. Fetch latest from origin
+        r_fetch = subprocess.run(
+            ["git", "fetch", "origin", branch],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if r_fetch.stdout.strip():
+            logs.append(r_fetch.stdout.strip())
+        if r_fetch.stderr.strip():
+            logs.append(r_fetch.stderr.strip())
+
+        # 2. Check ahead/behind counts
+        ahead_count, behind_count = 0, 0
+        r_counts = subprocess.run(
+            ["git", "rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r_counts.returncode == 0 and r_counts.stdout.strip():
+            parts = r_counts.stdout.strip().split()
+            if len(parts) == 2:
+                ahead_count, behind_count = int(parts[0]), int(parts[1])
+
+        # 3. Pull latest changes from origin/main
+        if behind_count > 0 or ahead_count == 0:
+            r_pull = subprocess.run(
+                ["git", "pull", "--rebase", "--autostash", "origin", branch],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            logs.append((r_pull.stdout or "") + (r_pull.stderr or ""))
+            if r_pull.returncode != 0:
+                subprocess.run(["git", "rebase", "--abort"], cwd=str(REPO_ROOT), capture_output=True, timeout=5)
+                r_reset = subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{branch}"],
+                    cwd=str(REPO_ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                logs.append((r_reset.stdout or "") + (r_reset.stderr or ""))
+
+        # 4. If local branch has new commits ahead of origin, push to origin
+        if ahead_count > 0:
+            r_push = subprocess.run(
+                ["git", "push", "origin", branch],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            logs.append((r_push.stdout or "") + (r_push.stderr or ""))
+
+    except Exception as ex:
+        logs.append(f"Git command notice: {ex}")
+    finally:
+        # 5. Always guarantee preserved cookies & config remain intact
+        for pf, raw_bytes in preserved_files.items():
+            if not pf.exists() or pf.stat().st_size == 0:
+                try:
+                    pf.parent.mkdir(parents=True, exist_ok=True)
+                    pf.write_bytes(raw_bytes)
+                except Exception:
+                    pass
+
+    after = get_version_info(check_remote=False)
+    new_commit = after.get("commit", "unknown")
+    updated = old_commit != new_commit
+    clean_log = "\n".join([line.strip() for line in logs if line and line.strip()])
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "old_commit": old_commit,
+        "new_commit": new_commit,
+        "version": after.get("version", APP_VERSION),
+        "display_version": after.get("display_version"),
+        "commit_message": after.get("commit_message", ""),
+        "commit_date": after.get("commit_date", ""),
+        "branch": branch,
+        "output": clean_log or "Already up to date with origin/main.",
+        "message": (
+            f"Updated website from #{old_commit} to #{new_commit} ({after.get('display_version')})!"
+            if updated
+            else f"Website is up to date on {after.get('display_version')} — reloaded live code & extension bundle."
+        ),
     }

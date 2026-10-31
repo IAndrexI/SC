@@ -606,12 +606,19 @@
     <div class="brand">
       <div class="brand-logo">👻</div>
       <div>
-        <div class="brand-title">SnapStreak Studio</div>
-        <div class="brand-sub">Full Snapchat Web Access • AI Expected Steps &amp; Macro Maker • Live SJSU Webcam</div>
+        <div class="brand-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span>SnapStreak Studio</span>
+          <span class="badge badge-yellow" id="app-version-badge" title="Current Version & Git Commit" style="font-family:var(--mono);font-size:11px;padding:2px 8px">v5.2.0</span>
+        </div>
+        <div class="brand-sub">Full Snapchat Web Access • Verified Step-by-Step Auto-Retry • Live SJSU Webcam</div>
       </div>
     </div>
 
     <div class="topbar-pills">
+      <button class="btn btn-sm btn-primary" id="btn-one-click-update" onclick="triggerOneClickUpdate()" title="Pull/Sync latest Git code and apply live to the website">
+        ⬆️ 1-Click Git Update
+      </button>
+
       <div class="pill" onclick="toggleCookieModal(true)" title="Open Cookie Vault & Session Backup">
         <span class="pill-dot ok" id="cookie-dot"></span>
         <span id="cookie-pill-text">🍪 Checking Cookie Vault…</span>
@@ -1018,9 +1025,51 @@
       } catch (e) {}
     }
 
+    async function triggerOneClickUpdate() {
+      const btn = document.getElementById('btn-one-click-update');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Updating from Git…';
+      }
+      appendLog('[Studio] ⬆️ Running 1-Click Git Updater (fetching & applying latest Git code to website)...');
+      try {
+        const res = await api('/api/system/update', 'POST');
+        if (res && res.ok) {
+          appendLog(`[Studio] ✅ ${res.message}`);
+          if (res.output) appendLog(`[Git] ${res.output}`);
+          const vBadge = document.getElementById('app-version-badge');
+          if (vBadge && res.display_version) {
+            vBadge.textContent = res.display_version;
+          }
+          if (btn) btn.textContent = '✅ Updated! Reloading…';
+          setTimeout(() => window.location.reload(), 1100);
+        } else {
+          appendLog('[Studio] ⚠️ Git update returned an unexpected response.');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = '⬆️ 1-Click Git Update';
+          }
+        }
+      } catch (e) {
+        appendLog(`[Studio] ❌ 1-Click Git Update error: ${e.message}`);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '⬆️ 1-Click Git Update';
+        }
+      }
+    }
+
     function updateStatusUI(st) {
       if (!st) return;
       _loginActive = Boolean(st.login_active);
+
+      const vBadge = document.getElementById('app-version-badge');
+      if (vBadge && st.display_version) {
+        vBadge.textContent = st.display_version;
+        if (st.version_info && st.version_info.commit_message) {
+          vBadge.title = `${st.display_version} — ${st.version_info.commit_message}`;
+        }
+      }
 
       const vault = st.cookie_vault || {};
       const cookieText = document.getElementById('cookie-pill-text');

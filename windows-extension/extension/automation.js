@@ -886,7 +886,7 @@ window.SnapStreakAutomation = (function() {
 
   // ── Self-Healing Step Transition Controller ───────────────────────────────
   // If screen does not match expected state after a step, executes previous steps to recover!
-  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 2, timeoutMs = 7500) {
+  async function executeStepWithScreenVerification(stepIndex, actionFn, expectedStates, fallbackFn, maxRetries = 3, timeoutMs = 7500) {
     checkCancelled();
     const stepNames = [
       'Step 1: Return to Home Screen (Top-Left Snapchat Icon)',
@@ -2335,7 +2335,7 @@ window.SnapStreakAutomation = (function() {
             [SCREEN_STATES.PHOTO_CAPTURED, SCREEN_STATES.SEND_TO_DRAWER],
             async () => {
               const cur = detectCurrentScreen();
-              if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.UNKNOWN) {
+              if (cur === SCREEN_STATES.HOME || cur === SCREEN_STATES.CLICK_CAMERA_PROMPT || cur === SCREEN_STATES.UNKNOWN) {
                 await step1_openCamera(macroGuidance);
                 await sleep(1200);
               } else {
@@ -2455,7 +2455,7 @@ window.SnapStreakAutomation = (function() {
                 snapSentSuccessfully = true;
                 window.__snapstreak_snap_dispatched = true;
               },
-              [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
+              [SCREEN_STATES.CAMERA_READY, SCREEN_STATES.CLICK_CAMERA_PROMPT, SCREEN_STATES.HOME, SCREEN_STATES.SEND_COMPLETED],
               async () => {
                 if (window.__snapstreak_unauthorized_detected) {
                   log('🛑 [SAFETY GUARD] Fallback Send click suppressed because unauthorized recipient was detected.', 'err');

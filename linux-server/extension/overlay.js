@@ -970,6 +970,7 @@ textarea {
         <div class="quickbar-brand">
           <span style="font-size: 15px;">🔥</span>
           <span class="quickbar-title">SnapStreak</span>
+          <span id="qb-version-badge" title="Current SnapStreak Version & Git Commit" style="font-size: 10px; font-family: monospace; background: rgba(255,252,0,0.16); color: #fffc00; border: 1px solid rgba(255,252,0,0.4); padding: 1px 6px; border-radius: 8px; font-weight: 700; margin-left: 4px;">v5.2.0</span>
         </div>
         <div class="quickbar-status">
           <div class="status-dot" id="quickbar-dot"></div>
@@ -986,6 +987,9 @@ textarea {
         </button>
         <button class="quickbar-btn quickbar-btn-danger" id="qb-btn-stop" style="display: inline-flex;" title="Stop active task">
           ⏹️ Stop
+        </button>
+        <button class="quickbar-btn quickbar-btn-secondary" id="qb-btn-update" title="1-Click Git Updater: Pull latest Git code & update website" style="border-color: rgba(255,252,0,0.45); color: #fffc00;">
+          ⬆️ Update
         </button>
         <button class="quickbar-btn quickbar-btn-secondary" id="qb-btn-toggle-dock" title="Toggle SnapStreak Sidebar">
           📌 Panel
@@ -1004,9 +1008,11 @@ textarea {
         <div class="hud-header" id="hud-header">
           <div class="hud-title-wrap">
             <img class="hud-logo" src="${logoSrc}" alt="SnapStreak Logo" />
-            <span class="hud-title">SnapStreak Controller</span>
+            <span class="hud-title">SnapStreak</span>
+            <span id="hud-version-badge" title="Current SnapStreak Version & Git Commit" style="font-size: 10px; font-family: monospace; background: rgba(255,252,0,0.16); color: #fffc00; border: 1px solid rgba(255,252,0,0.4); padding: 1px 6px; border-radius: 8px; font-weight: 700;">v5.2.0</span>
           </div>
           <div class="hud-header-actions">
+            <button class="hud-btn-icon" id="btn-hud-git-update" title="1-Click Git Updater: Pull latest Git code & update website" style="width: auto; padding: 0 7px; font-size: 10px; font-weight: 700; color: #fffc00; border-color: rgba(255,252,0,0.45);">⬆️ Update</button>
             <button class="hud-btn-icon" id="btn-toggle-dock" title="Switch Docked / Float Window">${config.isDocked ? '📌' : '🪟'}</button>
             <button class="hud-btn-icon" id="btn-minimize" title="Minimize Window">─</button>
             <button class="hud-btn-icon" id="btn-close" title="Close Window">✕</button>
@@ -1387,6 +1393,56 @@ textarea {
 
     const qbToggle = shadowRoot.getElementById('qb-btn-toggle-dock');
     if (qbToggle) qbToggle.addEventListener('click', () => toggleDock());
+
+    // Version Display & 1-Click Git Updater
+    function applyVersionBadge(vInfo) {
+      if (!vInfo) return;
+      const disp = vInfo.display_version || (vInfo.version ? `v${vInfo.version}` : 'v5.2.0');
+      const tip = vInfo.commit_message ? `${disp} — ${vInfo.commit_message}` : disp;
+      const qbBadge = shadowRoot.getElementById('qb-version-badge');
+      const hudBadge = shadowRoot.getElementById('hud-version-badge');
+      if (qbBadge) { qbBadge.textContent = disp; qbBadge.title = tip; }
+      if (hudBadge) { hudBadge.textContent = disp; hudBadge.title = tip; }
+    }
+
+    if (window.__SNAPSTREAK_SERVER_CONFIG__ && window.__SNAPSTREAK_SERVER_CONFIG__.versionInfo) {
+      applyVersionBadge(window.__SNAPSTREAK_SERVER_CONFIG__.versionInfo);
+    }
+    fetch('http://127.0.0.1:8080/api/system/version')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) applyVersionBadge(d); })
+      .catch(() => {});
+
+    async function runOneClickGitUpdate() {
+      const qbUpd = shadowRoot.getElementById('qb-btn-update');
+      const hudUpd = shadowRoot.getElementById('btn-hud-git-update');
+      if (qbUpd) { qbUpd.disabled = true; qbUpd.textContent = '⏳ Updating...'; }
+      if (hudUpd) { hudUpd.disabled = true; hudUpd.textContent = '⏳...'; }
+      log('⬆️ [1-Click Git Updater] Pulling latest Git code & updating website...', 'info');
+      try {
+        const resp = await fetch('http://127.0.0.1:8080/api/system/update', { method: 'POST' });
+        const data = await resp.json();
+        if (data && data.ok) {
+          applyVersionBadge(data);
+          log(`✅ [1-Click Git Updater] ${data.message}`, 'success');
+          if (data.output) log(`📦 Git: ${data.output}`, 'info');
+          if (qbUpd) qbUpd.textContent = '✅ Updated!';
+          if (hudUpd) hudUpd.textContent = '✅!';
+          setTimeout(() => window.location.reload(), 1000);
+        } else {
+          throw new Error((data && data.message) || 'Update request failed');
+        }
+      } catch (err) {
+        log(`❌ [1-Click Git Updater] Error: ${err.message}`, 'err');
+        if (qbUpd) { qbUpd.disabled = false; qbUpd.textContent = '⬆️ Update'; }
+        if (hudUpd) { hudUpd.disabled = false; hudUpd.textContent = '⬆️ Update'; }
+      }
+    }
+
+    const qbUpdateBtn = shadowRoot.getElementById('qb-btn-update');
+    if (qbUpdateBtn) qbUpdateBtn.addEventListener('click', runOneClickGitUpdate);
+    const hudUpdateBtn = shadowRoot.getElementById('btn-hud-git-update');
+    if (hudUpdateBtn) hudUpdateBtn.addEventListener('click', runOneClickGitUpdate);
 
     // Tab switching
     const tabButtons = shadowRoot.querySelectorAll('.hud-tab-btn');

@@ -90,7 +90,16 @@ MOCK_SNAPCHAT_HTML = """
   </div>
 
   <script>
-    window.__test_state = { starterClicked: false, snapped: false, drawerOpen: false, sentTo: [] };
+    window.__test_state = {
+      starterClicked: false,
+      snapped: false,
+      drawerOpen: false,
+      sentTo: [],
+      shutterAttempts: 0,
+      sendToAttempts: 0,
+      failFirstShutter: false,
+      failFirstSendTo: false
+    };
 
     function activateCamera() {
       window.__test_state.starterClicked = true;
@@ -107,12 +116,20 @@ MOCK_SNAPCHAT_HTML = """
     if (starterCard) starterCard.addEventListener('click', activateCamera);
 
     document.getElementById('shutter-btn').addEventListener('click', () => {
+      window.__test_state.shutterAttempts += 1;
+      if (window.__test_state.failFirstShutter && window.__test_state.shutterAttempts === 1) {
+        return; // Simulate transient failure on 1st shutter click
+      }
       window.__test_state.snapped = true;
       document.getElementById('shutter-btn').style.display = 'none';
       document.getElementById('preview-bar').style.display = 'flex';
     });
 
     document.getElementById('send-to-btn').addEventListener('click', () => {
+      window.__test_state.sendToAttempts += 1;
+      if (window.__test_state.failFirstSendTo && window.__test_state.sendToAttempts === 1) {
+        return; // Simulate transient failure on 1st Send To click
+      }
       window.__test_state.drawerOpen = true;
       document.getElementById('preview-bar').style.display = 'none';
       document.getElementById('send-drawer').style.display = 'block';
@@ -213,24 +230,35 @@ async def run_all_tests():
         assert cam_check["loaded"] is True, f"SJSU image must be loaded without CORS error: {cam_check}"
         print(f" [PASS] 3. SJSU WebRTC getUserMedia stream verified ({cam_check['label']}, {cam_check['width']}x{cam_check['height']}, source={cam_check['source']})")
 
-        # 3b. Verify Mode A: AI / Expected Steps Engine with Starter Step
+        # 3b. Verify Mode A: AI / Expected Steps Engine with Starter Step & Auto-Retry on Transient Step Failure
         st_before = await automation.detect_screen_state(page)
         print(" [DEBUG] Initial state before AI steps:", st_before)
         assert st_before["state"] == "CLICK_CAMERA_PROMPT", f"Expected CLICK_CAMERA_PROMPT, got {st_before['state']}"
+
+        # Enable transient failures on 1st shutter click and 1st Send-To click to prove step verification & retry
+        await page.evaluate("() => { window.__test_state.failFirstShutter = true; window.__test_state.failFirstSendTo = true; }")
+
         res_ai = await automation.run_ai_expected_steps(
             page,
             friends=["*//Eric\\*", "Dylan"],
             selection_method="direct",
             step_delay=0.4,
             preview_only=False,
+            max_step_retries=3,
             emit=print,
         )
         test_state = await page.evaluate("() => window.__test_state")
         assert test_state["starterClicked"] is True, "Starter Step: Camera circle button must have been clicked!"
+        assert test_state["shutterAttempts"] >= 2, f"Expected shutter auto-retry (>=2 attempts), got {test_state['shutterAttempts']}"
+        assert test_state["sendToAttempts"] >= 2, f"Expected Send-To auto-retry (>=2 attempts), got {test_state['sendToAttempts']}"
         assert test_state["snapped"] is True, "Shutter must have been clicked"
         assert "*//Eric\\*" in test_state["sentTo"] and "Dylan" in test_state["sentTo"], f"Expected friends in sentTo, got {test_state['sentTo']}"
         assert "My AI" not in test_state["sentTo"], f"Safety guard must have unchecked My AI! Got {test_state['sentTo']}"
-        print(f" [PASS] 4. AI / Expected Steps Mode with Starter Step verified (starterClicked={test_state['starterClicked']}, sentTo={test_state['sentTo']}, My AI blocked, res={res_ai})")
+        print(
+            f" [PASS] 4. AI / Expected Steps Mode + Step Verification & Auto-Retry verified "
+            f"(starterClicked={test_state['starterClicked']}, shutterAttempts={test_state['shutterAttempts']}, "
+            f"sendToAttempts={test_state['sendToAttempts']}, sentTo={test_state['sentTo']})"
+        )
 
         # 3c. Verify Mode B: Macro Recording Metadata + Macro Replay Engine with Starter Step
         await page.set_content(MOCK_SNAPCHAT_HTML)
@@ -264,16 +292,21 @@ async def run_all_tests():
     assert diag["checks"]["snap_media"]["status"] == "ok", f"Snap media check failed: {diag['checks']['snap_media']}"
     print(f" [PASS] 6. System Diagnostics verified (overall={diag['overall_status']})")
 
-    # 5. Verify FastAPI Server Endpoints directly
+    # 5. Verify FastAPI Server Endpoints, Version Display & 1-Click Git Updater
     import main
     st_resp = await main.get_status()
     assert st_resp["has_session"] is True
     assert st_resp["streak_mode"] in ("ai_steps", "macro")
+    assert "v5.2.0" in st_resp.get("display_version", ""), f"Expected v5.2.0 in display_version, got {st_resp.get('display_version')}"
+    v_resp = await main.get_system_version(check_remote=False)
+    assert v_resp["version"] == "5.2.0" and v_resp["commit"] != "unknown", f"Unexpected version info: {v_resp}"
+    index_html = await main.index()
+    assert 'id="app-version-badge"' in index_html and 'id="btn-one-click-update"' in index_html, "Top header must include version badge and 1-Click Git Update button"
     cookies_resp = await main.api_get_cookies()
     assert cookies_resp["ok"] is True and cookies_resp["vault"]["snapchat_cookies"] >= 5
     macro_resp = await main.api_get_macro()
     assert macro_resp["count"] >= 1
-    print(f" [PASS] 7. FastAPI Studio Endpoints verified (/api/status, /api/cookies, /api/macro)")
+    print(f" [PASS] 7. FastAPI Studio Endpoints, Top Version Badge ({v_resp['display_version']}) & 1-Click Git Updater verified")
 
     print("=" * 68)
     print(" ALL 7 VERIFICATION SUITES PASSED SUCCESSFULLY!")
